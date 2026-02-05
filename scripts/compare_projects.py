@@ -910,6 +910,231 @@ class ProjectComparator:
         print()
         print("=" * 70)
 
+    def generate_markdown_report(self) -> str:
+        """
+        Генерирует markdown отчет о сравнении проектов.
+
+        Returns:
+            Строка с markdown-форматированным отчетом
+        """
+        logger.info("generating_markdown_report")
+
+        # Выполняем необходимые анализы, если они еще не выполнены
+        if not self.project1_files:
+            self.discover_projects()
+            self.categorize_files()
+
+        dependency_analysis = self.analyze_all_dependencies()
+        version_assessment = self.assess_version()
+
+        # Начинаем формирование отчета
+        lines = []
+        lines.append("# Отчет о сравнении проектов")
+        lines.append("")
+        lines.append(f"**Дата:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        lines.append("")
+        lines.append(f"**Проект 1:** `{self.project1_name}` ({self.project1_path})")
+        lines.append(f"**Проект 2:** `{self.project2_name}` ({self.project2_path})")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        # Сводка
+        lines.append("## Общая сводка")
+        lines.append("")
+        summary = self.results["summary"]
+        lines.append(f"- **Всего файлов в {self.project1_name}:** {summary['project1_total_files']}")
+        lines.append(f"- **Всего файлов в {self.project2_name}:** {summary['project2_total_files']}")
+        lines.append(f"- **Уникальных для {self.project1_name}:** {summary['unique_to_project1']}")
+        lines.append(f"- **Уникальных для {self.project2_name}:** {summary['unique_to_project2']}")
+        lines.append(f"- **Пересекающихся файлов:** {summary['overlapping']}")
+        lines.append("")
+
+        # Рекомендация
+        lines.append("## Рекомендация по слиянию")
+        lines.append("")
+        rec_name = version_assessment.get("recommendation_name", "Не определено")
+        confidence = version_assessment.get("confidence", "unknown")
+        confidence_labels = {
+            "high": "Высокая",
+            "medium": "Средняя",
+            "low": "Низкая"
+        }
+        confidence_str = confidence_labels.get(confidence, confidence)
+
+        scores = version_assessment.get("scores", {})
+        p1_score = scores.get("project1_score", 0)
+        p2_score = scores.get("project2_score", 0)
+
+        lines.append(f"**Рекомендуемая база:** {rec_name}")
+        lines.append(f"**Уверенность:** {confidence_str}")
+        lines.append("")
+        lines.append(f"- Оценка {self.project1_name}: {p1_score}/100")
+        lines.append(f"- Оценка {self.project2_name}: {p2_score}/100")
+        lines.append("")
+        lines.append("**Обоснование:**")
+        for reason in version_assessment.get("reasoning", []):
+            lines.append(f"- {reason}")
+        lines.append("")
+
+        # Анализ времени модификации
+        lines.append("## Анализ времени модификации файлов")
+        lines.append("")
+        ts = version_assessment.get("file_timestamps", {})
+        lines.append(f"- **Пересекающихся файлов:** {ts.get('overlapping_files_count', 0)}")
+        lines.append(f"- **Новее в {self.project1_name}:** {ts.get('newer_in_project1', 0)}")
+        lines.append(f"- **Новее в {self.project2_name}:** {ts.get('newer_in_project2', 0)}")
+        lines.append(f"- **Одинаковое время:** {ts.get('identical_timestamp', 0)}")
+        lines.append("")
+
+        # Анализ полноты файлов
+        lines.append("## Анализ полноты файлов")
+        lines.append("")
+        fc = version_assessment.get("file_completeness", {})
+        lines.append(f"- **Всего файлов в {self.project1_name}:** {fc.get('total_files_project1', 0)}")
+        lines.append(f"- **Всего файлов в {self.project2_name}:** {fc.get('total_files_project2', 0)}")
+        lines.append(f"- **Уникальных для {self.project1_name}:** {fc.get('unique_files_project1', 0)}")
+        lines.append(f"- **Уникальных для {self.project2_name}:** {fc.get('unique_files_project2', 0)}")
+        lines.append("")
+
+        # Анализ зависимостей
+        lines.append("## Анализ зависимостей")
+        lines.append("")
+
+        # Python зависимости
+        if dependency_analysis.get("python"):
+            python = dependency_analysis["python"]
+            lines.append("### Python (requirements.txt)")
+            lines.append("")
+            lines.append(f"- **Всего в {self.project1_name}:** {python['total_project1']} пакетов")
+            lines.append(f"- **Всего в {self.project2_name}:** {python['total_project2']} пакетов")
+            lines.append(f"- **Общих зависимостей:** {len(python.get('shared', []))}")
+            lines.append(f"- **Конфликтов версий:** {len(python.get('conflicts', []))}")
+            lines.append(f"- **Уникальных для {self.project1_name}:** {len(python.get('unique_to_project1', []))}")
+            lines.append(f"- **Уникальных для {self.project2_name}:** {len(python.get('unique_to_project2', []))}")
+            lines.append("")
+
+            if python.get("conflicts"):
+                lines.append("#### Конфликтующие Python зависимости")
+                lines.append("")
+                lines.append("| Пакет | Версия в проекте 1 | Версия в проекте 2 |")
+                lines.append("|-------|-------------------|-------------------|")
+                for dep in python["conflicts"]:
+                    v1 = dep.get('version_project1') or 'any'
+                    v2 = dep.get('version_project2') or 'any'
+                    lines.append(f"| {dep['package']} | {v1} | {v2} |")
+                lines.append("")
+
+        # Node.js зависимости
+        if dependency_analysis.get("node"):
+            node = dependency_analysis["node"]
+            lines.append("### Node.js (package.json)")
+            lines.append("")
+            lines.append(f"- **Всего в {self.project1_name}:** {node['total_project1']} пакетов")
+            lines.append(f"- **Всего в {self.project2_name}:** {node['total_project2']} пакетов")
+            lines.append(f"- **Общих зависимостей:** {len(node.get('shared', []))}")
+            lines.append(f"- **Конфликтов версий:** {len(node.get('conflicts', []))}")
+            lines.append(f"- **Уникальных для {self.project1_name}:** {len(node.get('unique_to_project1', []))}")
+            lines.append(f"- **Уникальных для {self.project2_name}:** {len(node.get('unique_to_project2', []))}")
+            lines.append("")
+
+            if node.get("conflicts"):
+                lines.append("#### Конфликтующие Node.js зависимости")
+                lines.append("")
+                lines.append("| Пакет | Версия в проекте 1 | Версия в проекте 2 |")
+                lines.append("|-------|-------------------|-------------------|")
+                for dep in node["conflicts"]:
+                    v1 = dep.get('version_project1') or 'any'
+                    v2 = dep.get('version_project2') or 'any'
+                    lines.append(f"| {dep['package']} | {v1} | {v2} |")
+                lines.append("")
+
+        if not dependency_analysis.get("python") and not dependency_analysis.get("node"):
+            lines.append("*Файлы зависимостей не найдены в обоих проектах.*")
+            lines.append("")
+
+        # Уникальные файлы
+        lines.append("## Уникальные файлы")
+        lines.append("")
+
+        lines.append(f"### Уникальные для {self.project1_name}")
+        lines.append("")
+        if self.unique_to_project1:
+            # Группируем по расширениям
+            by_ext = {}
+            for file_path in self.unique_to_project1:
+                rel_path = self.get_relative_path(file_path, self.project1_path)
+                ext = rel_path.suffix or 'no extension'
+                by_ext.setdefault(ext, []).append(str(rel_path))
+
+            for ext in sorted(by_ext.keys()):
+                files = by_ext[ext]
+                lines.append(f"**{ext}** ({len(files)} файлов):")
+                lines.append("")
+                for file_name in sorted(files)[:10]:
+                    lines.append(f"- `{file_name}`")
+                if len(files) > 10:
+                    lines.append(f"- *...и ещё {len(files) - 10} файлов*")
+                lines.append("")
+        else:
+            lines.append("*Нет уникальных файлов*")
+            lines.append("")
+
+        lines.append(f"### Уникальные для {self.project2_name}")
+        lines.append("")
+        if self.unique_to_project2:
+            # Группируем по расширениям
+            by_ext = {}
+            for file_path in self.unique_to_project2:
+                rel_path = self.get_relative_path(file_path, self.project2_path)
+                ext = rel_path.suffix or 'no extension'
+                by_ext.setdefault(ext, []).append(str(rel_path))
+
+            for ext in sorted(by_ext.keys()):
+                files = by_ext[ext]
+                lines.append(f"**{ext}** ({len(files)} файлов):")
+                lines.append("")
+                for file_name in sorted(files)[:10]:
+                    lines.append(f"- `{file_name}`")
+                if len(files) > 10:
+                    lines.append(f"- *...и ещё {len(files) - 10} файлов*")
+                lines.append("")
+        else:
+            lines.append("*Нет уникальных файлов*")
+            lines.append("")
+
+        # Заключение
+        lines.append("---")
+        lines.append("")
+        lines.append("## Следующие шаги")
+        lines.append("")
+        lines.append("1. Выбрать базовый проект согласно рекомендации")
+        lines.append("2. Разрешить конфликты зависимостей")
+        lines.append("3. Перенести уникальные файлы из другого проекта")
+        lines.append("4. Провести ручной анализ пересекающихся файлов с различиями")
+        lines.append("5. Выполнить тестирование объединенного проекта")
+        lines.append("")
+
+        report = "\n".join(lines)
+        logger.info("markdown_report_generated", size=len(report))
+        return report
+
+    def save_markdown_report(self, output_path: Path):
+        """
+        Сохраняет markdown отчет в файл.
+
+        Args:
+            output_path: Путь к файлу для сохранения
+        """
+        report = self.generate_markdown_report()
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(report)
+
+        logger.info("markdown_report_saved", path=str(output_path))
+
 
 def main():
     """Основная функция для тестирования."""
@@ -918,7 +1143,7 @@ def main():
     parser = argparse.ArgumentParser(description="Сравнение двух проектов")
     parser.add_argument(
         "--mode",
-        choices=["discovery", "categorize", "full", "diff", "dependencies", "assess"],
+        choices=["discovery", "categorize", "full", "diff", "dependencies", "assess", "report"],
         default="full",
         help="Режим работы"
     )
@@ -935,6 +1160,17 @@ def main():
     parser.add_argument(
         "--sample",
         help="Относительный путь к файлу для сравнения (используется с --mode=diff)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Предпросмотр отчета в stdout вместо сохранения в файл (используется с --mode=report)"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("comparison_report.md"),
+        help="Путь для сохранения отчета (используется с --mode=report)"
     )
 
     args = parser.parse_args()
@@ -981,6 +1217,15 @@ def main():
     if args.mode == "assess":
         assessment = comparator.assess_version()
         comparator.print_version_assessment(assessment)
+        return
+
+    if args.mode == "report":
+        if args.dry_run:
+            report = comparator.generate_markdown_report()
+            print(report)
+        else:
+            comparator.save_markdown_report(args.output)
+            print(f"Отчет сохранен в: {args.output}")
         return
 
     if args.mode in ["discovery", "full"]:
