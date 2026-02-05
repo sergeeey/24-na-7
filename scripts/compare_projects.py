@@ -544,6 +544,254 @@ class ProjectComparator:
 
         return results
 
+    def assess_version(self) -> Dict[str, Any]:
+        """
+        Оценивает, какой проект является более новым/полным на основе:
+        - Времени модификации файлов
+        - Версий зависимостей
+        - Полноты файлов (количество уникальных файлов)
+
+        Returns:
+            Словарь с результатами оценки версии и рекомендациями
+        """
+        logger.info("starting_version_assessment")
+
+        # Инициализируем результат
+        result = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "project1": str(self.project1_path),
+            "project2": str(self.project2_path),
+            "file_timestamps": {},
+            "dependency_freshness": {},
+            "file_completeness": {},
+            "recommendation": None,
+            "confidence": "unknown",
+            "reasoning": []
+        }
+
+        # 1. Анализ времени модификации файлов
+        if not self.overlapping_files:
+            self.discover_projects()
+            self.categorize_files()
+
+        newer_in_p1 = 0
+        newer_in_p2 = 0
+        identical_time = 0
+
+        for file1, file2 in self.overlapping_files:
+            try:
+                mtime1 = file1.stat().st_mtime
+                mtime2 = file2.stat().st_mtime
+
+                if mtime1 > mtime2:
+                    newer_in_p1 += 1
+                elif mtime2 > mtime1:
+                    newer_in_p2 += 1
+                else:
+                    identical_time += 1
+            except Exception as e:
+                logger.warning("timestamp_comparison_error", file=str(file1), error=str(e))
+
+        result["file_timestamps"] = {
+            "overlapping_files_count": len(self.overlapping_files),
+            "newer_in_project1": newer_in_p1,
+            "newer_in_project2": newer_in_p2,
+            "identical_timestamp": identical_time,
+            "recency_score_project1": newer_in_p1,
+            "recency_score_project2": newer_in_p2
+        }
+
+        # 2. Анализ свежести зависимостей
+        python_deps = self.analyze_python_dependencies()
+        node_deps = self.analyze_node_dependencies()
+
+        # Подсчитываем уникальные зависимости как индикатор более полного проекта
+        python_unique_p1 = len(python_deps.get("unique_to_project1", []))
+        python_unique_p2 = len(python_deps.get("unique_to_project2", []))
+        node_unique_p1 = len(node_deps.get("unique_to_project1", []))
+        node_unique_p2 = len(node_deps.get("unique_to_project2", []))
+
+        result["dependency_freshness"] = {
+            "python": {
+                "unique_to_project1": python_unique_p1,
+                "unique_to_project2": python_unique_p2,
+                "conflicts": len(python_deps.get("conflicts", []))
+            },
+            "node": {
+                "unique_to_project1": node_unique_p1,
+                "unique_to_project2": node_unique_p2,
+                "conflicts": len(node_deps.get("conflicts", []))
+            },
+            "dependency_score_project1": python_unique_p1 + node_unique_p1,
+            "dependency_score_project2": python_unique_p2 + node_unique_p2
+        }
+
+        # 3. Анализ полноты файлов
+        total_p1 = len(self.project1_files)
+        total_p2 = len(self.project2_files)
+        unique_p1 = len(self.unique_to_project1)
+        unique_p2 = len(self.unique_to_project2)
+
+        result["file_completeness"] = {
+            "total_files_project1": total_p1,
+            "total_files_project2": total_p2,
+            "unique_files_project1": unique_p1,
+            "unique_files_project2": unique_p2,
+            "completeness_score_project1": unique_p1,
+            "completeness_score_project2": unique_p2
+        }
+
+        # 4. Формирование рекомендации
+        reasoning = []
+        p1_score = 0
+        p2_score = 0
+
+        # Критерий 1: Время модификации (вес 30%)
+        if newer_in_p1 > newer_in_p2:
+            p1_score += 30
+            reasoning.append(f"Проект 1 имеет {newer_in_p1} более свежих файлов против {newer_in_p2} в проекте 2")
+        elif newer_in_p2 > newer_in_p1:
+            p2_score += 30
+            reasoning.append(f"Проект 2 имеет {newer_in_p2} более свежих файлов против {newer_in_p1} в проекте 1")
+        else:
+            reasoning.append("Файлы имеют одинаковое время модификации")
+
+        # Критерий 2: Полнота файлов (вес 40%)
+        if unique_p1 > unique_p2:
+            p1_score += 40
+            reasoning.append(f"Проект 1 имеет {unique_p1} уникальных файлов против {unique_p2} в проекте 2")
+        elif unique_p2 > unique_p1:
+            p2_score += 40
+            reasoning.append(f"Проект 2 имеет {unique_p2} уникальных файлов против {unique_p1} в проекте 1")
+        else:
+            reasoning.append("Оба проекта имеют одинаковое количество уникальных файлов")
+
+        # Критерий 3: Зависимости (вес 30%)
+        total_deps_p1 = python_unique_p1 + node_unique_p1
+        total_deps_p2 = python_unique_p2 + node_unique_p2
+
+        if total_deps_p1 > total_deps_p2:
+            p1_score += 30
+            reasoning.append(f"Проект 1 имеет {total_deps_p1} уникальных зависимостей против {total_deps_p2} в проекте 2")
+        elif total_deps_p2 > total_deps_p1:
+            p2_score += 30
+            reasoning.append(f"Проект 2 имеет {total_deps_p2} уникальных зависимостей против {total_deps_p1} в проекте 1")
+        else:
+            reasoning.append("Оба проекта имеют одинаковое количество уникальных зависимостей")
+
+        # Определяем рекомендацию и уверенность
+        score_diff = abs(p1_score - p2_score)
+
+        if p1_score > p2_score:
+            result["recommendation"] = "project1"
+            result["recommendation_name"] = self.project1_name
+        elif p2_score > p1_score:
+            result["recommendation"] = "project2"
+            result["recommendation_name"] = self.project2_name
+        else:
+            result["recommendation"] = "equal"
+            result["recommendation_name"] = "Оба проекта равнозначны"
+
+        # Уровень уверенности
+        if score_diff >= 60:
+            result["confidence"] = "high"
+        elif score_diff >= 30:
+            result["confidence"] = "medium"
+        else:
+            result["confidence"] = "low"
+
+        result["scores"] = {
+            "project1_score": p1_score,
+            "project2_score": p2_score,
+            "difference": score_diff
+        }
+        result["reasoning"] = reasoning
+
+        logger.info("version_assessment_complete",
+                   recommendation=result["recommendation"],
+                   confidence=result["confidence"],
+                   p1_score=p1_score,
+                   p2_score=p2_score)
+
+        return result
+
+    def print_version_assessment(self, assessment: Dict[str, Any]):
+        """
+        Выводит результаты оценки версии в читаемом формате.
+
+        Args:
+            assessment: Результаты оценки версии
+        """
+        print("\n" + "=" * 70)
+        print(f"Оценка версии: {self.project1_name} vs {self.project2_name}")
+        print("=" * 70)
+        print()
+
+        # Статистика по времени модификации
+        ts = assessment["file_timestamps"]
+        print("Анализ времени модификации файлов:")
+        print("-" * 70)
+        print(f"Пересекающихся файлов: {ts['overlapping_files_count']}")
+        print(f"Новее в {self.project1_name}: {ts['newer_in_project1']}")
+        print(f"Новее в {self.project2_name}: {ts['newer_in_project2']}")
+        print(f"Одинаковое время: {ts['identical_timestamp']}")
+        print()
+
+        # Полнота файлов
+        fc = assessment["file_completeness"]
+        print("Анализ полноты файлов:")
+        print("-" * 70)
+        print(f"Всего файлов в {self.project1_name}: {fc['total_files_project1']}")
+        print(f"Всего файлов в {self.project2_name}: {fc['total_files_project2']}")
+        print(f"Уникальных для {self.project1_name}: {fc['unique_files_project1']}")
+        print(f"Уникальных для {self.project2_name}: {fc['unique_files_project2']}")
+        print()
+
+        # Зависимости
+        df = assessment["dependency_freshness"]
+        print("Анализ зависимостей:")
+        print("-" * 70)
+        if df["python"]["unique_to_project1"] or df["python"]["unique_to_project2"]:
+            print(f"Python - уникальные для {self.project1_name}: {df['python']['unique_to_project1']}")
+            print(f"Python - уникальные для {self.project2_name}: {df['python']['unique_to_project2']}")
+            print(f"Python - конфликтов: {df['python']['conflicts']}")
+        if df["node"]["unique_to_project1"] or df["node"]["unique_to_project2"]:
+            print(f"Node.js - уникальные для {self.project1_name}: {df['node']['unique_to_project1']}")
+            print(f"Node.js - уникальные для {self.project2_name}: {df['node']['unique_to_project2']}")
+            print(f"Node.js - конфликтов: {df['node']['conflicts']}")
+        print()
+
+        # Рекомендация
+        print("РЕКОМЕНДАЦИЯ:")
+        print("=" * 70)
+        scores = assessment["scores"]
+        print(f"Оценка {self.project1_name}: {scores['project1_score']}/100")
+        print(f"Оценка {self.project2_name}: {scores['project2_score']}/100")
+        print()
+
+        confidence_labels = {
+            "high": "Высокая",
+            "medium": "Средняя",
+            "low": "Низкая"
+        }
+        confidence_str = confidence_labels.get(assessment["confidence"], assessment["confidence"])
+
+        if assessment["recommendation"] == "equal":
+            print(f"Результат: Проекты равнозначны (уверенность: {confidence_str})")
+            print("Рекомендуется ручной анализ для выбора базового проекта")
+        else:
+            rec_name = assessment["recommendation_name"]
+            print(f"Рекомендуется использовать {rec_name} как базу для слияния")
+            print(f"Уверенность: {confidence_str}")
+
+        print()
+        print("Обоснование:")
+        for reason in assessment["reasoning"]:
+            print(f"  - {reason}")
+
+        print()
+        print("=" * 70)
+
     def print_dependency_analysis(self, analysis: Dict[str, Any]):
         """
         Выводит результаты анализа зависимостей в читаемом формате.
@@ -670,7 +918,7 @@ def main():
     parser = argparse.ArgumentParser(description="Сравнение двух проектов")
     parser.add_argument(
         "--mode",
-        choices=["discovery", "categorize", "full", "diff", "dependencies"],
+        choices=["discovery", "categorize", "full", "diff", "dependencies", "assess"],
         default="full",
         help="Режим работы"
     )
@@ -728,6 +976,11 @@ def main():
     if args.mode == "dependencies":
         analysis = comparator.analyze_all_dependencies()
         comparator.print_dependency_analysis(analysis)
+        return
+
+    if args.mode == "assess":
+        assessment = comparator.assess_version()
+        comparator.print_version_assessment(assessment)
         return
 
     if args.mode in ["discovery", "full"]:
