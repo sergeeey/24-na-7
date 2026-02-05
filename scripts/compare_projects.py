@@ -1103,21 +1103,352 @@ class ProjectComparator:
             lines.append("*Нет уникальных файлов*")
             lines.append("")
 
-        # Заключение
+        # Стратегия слияния
         lines.append("---")
         lines.append("")
-        lines.append("## Следующие шаги")
-        lines.append("")
-        lines.append("1. Выбрать базовый проект согласно рекомендации")
-        lines.append("2. Разрешить конфликты зависимостей")
-        lines.append("3. Перенести уникальные файлы из другого проекта")
-        lines.append("4. Провести ручной анализ пересекающихся файлов с различиями")
-        lines.append("5. Выполнить тестирование объединенного проекта")
-        lines.append("")
+        merge_strategy_lines = self.generate_merge_strategy(version_assessment, dependency_analysis)
+        lines.extend(merge_strategy_lines)
 
         report = "\n".join(lines)
         logger.info("markdown_report_generated", size=len(report))
         return report
+
+    def generate_merge_strategy(self, version_assessment: Dict[str, Any],
+                               dependency_analysis: Dict[str, Any]) -> List[str]:
+        """
+        Генерирует подробную стратегию слияния проектов.
+
+        Args:
+            version_assessment: Результаты оценки версий
+            dependency_analysis: Результаты анализа зависимостей
+
+        Returns:
+            Список строк markdown с рекомендациями по слиянию
+        """
+        logger.info("generating_merge_strategy")
+
+        lines = []
+        lines.append("## Стратегия слияния")
+        lines.append("")
+
+        # Определяем направление слияния
+        recommendation = version_assessment.get("recommendation")
+        confidence = version_assessment.get("confidence", "unknown")
+
+        if recommendation == "project1":
+            base_project = self.project1_name
+            merge_from = self.project2_name
+            base_path = self.project1_path
+            merge_path = self.project2_path
+            unique_in_base = len(self.unique_to_project1)
+            unique_to_merge = len(self.unique_to_project2)
+        elif recommendation == "project2":
+            base_project = self.project2_name
+            merge_from = self.project1_name
+            base_path = self.project2_path
+            merge_path = self.project1_path
+            unique_in_base = len(self.unique_to_project2)
+            unique_to_merge = len(self.unique_to_project1)
+        else:
+            # Если проекты равнозначны, выбираем более полный
+            if len(self.unique_to_project2) >= len(self.unique_to_project1):
+                base_project = self.project2_name
+                merge_from = self.project1_name
+                base_path = self.project2_path
+                merge_path = self.project1_path
+                unique_in_base = len(self.unique_to_project2)
+                unique_to_merge = len(self.unique_to_project1)
+            else:
+                base_project = self.project1_name
+                merge_from = self.project2_name
+                base_path = self.project1_path
+                merge_path = self.project2_path
+                unique_in_base = len(self.unique_to_project1)
+                unique_to_merge = len(self.unique_to_project2)
+
+        lines.append("### Рекомендуемое направление слияния")
+        lines.append("")
+        lines.append(f"**База (целевой проект):** `{base_project}`")
+        lines.append(f"**Источник (откуда переносим):** `{merge_from}`")
+        lines.append("")
+        lines.append(f"*Обоснование:* Проект `{base_project}` выбран как база для слияния "
+                    f"на основе анализа времени модификации файлов, полноты реализации и версий зависимостей.")
+        lines.append("")
+
+        # Пошаговый план слияния
+        lines.append("### Пошаговый план слияния")
+        lines.append("")
+
+        step = 1
+
+        # Шаг: Резервное копирование
+        lines.append(f"#### Шаг {step}: Резервное копирование")
+        step += 1
+        lines.append("")
+        lines.append("**Важно:** Создайте резервные копии обоих проектов перед началом слияния.")
+        lines.append("")
+        lines.append("```bash")
+        lines.append(f"# Создайте резервную копию базового проекта")
+        lines.append(f"cp -r \"{base_path}\" \"{base_path}.backup\"")
+        lines.append("")
+        lines.append(f"# Создайте резервную копию исходного проекта")
+        lines.append(f"cp -r \"{merge_path}\" \"{merge_path}.backup\"")
+        lines.append("```")
+        lines.append("")
+
+        # Шаг: Инициализация Git (если не инициализирован)
+        lines.append(f"#### Шаг {step}: Проверка системы контроля версий")
+        step += 1
+        lines.append("")
+        lines.append("Убедитесь, что базовый проект находится под контролем версий Git:")
+        lines.append("")
+        lines.append("```bash")
+        lines.append(f"cd \"{base_path}\"")
+        lines.append("git status")
+        lines.append("# Если репозиторий не инициализирован:")
+        lines.append("# git init")
+        lines.append("# git add .")
+        lines.append("# git commit -m \"Initial commit before merge\"")
+        lines.append("```")
+        lines.append("")
+
+        # Шаг: Разрешение конфликтов зависимостей
+        python_deps = dependency_analysis.get("python") or {}
+        node_deps = dependency_analysis.get("node") or {}
+        python_conflicts = python_deps.get("conflicts", [])
+        node_conflicts = node_deps.get("conflicts", [])
+
+        if python_conflicts or node_conflicts:
+            lines.append(f"#### Шаг {step}: Разрешение конфликтов зависимостей")
+            step += 1
+            lines.append("")
+            lines.append("Перед переносом файлов необходимо разрешить конфликты версий зависимостей:")
+            lines.append("")
+
+            if python_conflicts:
+                lines.append("**Python зависимости:**")
+                lines.append("")
+                lines.append("| Пакет | Версия в базе | Версия в источнике | Рекомендация |")
+                lines.append("|-------|---------------|-------------------|--------------|")
+                for dep in python_conflicts:
+                    pkg = dep['package']
+                    if recommendation == "project1":
+                        v_base = dep.get('version_project1') or 'any'
+                        v_merge = dep.get('version_project2') or 'any'
+                    else:
+                        v_base = dep.get('version_project2') or 'any'
+                        v_merge = dep.get('version_project1') or 'any'
+                    lines.append(f"| {pkg} | {v_base} | {v_merge} | Проверить совместимость, выбрать новейшую стабильную версию |")
+                lines.append("")
+
+            if node_conflicts:
+                lines.append("**Node.js зависимости:**")
+                lines.append("")
+                lines.append("| Пакет | Версия в базе | Версия в источнике | Рекомендация |")
+                lines.append("|-------|---------------|-------------------|--------------|")
+                for dep in node_conflicts:
+                    pkg = dep['package']
+                    if recommendation == "project1":
+                        v_base = dep.get('version_project1') or 'any'
+                        v_merge = dep.get('version_project2') or 'any'
+                    else:
+                        v_base = dep.get('version_project2') or 'any'
+                        v_merge = dep.get('version_project1') or 'any'
+                    lines.append(f"| {pkg} | {v_base} | {v_merge} | Проверить совместимость, выбрать новейшую стабильную версию |")
+                lines.append("")
+
+            lines.append("**Действия:**")
+            lines.append("1. Проанализируйте breaking changes между версиями")
+            lines.append("2. Обновите requirements.txt или package.json в базовом проекте")
+            lines.append("3. Установите обновленные зависимости и запустите тесты")
+            lines.append("")
+
+        # Шаг: Перенос уникальных файлов
+        if unique_to_merge > 0:
+            lines.append(f"#### Шаг {step}: Перенос уникальных файлов из {merge_from}")
+            step += 1
+            lines.append("")
+            lines.append(f"В проекте `{merge_from}` найдено {unique_to_merge} уникальных файлов, "
+                        f"которых нет в `{base_project}`. Эти файлы необходимо перенести:")
+            lines.append("")
+            lines.append("**Рекомендуемый подход:**")
+            lines.append("")
+            lines.append("1. **Автоматический перенос** (для файлов с низким риском):")
+            lines.append("```bash")
+            lines.append(f"# Перенести все уникальные файлы, сохраняя структуру директорий")
+            lines.append(f"rsync -av --relative \\")
+            lines.append(f"  --files-from=<(список_уникальных_файлов) \\")
+            lines.append(f"  \"{merge_path}/\" \"{base_path}/\"")
+            lines.append("```")
+            lines.append("")
+            lines.append("2. **Ручной анализ** (рекомендуется для конфигурационных файлов):")
+            lines.append("   - `.env` файлы - объедините настройки вручную")
+            lines.append("   - Конфигурации баз данных")
+            lines.append("   - Файлы с секретами и ключами")
+            lines.append("")
+
+        # Шаг: Анализ пересекающихся файлов
+        overlapping_count = len(self.overlapping_files)
+        if overlapping_count > 0:
+            lines.append(f"#### Шаг {step}: Обработка пересекающихся файлов")
+            step += 1
+            lines.append("")
+            lines.append(f"Обнаружено {overlapping_count} пересекающихся файлов. "
+                        f"Необходимо определить стратегию для каждого:")
+            lines.append("")
+            lines.append("**Категории файлов:**")
+            lines.append("")
+            lines.append("1. **Идентичные файлы** - никаких действий не требуется")
+            lines.append("2. **Файлы с различиями** - требуется анализ:")
+            lines.append("   - Используйте `git diff` или инструменты сравнения")
+            lines.append("   - Для кода: объедините улучшения из обоих проектов")
+            lines.append("   - Для конфигов: выберите наиболее полную версию")
+            lines.append("")
+            lines.append("**Команда для анализа:**")
+            lines.append("```bash")
+            lines.append(f"# Сравнить конкретный файл")
+            lines.append(f"diff -u \"{base_path}/путь/к/файлу\" \"{merge_path}/путь/к/файлу\"")
+            lines.append("")
+            lines.append("# Или использовать графический инструмент")
+            lines.append(f"meld \"{base_path}\" \"{merge_path}\"")
+            lines.append("```")
+            lines.append("")
+
+        # Шаг: Обновление зависимостей
+        lines.append(f"#### Шаг {step}: Объединение зависимостей")
+        step += 1
+        lines.append("")
+
+        python_unique = (python_deps.get("unique_to_project1", [])
+                        if recommendation == "project2"
+                        else python_deps.get("unique_to_project2", []))
+        node_unique = (node_deps.get("unique_to_project1", [])
+                      if recommendation == "project2"
+                      else node_deps.get("unique_to_project2", []))
+
+        if python_unique or node_unique:
+            lines.append(f"Добавьте уникальные зависимости из `{merge_from}` в базовый проект:")
+            lines.append("")
+
+            if python_unique:
+                lines.append("**Python зависимости для добавления:**")
+                lines.append("```")
+                for dep in python_unique[:10]:
+                    version = dep.get('version') or ''
+                    lines.append(f"{dep['package']}{version}")
+                if len(python_unique) > 10:
+                    lines.append(f"# ...и ещё {len(python_unique) - 10} пакетов")
+                lines.append("```")
+                lines.append("")
+
+            if node_unique:
+                lines.append("**Node.js зависимости для добавления:**")
+                lines.append("```bash")
+                for dep in node_unique[:10]:
+                    lines.append(f"npm install {dep['package']}@{dep.get('version', 'latest')}")
+                if len(node_unique) > 10:
+                    lines.append(f"# ...и ещё {len(node_unique) - 10} пакетов")
+                lines.append("```")
+                lines.append("")
+        else:
+            lines.append("Все необходимые зависимости уже присутствуют в базовом проекте.")
+            lines.append("")
+
+        # Шаг: Тестирование
+        lines.append(f"#### Шаг {step}: Тестирование объединенного проекта")
+        step += 1
+        lines.append("")
+        lines.append("После завершения слияния проведите всестороннее тестирование:")
+        lines.append("")
+        lines.append("```bash")
+        lines.append("# Установите/обновите зависимости")
+        if python_deps:
+            lines.append("pip install -r requirements.txt")
+        if node_deps:
+            lines.append("npm install")
+        lines.append("")
+        lines.append("# Запустите тесты")
+        lines.append("pytest  # для Python")
+        lines.append("npm test  # для Node.js")
+        lines.append("")
+        lines.append("# Запустите приложение")
+        lines.append("# Проверьте основные функции вручную")
+        lines.append("```")
+        lines.append("")
+
+        # Шаг: Фиксация изменений
+        lines.append(f"#### Шаг {step}: Фиксация результата слияния")
+        step += 1
+        lines.append("")
+        lines.append("После успешного тестирования зафиксируйте результаты:")
+        lines.append("")
+        lines.append("```bash")
+        lines.append("git add .")
+        lines.append(f"git commit -m \"Merge {merge_from} into {base_project}\"")
+        lines.append("```")
+        lines.append("")
+
+        # Оценка рисков
+        lines.append("### Оценка рисков")
+        lines.append("")
+
+        risks = []
+        mitigations = []
+
+        if confidence == "low":
+            risks.append("**Низкая уверенность в рекомендации** - проекты могут быть равнозначны или данных недостаточно")
+            mitigations.append("Проведите дополнительный ручной анализ перед принятием решения")
+
+        if python_conflicts or node_conflicts:
+            conflict_count = len(python_conflicts) + len(node_conflicts)
+            risks.append(f"**Конфликты зависимостей** - обнаружено {conflict_count} конфликтующих версий пакетов")
+            mitigations.append("Тщательно тестируйте после обновления зависимостей, проверьте breaking changes")
+
+        if overlapping_count > 5:
+            risks.append(f"**Большое количество пересекающихся файлов** - {overlapping_count} файлов требуют анализа")
+            mitigations.append("Используйте инструменты трёхстороннего слияния (3-way merge), анализируйте изменения порциями")
+
+        if unique_to_merge > 50:
+            risks.append(f"**Большое количество уникальных файлов** - {unique_to_merge} файлов для переноса")
+            mitigations.append("Переносите файлы категориями (по директориям/типам), тестируйте после каждой категории")
+
+        if not risks:
+            risks.append("**Риски минимальны** - структура проектов позволяет относительно безопасное слияние")
+            mitigations.append("Следуйте стандартным процедурам тестирования после слияния")
+
+        lines.append("#### Выявленные риски:")
+        lines.append("")
+        for risk in risks:
+            lines.append(f"- {risk}")
+        lines.append("")
+
+        lines.append("#### Меры по снижению рисков:")
+        lines.append("")
+        for i, mitigation in enumerate(mitigations, 1):
+            lines.append(f"{i}. {mitigation}")
+        lines.append("")
+
+        # Рекомендации по приоритетам
+        lines.append("### Рекомендации по приоритетам")
+        lines.append("")
+        lines.append("**Высокий приоритет:**")
+        lines.append("1. Резервное копирование обоих проектов")
+        lines.append("2. Разрешение конфликтов зависимостей")
+        lines.append("3. Перенос критичных конфигурационных файлов")
+        lines.append("")
+        lines.append("**Средний приоритет:**")
+        lines.append("4. Перенос уникальных файлов кода")
+        lines.append("5. Анализ и слияние пересекающихся файлов")
+        lines.append("")
+        lines.append("**Низкий приоритет:**")
+        lines.append("6. Обновление документации")
+        lines.append("7. Очистка устаревших файлов")
+        lines.append("8. Оптимизация структуры директорий")
+        lines.append("")
+
+        logger.info("merge_strategy_generated", steps=step-1, risks=len(risks))
+
+        return lines
 
     def save_markdown_report(self, output_path: Path):
         """
