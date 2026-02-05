@@ -5,8 +5,9 @@
 уникальных файлов и формирования рекомендаций по слиянию.
 """
 import sys
+import difflib
 from pathlib import Path
-from typing import List, Set, Dict, Any
+from typing import List, Set, Dict, Any, Tuple
 from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -201,6 +202,79 @@ class ProjectComparator:
                    unique_to_project2=len(self.unique_to_project2),
                    overlapping=len(self.overlapping_files))
 
+    def compare_file_content(self, relative_path: str) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Сравнивает содержимое файла в обоих проектах используя difflib.
+
+        Args:
+            relative_path: Относительный путь к файлу от корня проектов
+
+        Returns:
+            (success, result_dict) где result_dict содержит статистику различий
+        """
+        file1 = self.project1_path / relative_path
+        file2 = self.project2_path / relative_path
+
+        # Проверяем существование файлов
+        if not file1.exists():
+            logger.error("file_not_found", project=self.project1_name, file=relative_path)
+            return False, {"error": f"File not found in {self.project1_name}"}
+
+        if not file2.exists():
+            logger.error("file_not_found", project=self.project2_name, file=relative_path)
+            return False, {"error": f"File not found in {self.project2_name}"}
+
+        try:
+            # Читаем содержимое файлов
+            with open(file1, 'r', encoding='utf-8') as f:
+                lines1 = f.readlines()
+
+            with open(file2, 'r', encoding='utf-8') as f:
+                lines2 = f.readlines()
+
+            # Используем difflib для сравнения
+            diff = difflib.unified_diff(
+                lines1,
+                lines2,
+                fromfile=f"{self.project1_name}/{relative_path}",
+                tofile=f"{self.project2_name}/{relative_path}",
+                lineterm=''
+            )
+
+            diff_lines = list(diff)
+
+            # Подсчитываем статистику
+            additions = sum(1 for line in diff_lines if line.startswith('+') and not line.startswith('+++'))
+            deletions = sum(1 for line in diff_lines if line.startswith('-') and not line.startswith('---'))
+
+            result = {
+                "file": relative_path,
+                "project1": str(file1),
+                "project2": str(file2),
+                "identical": len(diff_lines) == 0,
+                "lines_project1": len(lines1),
+                "lines_project2": len(lines2),
+                "additions": additions,
+                "deletions": deletions,
+                "total_changes": additions + deletions,
+                "diff_lines": diff_lines if len(diff_lines) > 0 else []
+            }
+
+            logger.info("file_compared",
+                       file=relative_path,
+                       identical=result["identical"],
+                       additions=additions,
+                       deletions=deletions)
+
+            return True, result
+
+        except UnicodeDecodeError:
+            logger.warning("binary_file_skip", file=relative_path)
+            return False, {"error": "Binary file or encoding issue"}
+        except Exception as e:
+            logger.error("comparison_error", file=relative_path, error=str(e))
+            return False, {"error": str(e)}
+
     def print_summary(self):
         """Выводит краткую сводку результатов."""
         summary = self.results["summary"]
@@ -226,7 +300,7 @@ def main():
     parser = argparse.ArgumentParser(description="Сравнение двух проектов")
     parser.add_argument(
         "--mode",
-        choices=["discovery", "categorize", "full"],
+        choices=["discovery", "categorize", "full", "diff"],
         default="full",
         help="Режим работы"
     )
@@ -240,10 +314,46 @@ def main():
         default=r"D:\24 na 7",
         help="Путь ко второму проекту"
     )
+    parser.add_argument(
+        "--sample",
+        help="Относительный путь к файлу для сравнения (используется с --mode=diff)"
+    )
 
     args = parser.parse_args()
 
     comparator = ProjectComparator(args.project1, args.project2)
+
+    if args.mode == "diff":
+        if not args.sample:
+            logger.error("sample_required", message="--sample argument required for diff mode")
+            print("Error: --sample argument is required for diff mode")
+            return
+
+        success, result = comparator.compare_file_content(args.sample)
+
+        if not success:
+            logger.error("diff_failed", error=result.get("error"))
+            print(f"Error: {result.get('error')}")
+            return
+
+        # Выводим статистику
+        print("\n" + "=" * 70)
+        print(f"Diff statistics for: {result['file']}")
+        print("=" * 70)
+        print(f"Project 1: {result['project1']}")
+        print(f"Project 2: {result['project2']}")
+        print()
+        print(f"Lines in project 1: {result['lines_project1']}")
+        print(f"Lines in project 2: {result['lines_project2']}")
+        print()
+        print(f"Identical: {result['identical']}")
+        if not result['identical']:
+            print(f"Additions: {result['additions']}")
+            print(f"Deletions: {result['deletions']}")
+            print(f"Total changes: {result['total_changes']}")
+        print("=" * 70)
+
+        return
 
     if args.mode in ["discovery", "full"]:
         comparator.discover_projects()
