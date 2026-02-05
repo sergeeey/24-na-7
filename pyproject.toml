@@ -1,0 +1,59 @@
+[project]
+name = "reflexio"
+version = "0.1.0"
+description = "Reflexio 24/7 — умный диктофон и дневной анализатор"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.29.0",
+    "python-dotenv>=1.0.0",
+    "structlog>=23.2.0",
+    "webrtcvad>=2.0.10",
+    "sounddevice>=0.4.6",
+    "numpy>=1.26.0",
+    "faster-whisper>=0.10.0",
+    "requests>=2.31.0",
+    "librosa>=0.10.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "slowapi>=0.1.9",
+    "redis>=5.0.0",
+    "hvac>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-json-report>=1.5.0",
+    "ruff>=0.2.0",
+    "mypy>=1.9",
+    "black>=24.3.0",
+    "coverage>=7.3",
+]
+
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = "--json-report --json-report-file=tests/.report.json --json-report-summary"
+

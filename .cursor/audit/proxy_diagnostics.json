@@ -1,0 +1,28 @@
+{
+  "timestamp": "2025-11-03T17:00:19.779355+00:00",
+  "proxy_http": "https://brd-customer-hl_16abad82-zone-tttt:46ju8s7...",
+  "proxy_ws": null,
+  "checks": {
+    "connectivity": {
+      "status": "error",
+      "error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    },
+    "geolocation": {
+      "status": "error",
+      "error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    },
+    "speed": {
+      "status": "error",
+      "error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    },
+    "js_rendering": {
+      "status": "error",
+      "error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    }
+  },
+  "summary": {
+    "overall_status": "unhealthy",
+    "checks_passed": 0,
+    "checks_failed": 4
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "zones": {
+    "serp_api1": {
+      "name": "SERP API Zone 1",
+      "type": "serp",
+      "engines": ["google", "bing", "yahoo"],
+      "priority": 1,
+      "rotation_enabled": true,
+      "description": "Основная зона для SERP запросов"
+    },
+    "news": {
+      "name": "News Zone",
+      "type": "content",
+      "engines": [],
+      "priority": 2,
+      "rotation_enabled": true,
+      "description": "Зона для новостных сайтов"
+    },
+    "academic": {
+      "name": "Academic Zone",
+      "type": "content",
+      "engines": [],
+      "priority": 3,
+      "rotation_enabled": false,
+      "description": "Зона для академических источников"
+    }
+  },
+  "rotation": {
+    "enabled": true,
+    "method": "round_robin",
+    "description": "Метод ротации: round_robin, least_used, random"
+  },
+  "auto_rotation": {
+    "enabled": true,
+    "interval_requests": 10,
+    "description": "Автоматическая ротация после N запросов"
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

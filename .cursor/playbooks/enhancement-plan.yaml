@@ -1,0 +1,158 @@
+name: enhancement-plan
+version: 1.0
+description: >
+  План улучшений Reflexio 24/7 (R-E1 Features).
+  Активирует расширенные возможности через feature-флаги в .env:
+  - Автокалибровка VAD (R-E1.1)
+  - Очередь обработки (R-E1.2)
+  - Privacy-фильтр PII (R-E1.3)
+  - Автоматическая транскрипция (R-E1.4)
+  - Ночные триггеры (R-E1.5)
+
+parameters:
+  enable_autocalibration: false
+  enable_queue: false
+  enable_privacy_filter: false
+  enable_auto_transcribe: false
+  enable_night_triggers: false
+
+steps:
+  # ------------------------------------------------------------
+  - name: Backup Current .env
+    shell: bash
+    run: |
+      set -e
+      if [ -f .env ]; then
+        cp .env .env.backup.$(date +%Y%m%d_%H%M%S)
+        echo "[enhancement] ✅ .env backed up"
+      fi
+
+  # ------------------------------------------------------------
+  - name: Enable Autocalibration (R-E1.1)
+    shell: bash
+    when: "{{ enable_autocalibration }}" == "true"
+    run: |
+      set -e
+      if ! grep -q "VAD_AUTOCALIBRATE" .env 2>/dev/null; then
+        echo "" >> .env
+        echo "# R-E1.1: VAD Autocalibration" >> .env
+        echo "VAD_AUTOCALIBRATE=true" >> .env
+        echo "VAD_CALIBRATION_DURATION=5.0" >> .env
+      else
+        sed -i 's/VAD_AUTOCALIBRATE=.*/VAD_AUTOCALIBRATE=true/' .env
+      fi
+      echo "[enhancement] ✅ R-E1.1: Autocalibration enabled"
+
+  # ------------------------------------------------------------
+  - name: Enable Queue System (R-E1.2)
+    shell: bash
+    when: "{{ enable_queue }}" == "true"
+    run: |
+      set -e
+      if ! grep -q "QUEUE_ENABLED" .env 2>/dev/null; then
+        echo "" >> .env
+        echo "# R-E1.2: Processing Queue" >> .env
+        echo "QUEUE_ENABLED=true" >> .env
+        echo "QUEUE_MAX_WORKERS=2" >> .env
+        echo "QUEUE_RETRY_ATTEMPTS=3" >> .env
+      else
+        sed -i 's/QUEUE_ENABLED=.*/QUEUE_ENABLED=true/' .env
+      fi
+      echo "[enhancement] ✅ R-E1.2: Queue system enabled"
+
+  # ------------------------------------------------------------
+  - name: Enable Privacy Filter (R-E1.3)
+    shell: bash
+    when: "{{ enable_privacy_filter }}" == "true"
+    run: |
+      set -e
+      if ! grep -q "PII_FILTER_ENABLED" .env 2>/dev/null; then
+        echo "" >> .env
+        echo "# R-E1.3: PII Privacy Filter" >> .env
+        echo "PII_FILTER_ENABLED=true" >> .env
+        echo "PII_MASK_EMAILS=true" >> .env
+        echo "PII_MASK_PHONES=true" >> .env
+        echo "PII_MASK_NAMES=false" >> .env
+      else
+        sed -i 's/PII_FILTER_ENABLED=.*/PII_FILTER_ENABLED=true/' .env
+      fi
+      echo "[enhancement] ✅ R-E1.3: Privacy filter enabled"
+
+  # ------------------------------------------------------------
+  - name: Enable Auto Transcription (R-E1.4)
+    shell: bash
+    when: "{{ enable_auto_transcribe }}" == "true"
+    run: |
+      set -e
+      if ! grep -q "AUTO_TRANSCRIBE" .env 2>/dev/null; then
+        echo "" >> .env
+        echo "# R-E1.4: Auto Transcription" >> .env
+        echo "AUTO_TRANSCRIBE=true" >> .env
+        echo "AUTO_TRANSCRIBE_DELAY=0" >> .env
+      else
+        sed -i 's/AUTO_TRANSCRIBE=.*/AUTO_TRANSCRIBE=true/' .env
+      fi
+      echo "[enhancement] ✅ R-E1.4: Auto transcription enabled"
+
+  # ------------------------------------------------------------
+  - name: Enable Night Triggers (R-E1.5)
+    shell: bash
+    when: "{{ enable_night_triggers }}" == "true"
+    run: |
+      set -e
+      if ! grep -q "NIGHT_TRIGGERS_ENABLED" .env 2>/dev/null; then
+        echo "" >> .env
+        echo "# R-E1.5: Night Triggers (Digest & Check-in)" >> .env
+        echo "NIGHT_TRIGGERS_ENABLED=true" >> .env
+        echo "DIGEST_TIME=22:50" >> .env
+        echo "CHECKIN_TIME=23:10" >> .env
+        echo "TELEGRAM_BOT_TOKEN=" >> .env
+      else
+        sed -i 's/NIGHT_TRIGGERS_ENABLED=.*/NIGHT_TRIGGERS_ENABLED=true/' .env
+      fi
+      echo "[enhancement] ✅ R-E1.5: Night triggers enabled"
+
+  # ------------------------------------------------------------
+  - name: Generate Enhancement Summary
+    shell: bash
+    run: |
+      echo "────────── Reflexio Enhancement Plan Summary ──────────"
+      echo ""
+      echo "Feature Flags Status:"
+      {{#enable_autocalibration}}
+      echo "  ✅ R-E1.1: VAD Autocalibration"
+      {{/enable_autocalibration}}
+      {{#enable_queue}}
+      echo "  ✅ R-E1.2: Processing Queue"
+      {{/enable_queue}}
+      {{#enable_privacy_filter}}
+      echo "  ✅ R-E1.3: PII Privacy Filter"
+      {{/enable_privacy_filter}}
+      {{#enable_auto_transcribe}}
+      echo "  ✅ R-E1.4: Auto Transcription"
+      {{/enable_auto_transcribe}}
+      {{#enable_night_triggers}}
+      echo "  ✅ R-E1.5: Night Triggers"
+      {{/enable_night_triggers}}
+      echo ""
+      echo "Configuration updated in .env"
+      echo "Backup saved to .env.backup.*"
+      echo ""
+      echo "Next steps:"
+      echo "  1. Review .env and adjust settings"
+      echo "  2. Restart API server if running"
+      echo "  3. Run: @playbook build-reflexio"
+      echo "──────────────────────────────────────────────────────"
+
+
+
+
+
+
+
+
+
+
+
+
+

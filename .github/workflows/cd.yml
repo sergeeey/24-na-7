@@ -1,0 +1,41 @@
+name: CD
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build and push Docker images
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        echo "Building Docker images for main branch"
+        docker build -f Dockerfile.api -t reflexio-api:latest .
+        docker build -f Dockerfile.worker -t reflexio-worker:latest .
+      continue-on-error: true
+    
+    - name: Tag release
+      if: startsWith(github.ref, 'refs/tags/v')
+      run: |
+        TAG=${GITHUB_REF#refs/tags/}
+        echo "Tagging release: $TAG"
+        docker build -f Dockerfile.api -t reflexio-api:$TAG .
+        docker build -f Dockerfile.worker -t reflexio-worker:$TAG .
+      continue-on-error: true
+    
+    - name: Deployment notification
+      if: always()
+      run: |
+        echo "Deployment completed (or attempted)"
+        # Здесь можно добавить уведомления (Slack, Telegram, etc.)

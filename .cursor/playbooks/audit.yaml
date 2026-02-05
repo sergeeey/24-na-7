@@ -1,0 +1,23 @@
+name: CEB-E Audit Playbook
+version: 1.0
+description: >
+  Эталонный аудит проекта по стандарту Cursor Enhancement Blueprint Evaluation v1.0.
+  Проверяет все 9 компонентов CEB-E: Rules, Memory, MCP, Hooks, Validation, 
+  Observability, Governance, Playbooks, Multi-Agent. Генерирует полный отчёт с оценкой зрелости.
+
+steps:
+  - name: Run CEB-E Standard Audit
+    run: python .cursor/audit/run_audit.py --mode standard
+
+  - name: Check Methodology Compliance
+    shell: bash
+    run: |
+      echo "[audit] Проверка методологического соответствия..."
+      python scripts/check_methodology_integrity.py || echo "[audit] ⚠️  Methodology check completed with warnings"
+
+  - name: Generate Markdown Report
+    run: python .cursor/audit/generate_report.py --template .cursor/audit/audit_report_template.md
+
+  - name: Apply Governance Loop
+    run: python .cursor/metrics/governance_loop.py --apply results
+

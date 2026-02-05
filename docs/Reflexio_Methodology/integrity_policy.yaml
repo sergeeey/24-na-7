@@ -1,0 +1,172 @@
+policy_name: "Methodology Compliance Ruleset"
+version: 1.0
+effective_date: "2025-11-03"
+description: >
+  Правила соответствия методологии Predictive Analytics Foundation.
+  Определяет обязательные, рекомендуемые и опциональные требования.
+
+rules:
+  # ============================================================
+  # ОБЯЗАТЕЛЬНЫЕ ТРЕБОВАНИЯ (Required)
+  # ============================================================
+  
+  - id: M1
+    name: "DeepConf Bayesian UQ"
+    description: "DeepConf Confidence Calibration должен использовать Bayesian Uncertainty Quantification"
+    module: "src/osint/deepconf.py"
+    compliance_level: "required"
+    status: "active"
+    validation:
+      method: "code_inspection"
+      check: "isotonic_regression_used OR bayesian_calibration_implemented"
+      threshold: 1.0
+    
+  - id: M2
+    name: "Memory Bank DQ Metrics"
+    description: "Memory Bank должен включать DQ-метрики (Accuracy, Completeness, Timeliness)"
+    module: "src/osint/memory_curator.py"
+    compliance_level: "required"
+    status: "active"
+    validation:
+      method: "runtime_check"
+      check: "dq_metrics_present_in_memory_bank"
+      threshold: 1.0
+    
+  - id: M3
+    name: "Source Attribution"
+    description: "Все утверждения должны содержать source_urls для RAG"
+    module: "src/osint/schemas.py"
+    compliance_level: "required"
+    status: "active"
+    validation:
+      method: "schema_validation"
+      check: "Claim.source_urls NOT empty"
+      threshold: 1.0
+    
+  - id: M4
+    name: "Governance Methodology Check"
+    description: "Governance Loop должен проверять methodology_compliance"
+    module: ".cursor/metrics/governance_loop.py"
+    compliance_level: "required"
+    status: "active"
+    validation:
+      method: "code_inspection"
+      check: "methodology_compliance_check_present"
+      threshold: 1.0
+  
+  # ============================================================
+  # РЕКОМЕНДУЕМЫЕ ТРЕБОВАНИЯ (Recommended)
+  # ============================================================
+  
+  - id: M5
+    name: "RAG Layer Activation"
+    description: "RAG-слой должен быть активирован в OSINT Collector"
+    module: "src/osint/collector.py"
+    compliance_level: "recommended"
+    status: "active"
+    validation:
+      method: "runtime_check"
+      check: "rag_context_selection_implemented"
+      threshold: 0.8
+    
+  - id: M6
+    name: "Adaptive Mission Scoring"
+    description: "Система оценки миссий должна использовать формулу mean(confidence) * log(validated_claims + 1)"
+    module: "src/osint/adaptive_scoring.py"
+    compliance_level: "recommended"
+    status: "active"
+    validation:
+      method: "code_inspection"
+      check: "scoring_formula_matches_specification"
+      threshold: 0.9
+    
+  - id: M7
+    name: "Closed-Loop Learning"
+    description: "Система должна поддерживать обучение на обратной связи и автоматическую адаптацию"
+    module: "src/osint/deepconf_feedback.py"
+    compliance_level: "recommended"
+    status: "active"
+    validation:
+      method: "runtime_check"
+      check: "auto_regeneration_on_confidence_drop"
+      threshold: 0.7
+  
+  # ============================================================
+  # ОПЦИОНАЛЬНЫЕ ТРЕБОВАНИЯ (Optional)
+  # ============================================================
+  
+  - id: M8
+    name: "Explainability SHAP/LIME"
+    description: "Explainability должна быть реализована в Notion MCP через SHAP/LIME"
+    module: "notion_mcp"
+    compliance_level: "optional"
+    status: "planned"
+    validation:
+      method: "feature_check"
+      check: "shap_or_lime_integration_present"
+      threshold: 0.5
+    
+  - id: M9
+    name: "Bayesian Neural Networks"
+    description: "Интеграция BNN для оценки эпистемической неопределённости"
+    module: "src/osint/deepconf.py"
+    compliance_level: "optional"
+    status: "future"
+    validation:
+      method: "code_inspection"
+      check: "bnn_implementation_present"
+      threshold: 0.0
+    
+  - id: M10
+    name: "Automatic Explainability Reports"
+    description: "Автоматическая генерация explainability отчётов в markdown/JSON"
+    module: "src/osint/adaptive_scoring.py"
+    compliance_level: "optional"
+    status: "planned"
+    validation:
+      method: "feature_check"
+      check: "explainability_report_generation"
+      threshold: 0.3
+
+# ============================================================
+# ПОЛИТИКИ ПРОВЕРКИ
+# ============================================================
+
+enforcement:
+  mode: "audit"
+  auto_fix: false
+  notification_on_failure: true
+  
+compliance_levels:
+  required:
+    weight: 1.0
+    failure_action: "block"
+  recommended:
+    weight: 0.7
+    failure_action: "warn"
+  optional:
+    weight: 0.3
+    failure_action: "info"
+
+audit_schedule:
+  frequency: "monthly"
+  day_of_month: 1
+  auto_run: true
+
+reporting:
+  format: "markdown"
+  location: ".cursor/audit/methodology_compliance_report.md"
+  include_details: true
+
+
+
+
+
+
+
+
+
+
+
+
+

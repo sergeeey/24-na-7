@@ -1,0 +1,44 @@
+{
+  "timestamp": "2025-11-03T23:40:52.033338",
+  "python_env": {
+    "status": "error",
+    "env_file_exists": false,
+    "keys": {},
+    "issues": [
+      "Файл .env не найден в корне проекта"
+    ]
+  },
+  "mcp_config": {
+    "status": "warn",
+    "mcp_file_exists": true,
+    "servers": {
+      "brave": {
+        "exists": true,
+        "enabled": true,
+        "has_command": false,
+        "has_url": true,
+        "has_api_key_env": true
+      },
+      "brightdata": {
+        "exists": true,
+        "enabled": true,
+        "has_command": false,
+        "has_url": true,
+        "has_api_key_env": true
+      }
+    },
+    "issues": [],
+    "warnings": [
+      "⚠️  BRAVE_API_KEY не найдена в системных переменных окружения. MCP серверы Cursor НЕ читают .env проекта! Настройте в Cursor Settings → MCP или задайте системную переменную.",
+      "⚠️  BRIGHTDATA_API_KEY, BRIGHTDATA_PROXY_HTTP или BRIGHTDATA_PROXY_WS не найдены в системных переменных. MCP серверы Cursor НЕ читают .env проекта! Настройте в Cursor Settings → MCP или задайте системную переменную."
+    ]
+  },
+  "status": "error",
+  "issues": [
+    "Файл .env не найден в корне проекта"
+  ],
+  "warnings": [
+    "⚠️  BRAVE_API_KEY не найдена в системных переменных окружения. MCP серверы Cursor НЕ читают .env проекта! Настройте в Cursor Settings → MCP или задайте системную переменную.",
+    "⚠️  BRIGHTDATA_API_KEY, BRIGHTDATA_PROXY_HTTP или BRIGHTDATA_PROXY_WS не найдены в системных переменных. MCP серверы Cursor НЕ читают .env проекта! Настройте в Cursor Settings → MCP или задайте системную переменную."
+  ]
+}

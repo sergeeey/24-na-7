@@ -1,0 +1,58 @@
+{
+  "timestamp": "2025-11-03T23:27:22.236074",
+  "status": "failed",
+  "checks": {
+    "scheduler": {
+      "status": "warn",
+      "log_file": ".cursor\\logs\\scheduler.log",
+      "entries": [],
+      "note": "Log file not found (scheduler may not have run yet)"
+    },
+    "health_monitor": {
+      "status": "warn",
+      "api_health": {
+        "status": "fail",
+        "error": "HTTPConnectionPool(host='localhost', port=8000): Max retries exceeded with url: /health (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x000001E5F12606E0>: Failed to establish a new connection: [WinError 10061] Подключение не установлено, т.к. конечный компьютер отверг запрос на подключение'))"
+      },
+      "metrics": {
+        "status": "error",
+        "error": "no such table: metrics"
+      }
+    },
+    "governance_telemetry": {
+      "status": "error",
+      "metrics_in_supabase": {},
+      "error": "no such table: metrics"
+    },
+    "weekly_audit": {
+      "status": "ok",
+      "last_audit": {
+        "date": "2025-11-03",
+        "score": 82,
+        "level": 4
+      }
+    },
+    "hooks_reaction": {
+      "status": "ok",
+      "hooks_file": ".cursor\\hooks\\hooks.json",
+      "hooks_active": {
+        "on_low_confidence": {
+          "exists": true,
+          "enabled": true,
+          "action": "python src/osint/deepconf_feedback.py --trigger-auto-mission"
+        },
+        "on_audit_success": {
+          "exists": true,
+          "enabled": true,
+          "action": "@playbook level5-self-adaptive-upgrade"
+        },
+        "on_mcp_degraded": {
+          "exists": true,
+          "enabled": true,
+          "action": "@playbook proxy-diagnostics"
+        }
+      }
+    }
+  },
+  "all_passed": false
+}

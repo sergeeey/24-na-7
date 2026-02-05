@@ -1,0 +1,128 @@
+name: mcp-intelligence-probe
+version: 1.0
+description: >
+  Запуск разведки и извлечения данных через Brave Search и Bright Data.
+  Тестирует MCP Intelligence модуль и интегрирует результаты в Memory Bank.
+
+parameters:
+  - name: query
+    default: "latest AI regulation news"
+    description: "Поисковый запрос"
+  - name: max_results
+    default: 5
+    description: "Максимальное количество результатов"
+  - name: save_to_memory
+    default: true
+    description: "Сохранять результаты в Memory Bank"
+
+steps:
+  # ------------------------------------------------------------
+  - name: Validate MCP Configuration
+    shell: bash
+    run: |
+      set -e
+      echo "[mcp-intelligence] Проверка конфигурации MCP..."
+      
+      if [ -z "$BRAVE_API_KEY" ]; then
+        echo "⚠️  BRAVE_API_KEY не установлен в .env"
+      else
+        echo "✅ BRAVE_API_KEY найден"
+      fi
+      
+      if [ -z "$BRIGHTDATA_API_KEY" ]; then
+        echo "⚠️  BRIGHTDATA_API_KEY не установлен в .env"
+      else
+        echo "✅ BRIGHTDATA_API_KEY найден"
+      fi
+
+  # ------------------------------------------------------------
+  - name: Search and Scrape
+    shell: bash
+    run: |
+      set -e
+      echo "[mcp-intelligence] Выполнение поиска: {{ query }}"
+      
+      python -m src.mcp.intelligence "{{ query }}" \
+        --max-results {{ max_results }} \
+        {{ '--save' if save_to_memory else '' }} || {
+        echo "[mcp-intelligence] ⚠️ Поиск завершился с предупреждениями"
+      }
+
+  # ------------------------------------------------------------
+  - name: Validate MCP Health
+    shell: bash
+    run: |
+      set -e
+      echo "[mcp-intelligence] Проверка здоровья MCP-сервисов..."
+      @playbook validate-mcp
+
+  # ------------------------------------------------------------
+  - name: Update Metrics
+    shell: bash
+    run: |
+      set -e
+      echo "[mcp-intelligence] Обновление метрик..."
+      
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      from datetime import datetime, timezone
+      
+      # Обновляем cursor-metrics.json с MCP метриками
+      metrics_file = Path("cursor-metrics.json")
+      
+      if metrics_file.exists():
+          metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+      else:
+          metrics = {"metrics": {}}
+      
+      # Добавляем секцию MCP (заглушка, реальные метрики будут собираться через health check)
+      if "mcp" not in metrics["metrics"]:
+          metrics["metrics"]["mcp"] = {
+              "brave_latency_ms": None,
+              "brightdata_latency_ms": None,
+              "brave_success_rate": None,
+              "brightdata_success_rate": None,
+              "last_check": None,
+          }
+      
+      metrics["metrics"]["mcp"]["last_check"] = datetime.now(timezone.utc).isoformat()
+      metrics_file.write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+      print("[mcp-intelligence] ✅ Metrics updated")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Update Governance Profile
+    shell: bash
+    run: |
+      set -e
+      python .cursor/metrics/governance_loop.py --apply results || true
+
+  # ------------------------------------------------------------
+  - name: Summary
+    shell: bash
+    run: |
+      echo ""
+      echo "────────── MCP Intelligence Probe Complete ──────────"
+      echo ""
+      echo "Query: {{ query }}"
+      echo "Results: up to {{ max_results }}"
+      echo ""
+      echo "Check results in:"
+      echo "  - .cursor/memory/external_research.md"
+      echo "  - .cursor/metrics/mcp_health.json"
+      echo ""
+      echo "──────────────────────────────────────────────────────"
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,80 @@
+name: observability-setup
+version: 1.0
+description: >
+  Настройка observability: Prometheus, Grafana, алёрты.
+
+steps:
+  - name: Verify Prometheus config
+    shell: bash
+    run: |
+      echo "[observability-setup] Verifying Prometheus configuration..."
+      if [ ! -f "observability/prometheus.yml" ]; then
+        echo "❌ prometheus.yml not found"
+        exit 1
+      fi
+      echo "✅ Prometheus config found"
+
+  - name: Verify alert rules
+    shell: bash
+    run: |
+      echo "[observability-setup] Verifying alert rules..."
+      if [ ! -f "observability/alert_rules.yml" ]; then
+        echo "❌ alert_rules.yml not found"
+        exit 1
+      fi
+      echo "✅ Alert rules found"
+
+  - name: Verify Grafana dashboard
+    shell: bash
+    run: |
+      echo "[observability-setup] Verifying Grafana dashboard..."
+      if [ ! -f "observability/grafana_dashboards/reflexio.json" ]; then
+        echo "❌ Grafana dashboard not found"
+        exit 1
+      fi
+      echo "✅ Grafana dashboard found"
+
+  - name: Test metrics endpoint
+    shell: bash
+    run: |
+      echo "[observability-setup] Testing /metrics endpoint..."
+      python - <<'PYCODE'
+      import requests
+      import sys
+      
+      try:
+          response = requests.get("http://localhost:8000/metrics", timeout=5)
+          if response.status_code == 200:
+              print("✅ Metrics endpoint accessible")
+              # Проверяем Prometheus формат
+              if "reflexio_health" in response.text:
+                  print("✅ Prometheus format detected")
+              else:
+                  print("⚠️  Prometheus format not detected")
+          else:
+              print(f"⚠️  Metrics endpoint returned {response.status_code}")
+      except Exception as e:
+          print(f"⚠️  Cannot test metrics endpoint: {e}")
+          print("   (API may not be running)")
+      PYCODE
+
+  - name: Log completion
+    run: |
+      echo "✅ Observability setup complete"
+      echo "   - Prometheus: observability/prometheus.yml"
+      echo "   - Alerts: observability/alert_rules.yml"
+      echo "   - Grafana: observability/grafana_dashboards/reflexio.json"
+      echo ""
+      echo "To start observability stack:"
+      echo "  docker compose --profile observability up -d prometheus grafana"
+
+
+
+
+
+
+
+
+
+
+

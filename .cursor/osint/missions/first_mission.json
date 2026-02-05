@@ -1,0 +1,63 @@
+{
+  "id": "first_mission",
+  "name": "First OSINT Mission",
+  "description": "Тестовая миссия для проверки работы OSINT KDS конвейера",
+  "tasks": [
+    {
+      "id": "task_1",
+      "query": "latest AI news 2025",
+      "role": "research analyst",
+      "instruction": "Extract key news items about AI developments in 2025. Focus on dates, companies, and key announcements.",
+      "format_schema": {
+        "type": "object",
+        "properties": {
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Key news item or announcement"
+                },
+                "date": {
+                  "type": "string",
+                  "format": "YYYY-MM-DD",
+                  "description": "Date of the news"
+                },
+                "companies": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "Companies mentioned"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": ["text"]
+            }
+          }
+        },
+        "required": ["claims"]
+      },
+      "max_results": 5
+    }
+  ],
+  "created_at": "2025-11-03T00:00:00Z",
+  "target_confidence": 0.75
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

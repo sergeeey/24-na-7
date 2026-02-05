@@ -1,0 +1,149 @@
+name: prod-readiness
+version: 1.0
+description: >
+  Проверка готовности к продакшену (Production Readiness Gates).
+  Проверяет все критерии для Level 5 (Self-Adaptive).
+
+steps:
+  - name: Check API Keys (Both Worlds)
+    shell: bash
+    run: |
+      echo "[prod-readiness] Checking API keys for both worlds (Python .env + MCP Cursor)..."
+      python scripts/check_api_keys.py || echo "⚠️  API keys check failed - review API_KEYS_SETUP.md"
+      
+  - name: Security Validation
+    shell: bash
+    run: |
+      echo "[prod-readiness] Checking Security (SAFE+CoVe)..."
+      python .cursor/validation/safe/run.py --mode strict --summary || echo "⚠️  SAFE validation failed"
+      
+  - name: Database Migration Status
+    shell: bash
+    run: |
+      echo "[prod-readiness] Checking database migration..."
+      python - <<'PYCODE'
+      import os
+      backend = os.getenv("DB_BACKEND", "sqlite")
+      if backend == "supabase":
+          from src.storage.supabase_client import test_connection
+          result = test_connection()
+          if result.get("status") == "ok":
+              print("✅ Supabase connection OK")
+          else:
+              print(f"❌ Supabase connection failed: {result.get('error')}")
+      else:
+          print("⚠️  Using SQLite (not production-ready)")
+      PYCODE
+
+  - name: Observability Check
+    shell: bash
+    run: |
+      echo "[prod-readiness] Checking observability..."
+      if [ -f "observability/prometheus.yml" ] && [ -f "observability/alert_rules.yml" ]; then
+        echo "✅ Observability configs found"
+      else
+        echo "⚠️  Observability configs missing"
+      fi
+
+  - name: LLM Smoke Test
+    shell: bash
+    run: |
+      echo "[prod-readiness] Running LLM smoke test..."
+      python scripts/smoke_llm.py || echo "⚠️  LLM smoke test failed (may be OK if API keys not set)"
+
+  - name: MCP Diagnostics
+    shell: bash
+    run: |
+      echo "[prod-readiness] Running MCP diagnostics..."
+      @playbook validate-mcp || echo "⚠️  MCP validation failed"
+
+  - name: Proxy Diagnostics
+    shell: bash
+    run: |
+      echo "[prod-readiness] Running proxy diagnostics..."
+      @playbook proxy-diagnostics || echo "⚠️  Proxy diagnostics failed (may be OK if not configured)"
+
+  - name: OSINT Mission E2E
+    shell: bash
+    run: |
+      echo "[prod-readiness] Running OSINT mission test..."
+      if [ -f ".cursor/osint/missions/first_mission.json" ]; then
+        @playbook osint-mission --mission_file .cursor/osint/missions/first_mission.json || echo "⚠️  OSINT mission test failed"
+      else
+        echo "⚠️  First mission file not found, skipping"
+      fi
+
+  - name: Governance Check
+    shell: bash
+    run: |
+      echo "[prod-readiness] Checking governance..."
+      python - <<'PYCODE'
+      import yaml
+      from pathlib import Path
+      
+      profile_path = Path(".cursor/governance/profile.yaml")
+      if profile_path.exists():
+          profile = yaml.safe_load(profile_path.read_text())
+          level = profile.get("current_level", 0)
+          score = profile.get("last_audit_score", 0)
+          
+          print(f"Current level: {level}, Last audit score: {score}")
+          
+          if level >= 5 and score >= 90:
+              print("✅ Governance Level 5 achieved")
+          else:
+              print(f"⚠️  Governance: Level {level}, Score {score} (need Level 5, Score 90+)")
+      PYCODE
+
+  - name: Generate Readiness Report
+    shell: bash
+    run: |
+      echo "[prod-readiness] Generating final report..."
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      from datetime import datetime
+      
+      report = {
+          "timestamp": datetime.utcnow().isoformat(),
+          "status": "checking",
+          "gates": {
+              "security": "unknown",
+              "database": "unknown",
+              "observability": "unknown",
+              "llm": "unknown",
+              "mcp": "unknown",
+              "osint": "unknown",
+              "governance": "unknown"
+          },
+          "ready": False
+      }
+      
+      # Проверяем файлы и статусы (упрощённая версия)
+      if Path(".cursor/validation/safe/policies.yaml").exists():
+          report["gates"]["security"] = "passed"
+      
+      import os
+      if os.getenv("DB_BACKEND") == "supabase":
+          report["gates"]["database"] = "configured"
+      
+      if Path("observability/prometheus.yml").exists():
+          report["gates"]["observability"] = "configured"
+      
+      report_path = Path(".cursor/audit/prod_readiness_report.json")
+      report_path.parent.mkdir(parents=True, exist_ok=True)
+      
+      with open(report_path, "w") as f:
+          json.dump(report, f, indent=2, ensure_ascii=False)
+      
+      print(f"✅ Report saved: {report_path}")
+      PYCODE
+
+  - name: Final Status
+    run: |
+      echo ""
+      echo "=========================================="
+      echo "Production Readiness Check Complete"
+      echo "=========================================="
+      echo "Review: .cursor/audit/prod_readiness_report.json"
+

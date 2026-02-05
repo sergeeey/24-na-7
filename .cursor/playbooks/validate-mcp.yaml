@@ -1,0 +1,155 @@
+name: validate-mcp
+version: 1.0
+description: >
+  Проверка состояния MCP Gateway и обновление Governance Loop.
+  Валидирует доступность всех MCP-сервисов, измеряет латентность
+  и обновляет профиль управления при обнаружении проблем.
+
+parameters:
+  - name: threshold_latency
+    default: 2000
+    description: "Максимальная допустимая латентность в миллисекундах"
+  - name: auto_governance
+    default: true
+    description: "Автоматически обновлять governance профиль"
+
+steps:
+  # ------------------------------------------------------------
+  - name: Run MCP validation
+    shell: bash
+    run: |
+      set -e
+      echo "[validate-mcp] Запуск проверки MCP-сервисов..."
+      python .cursor/validation/mcp_validator.py --timeout 2 --save --summary
+
+  # ------------------------------------------------------------
+  - name: Parse results and update governance
+    shell: bash
+    when: "{{ auto_governance }}" == "true"
+    run: |
+      set -e
+      if [ ! -f ".cursor/metrics/mcp_health.json" ]; then
+        echo "[validate-mcp] ⚠️ Health report not found, skipping governance update"
+        exit 0
+      fi
+      
+      python - <<'PYCODE'
+      import json
+      import yaml
+      from pathlib import Path
+      from datetime import datetime
+      
+      # Загружаем health report
+      health_file = Path(".cursor/metrics/mcp_health.json")
+      if not health_file.exists():
+          print("[validate-mcp] Health report not found")
+          exit(0)
+      
+      health_data = json.loads(health_file.read_text(encoding="utf-8"))
+      
+      # Загружаем профиль governance
+      profile_file = Path(".cursor/governance/profile.yaml")
+      if not profile_file.exists():
+          print("[validate-mcp] Governance profile not found")
+          exit(0)
+      
+      profile = yaml.safe_load(profile_file.read_text(encoding="utf-8"))
+      
+      # Инициализируем секцию MCP governance если её нет
+      if "mcp_governance" not in profile:
+          profile["mcp_governance"] = {
+              "last_check": None,
+              "alerts": [],
+              "failed_services": [],
+              "warnings": [],
+          }
+      
+      # Анализируем результаты
+      alerts = []
+      failed_services = []
+      warnings = []
+      
+      for name, data in health_data.items():
+          if name in ("timestamp", "total_services", "enabled_services", "healthy_services"):
+              continue
+          
+          if not isinstance(data, dict):
+              continue
+          
+          status = data.get("status", "unknown")
+          latency = data.get("latency_ms")
+          
+          if status == "fail":
+              failed_services.append(name)
+              alerts.append(f"{name}: {data.get('error', 'Unknown error')}")
+          elif status == "warn":
+              warnings.append(name)
+              if latency and latency > {{ threshold_latency }}:
+                  alerts.append(f"{name}: High latency ({latency:.2f}ms)")
+      
+      # Обновляем профиль
+      profile["mcp_governance"].update({
+          "last_check": health_data.get("timestamp"),
+          "alerts": alerts,
+          "failed_services": failed_services,
+          "warnings": warnings,
+          "healthy_count": health_data.get("healthy_services", 0),
+          "enabled_count": health_data.get("enabled_services", 0),
+      })
+      
+      # Если есть проблемы, добавляем политику
+      if failed_services:
+          if "governance_policies" not in profile:
+              profile["governance_policies"] = []
+          
+          # Проверяем, есть ли уже политика для MCP
+          mcp_policy_exists = any(
+              p.get("name") == "MCP Service Failure"
+              for p in profile["governance_policies"]
+          )
+          
+          if not mcp_policy_exists:
+              profile["governance_policies"].append({
+                  "name": "MCP Service Failure",
+                  "condition": "mcp_governance.failed_services.length > 0",
+                  "action": "lower_mcp_priority",
+                  "description": "Понизить приоритет при сбоях MCP-сервисов",
+                  "active": len(failed_services) > 0,
+              })
+      
+      # Сохраняем обновлённый профиль
+      profile_file.write_text(
+          yaml.safe_dump(profile, allow_unicode=True, default_flow_style=False),
+          encoding="utf-8"
+      )
+      
+      print(f"[validate-mcp] ✅ Governance profile updated")
+      print(f"   Healthy services: {health_data.get('healthy_services', 0)}/{health_data.get('enabled_services', 0)}")
+      if alerts:
+          print(f"   ⚠️ Alerts: {len(alerts)}")
+          for alert in alerts[:5]:  # Показываем первые 5
+              print(f"      - {alert}")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Log completion
+    shell: bash
+    run: |
+      echo ""
+      echo "────────── MCP Validation Complete ──────────"
+      echo "✅ Health report saved to .cursor/metrics/mcp_health.json"
+      echo "✅ Governance profile updated (if enabled)"
+      echo ""
+
+
+
+
+
+
+
+
+
+
+
+
+

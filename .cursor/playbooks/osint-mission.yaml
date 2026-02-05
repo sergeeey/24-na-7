@@ -1,0 +1,149 @@
+name: osint-mission
+version: 1.0
+description: >
+  Полный OSINT конвейер KDS с Brave Search и Bright Data.
+  Выполняет миссию через PEMM агент с валидацией DeepConf.
+
+parameters:
+  - name: mission_file
+    required: true
+    description: "Путь к JSON файлу миссии"
+  - name: output_dir
+    default: ".cursor/osint/results"
+    description: "Директория для сохранения результатов"
+
+steps:
+  # ------------------------------------------------------------
+  - name: Validate Mission File
+    shell: bash
+    run: |
+      set -e
+      echo "[osint-mission] Проверка файла миссии: {{ mission_file }}"
+      
+      if [ ! -f "{{ mission_file }}" ]; then
+        echo "❌ Файл миссии не найден: {{ mission_file }}"
+        exit 1
+      fi
+      
+      # Проверяем JSON валидность
+      python -c "import json; json.load(open('{{ mission_file }}'))" || {
+        echo "❌ Невалидный JSON файл"
+        exit 1
+      }
+      
+      echo "✅ Файл миссии валиден"
+
+  # ------------------------------------------------------------
+  - name: Check MCP Services
+    shell: bash
+    run: |
+      set -e
+      echo "[osint-mission] Проверка MCP-сервисов..."
+      
+      python scripts/check_mcp_health.py --summary || {
+        echo "⚠️  Некоторые MCP-сервисы недоступны, продолжаем..."
+      }
+
+  # ------------------------------------------------------------
+  - name: Run PEMM Mission
+    shell: bash
+    run: |
+      set -e
+      echo "[osint-mission] Запуск PEMM миссии..."
+      
+      # Создаём директорию для результатов
+      mkdir -p {{ output_dir }}
+      
+      # Генерируем имя файла результата
+      mission_basename=$(basename "{{ mission_file }}" .json)
+      result_file="{{ output_dir }}/${mission_basename}_result_$(date +%Y%m%d_%H%M%S).json"
+      
+      # Запускаем миссию
+      python -m src.osint.pemm_agent \
+        --mission "{{ mission_file }}" \
+        --output "$result_file"
+      
+      echo "✅ Результаты сохранены: $result_file"
+
+  # ------------------------------------------------------------
+  - name: DeepConf Validation (Optional)
+    shell: bash
+    run: |
+      set -e
+      echo "[osint-mission] Запуск DeepConf валидации..."
+      
+      python -m src.osint.deepconf --validate recent || {
+        echo "⚠️  DeepConf валидация пропущена или завершилась с предупреждениями"
+      }
+
+  # ------------------------------------------------------------
+  - name: Update Metrics
+    shell: bash
+    run: |
+      set -e
+      echo "[osint-mission] Обновление метрик..."
+      
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      from datetime import datetime, timezone
+      
+      # Обновляем cursor-metrics.json с OSINT метриками
+      metrics_file = Path("cursor-metrics.json")
+      
+      if metrics_file.exists():
+          metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+      else:
+          metrics = {"metrics": {}}
+      
+      # Инициализируем секцию OSINT если её нет
+      if "osint" not in metrics["metrics"]:
+          metrics["metrics"]["osint"] = {
+              "missions_completed": 0,
+              "total_claims": 0,
+              "validated_claims": 0,
+              "avg_deepconf_confidence": 0.0,
+              "last_mission": None,
+          }
+      
+      # Инкрементируем счётчик миссий
+      metrics["metrics"]["osint"]["missions_completed"] += 1
+      metrics["metrics"]["osint"]["last_mission"] = datetime.now(timezone.utc).isoformat()
+      
+      # Сохраняем
+      metrics_file.write_text(
+          json.dumps(metrics, indent=2, ensure_ascii=False),
+          encoding="utf-8"
+      )
+      
+      print("[osint-mission] ✅ Metrics updated")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Summary
+    shell: bash
+    run: |
+      echo ""
+      echo "────────── OSINT Mission Complete ──────────"
+      echo ""
+      echo "Mission file: {{ mission_file }}"
+      echo "Results saved to: {{ output_dir }}"
+      echo ""
+      echo "Check results in:"
+      echo "  - {{ output_dir }}/"
+      echo "  - .cursor/memory/osint_research.md"
+      echo ""
+      echo "───────────────────────────────────────────────"
+
+
+
+
+
+
+
+
+
+
+
+
+

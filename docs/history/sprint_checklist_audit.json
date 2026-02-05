@@ -1,0 +1,29 @@
+{
+  "valid": true,
+  "issues": [],
+  "warnings": [
+    "Метрика 'WER' в epic_i_asr помечена как completed, но current=null",
+    "Метрика 'Latency' в epic_i_asr помечена как completed, но current=null",
+    "Метрика 'Офлайн транскрипция' в epic_i_asr помечена как completed, но current=null",
+    "Метрика 'Factual consistency' в epic_ii_llm помечена как completed, но current=null",
+    "Метрика 'DeepConf score' в epic_ii_llm помечена как completed, но current=null",
+    "Метрика 'Token entropy' в epic_ii_llm помечена как completed, но current=null",
+    "Метрика 'Старт записи' в epic_iii_ux помечена как completed, но current=null",
+    "Метрика 'Поиск по аудио' в epic_iii_ux помечена как completed, но current=null",
+    "Метрика 'Accuracy intent' в epic_iii_ux помечена как completed, но current=null",
+    "Метрика 'Саммари без ручной проверки' в epic_iv_memory помечена как completed, но current=null",
+    "Метрика 'Экономия токенов' в epic_iv_memory помечена как completed, но current=null",
+    "Метрика 'Шифрование PII' в epic_v_privacy помечена как completed, но current=null",
+    "Метрика 'Zero-retention режим' в epic_v_privacy помечена как completed, но current=null",
+    "Метрика 'Конверсия Free → Premium' в epic_vi_monetization помечена как completed, но current=null",
+    "Метрика 'Referral активация' в epic_vi_monetization помечена как completed, но current=null"
+  ],
+  "stats": {
+    "total_tasks": 27,
+    "completed_tasks": 27,
+    "sprint_start": "2025-11-04",
+    "sprint_end": "2025-11-30",
+    "completed_at": "2025-11-30",
+    "status": "completed"
+  }
+}

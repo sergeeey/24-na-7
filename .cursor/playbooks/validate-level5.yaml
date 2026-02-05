@@ -1,0 +1,72 @@
+name: validate-level5
+version: 1.0
+description: >
+  Комплексная проверка всех компонентов Level 5 — Self-Adaptive.
+  Выполняет валидацию всех ключевых элементов и их интеграции.
+
+steps:
+  # ------------------------------------------------------------
+  - name: Run Level 5 Validation
+    shell: bash
+    run: |
+      set -e
+      echo "[validate-level5] Запуск комплексной проверки..."
+      
+      python .cursor/validation/level5_validation.py
+
+  # ------------------------------------------------------------
+  - name: Check Validation Report
+    shell: bash
+    run: |
+      set -e
+      echo "[validate-level5] Проверка отчёта..."
+      
+      if [ -f ".cursor/validation/level5_validation_report.json" ]; then
+        echo "✅ Отчёт валидации создан"
+        python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      
+      report_file = Path(".cursor/validation/level5_validation_report.json")
+      if report_file.exists():
+          data = json.loads(report_file.read_text(encoding="utf-8"))
+          summary = data.get("summary", {})
+          
+          print(f"\nПройдено: {summary.get('passed', 0)}")
+          print(f"Провалено: {summary.get('failed', 0)}")
+          print(f"Предупреждений: {summary.get('warnings', 0)}")
+          
+          if summary.get('failed', 0) == 0:
+              print("\n✅ ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ!")
+          else:
+              print("\n❌ ЕСТЬ ПРОВАЛЕННЫЕ ПРОВЕРКИ!")
+      PYCODE
+      else
+        echo "❌ Отчёт валидации не найден"
+        exit 1
+      fi
+
+  # ------------------------------------------------------------
+  - name: Summary
+    shell: bash
+    run: |
+      echo ""
+      echo "────────── Level 5 Validation Complete ──────────"
+      echo ""
+      echo "Check report:"
+      echo "  - .cursor/validation/level5_validation_report.json"
+      echo ""
+      echo "───────────────────────────────────────────────"
+
+
+
+
+
+
+
+
+
+
+
+
+

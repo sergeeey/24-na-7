@@ -1,0 +1,37 @@
+{
+  "metrics": {
+    "osint": {
+      "avg_deepconf_confidence": null,
+      "missions_completed": 0,
+      "total_claims": 0,
+      "validated_claims": 0,
+      "last_mission": null
+    },
+    "mcp": {
+      "brave_latency_ms": null,
+      "brightdata_latency_ms": null,
+      "brave_success_rate": null,
+      "brightdata_success_rate": null
+    },
+    "governance": {
+      "current_level": 4,
+      "reliability_index": 0.79,
+      "context_hit_rate": 0.69
+    }
+  },
+  "timestamp": "2025-11-03T00:00:00Z",
+  "version": "1.0"
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,111 @@
+{
+  "version": "1.0",
+  "mcpServers": {
+    "reflexio-api": {
+      "command": "uvicorn",
+      "args": [
+        "src.api.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ],
+      "env": {
+        "LOG_LEVEL": "INFO"
+      },
+      "enabled": true,
+      "description": "Reflexio API — основной сервер FastAPI"
+    },
+    "reflexio-edge": {
+      "command": "python",
+      "args": [
+        "src/edge/listener.py"
+      ],
+      "env": {
+        "EDGE_AUTO_UPLOAD": "true"
+      },
+      "enabled": true,
+      "description": "Reflexio Edge — listener событий и внешних данных"
+    },
+    "brave": {
+      "url": "https://api.search.brave.com/res/v1/web/search",
+      "enabled": true,
+      "description": "Brave Search MCP — разведка и поиск данных",
+      "capabilities": [
+        "webSearch",
+        "localSearch",
+        "discoverTopics"
+      ],
+      "priority": "high",
+      "api_key_env": "BRAVE_API_KEY"
+    },
+    "brightdata": {
+      "url": "https://api.brightdata.com",
+      "enabled": true,
+      "description": "Bright Data MCP — глубокое извлечение и обход блокировок",
+      "capabilities": [
+        "scrapePage",
+        "scrapeMarkdown",
+        "bypassCaptcha",
+        "geoProxy",
+        "serpSearch"
+      ],
+      "priority": "critical",
+      "api_key_env": "BRIGHTDATA_API_KEY"
+    },
+    "docker": {
+      "command": "docker",
+      "args": ["ps"],
+      "enabled": false,
+      "description": "Docker MCP (отключен)"
+    },
+    "supabase": {
+      "url": "https://lkmyliwjleegjkcgespp.supabase.co",
+      "enabled": true,
+      "description": "Supabase backend — PostgreSQL база данных и Storage",
+      "api_key_env": "SUPABASE_ANON_KEY",
+      "capabilities": [
+        "database",
+        "storage",
+        "realtime",
+        "auth"
+      ],
+      "priority": "high"
+    }
+  },
+  "services": {
+    "telegram": {
+      "enabled": false,
+      "webhook": "/telegram",
+      "description": "Интеграция с Telegram (в разработке)"
+    },
+    "whatsapp": {
+      "enabled": true,
+      "import_path": "/ingest/whatsapp",
+      "description": "Импорт сообщений из WhatsApp"
+    }
+  },
+  "connectivity": {
+    "fastapi": {
+      "enabled": true,
+      "endpoints": [
+        "/health",
+        "/ingest/audio",
+        "/asr/transcribe",
+        "/digest/today"
+      ]
+    },
+    "database": {
+      "type": "sqlite",
+      "path": "src/storage/reflexio.db",
+      "migrate_to": "supabase"
+    }
+  },
+  "metadata": {
+    "project": "Reflexio 24/7",
+    "version": "0.1.0",
+    "last_updated": "2025-11-03",
+    "level": 5,
+    "self_adaptive": true
+  }
+}

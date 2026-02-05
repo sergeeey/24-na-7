@@ -1,0 +1,91 @@
+{
+  "registry_version": "1.0",
+  "updated_at": "2025-11-03T00:00:00Z",
+  "methodologies": [
+    {
+      "id": "PAF-1.0",
+      "name": "Predictive Analytics Foundation",
+      "version": "1.0",
+      "source": "Промпт-инжиниринг для предиктивной аналитики",
+      "source_type": "methodological_standard",
+      "applies_to": [
+        "DeepConf",
+        "AdaptiveScoring",
+        "MemoryCuration",
+        "GovernanceLoop",
+        "OSINT_KDS",
+        "ExplainabilityMCP"
+      ],
+      "maintainer": "Reflexio Core Team",
+      "integrity_hash": "to_be_calculated",
+      "status": "active",
+      "compliance_level": "required",
+      "modules": {
+        "deepconf_feedback.py": {
+          "compliance": "required",
+          "requirements": [
+            "Bayesian UQ integration",
+            "Confidence calibration using Isotonic Regression",
+            "Epistemic/aleatoric uncertainty separation"
+          ]
+        },
+        "memory_curator.py": {
+          "compliance": "required",
+          "requirements": [
+            "DQ metrics (Accuracy, Completeness, Timeliness)",
+            "Automatic revalidation every 30 days",
+            "Refuted claims removal"
+          ]
+        },
+        "adaptive_scoring.py": {
+          "compliance": "required",
+          "requirements": [
+            "Mission scoring formula",
+            "Priority calculation for updates",
+            "Knowledge health analysis"
+          ]
+        },
+        "osint/collector.py": {
+          "compliance": "recommended",
+          "requirements": [
+            "RAG layer activation",
+            "Source tracking",
+            "Freshness monitoring"
+          ]
+        },
+        "notion_mcp": {
+          "compliance": "optional",
+          "requirements": [
+            "SHAP/LIME integration",
+            "Explainability reports",
+            "Decision interpretation"
+          ]
+        }
+      },
+      "metrics": {
+        "methodology_version": "1.0",
+        "compliance_score": null,
+        "last_audit": null,
+        "next_audit": null
+      }
+    }
+  ],
+  "validation_rules": {
+    "check_interval_days": 30,
+    "compliance_threshold": 0.8,
+    "auto_enforcement": true
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

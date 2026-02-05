@@ -1,0 +1,268 @@
+name: validate-mcp-config
+version: 1.0
+description: >
+  Валидация конфигурации MCP — проверка структуры .cursor/mcp.json,
+  корректности URL/command для серверов, доступности переменных окружения
+  и согласованности настроек. Создаёт детальный отчёт с рекомендациями.
+
+parameters:
+  - name: config_file
+    default: ".cursor/mcp.json"
+    description: "Путь к файлу конфигурации MCP"
+  - name: output_dir
+    default: ".cursor/audit"
+    description: "Директория для сохранения отчётов"
+  - name: fail_on_errors
+    default: false
+    description: "Завершить с ошибкой при обнаружении проблем"
+
+steps:
+  # ------------------------------------------------------------
+  - name: Check Config File Exists
+    shell: bash
+    run: |
+      set -e
+      echo "[validate-mcp-config] Проверка наличия файла конфигурации..."
+      
+      if [ ! -f "{{ config_file }}" ]; then
+        echo "❌ Файл конфигурации не найден: {{ config_file }}"
+        exit 1
+      else
+        echo "✅ Файл конфигурации найден: {{ config_file }}"
+      fi
+
+  # ------------------------------------------------------------
+  - name: Validate MCP Configuration
+    shell: bash
+    run: |
+      set -e
+      echo "[validate-mcp-config] Запуск валидации конфигурации MCP..."
+      
+      python scripts/validate_mcp_config.py \
+        --config {{ config_file }} \
+        --output-json {{ output_dir }}/mcp_config_validation.json \
+        --output-markdown {{ output_dir }}/mcp_config_validation.md \
+        {{ '--fail-on-errors' if fail_on_errors else '' }}
+
+  # ------------------------------------------------------------
+  - name: Check Environment Variables
+    shell: bash
+    run: |
+      set -e
+      echo "[validate-mcp-config] Проверка переменных окружения..."
+      
+      python - <<'PYCODE'
+      import json
+      import os
+      from pathlib import Path
+      
+      config_file = Path("{{ config_file }}")
+      
+      if not config_file.exists():
+          print("❌ Файл конфигурации не найден")
+          exit(1)
+      
+      config = json.loads(config_file.read_text(encoding="utf-8"))
+      servers = config.get("mcpServers", {})
+      
+      missing_vars = []
+      
+      for server_name, server_config in servers.items():
+          if isinstance(server_config, dict):
+              # Проверяем api_key_env
+              if "api_key_env" in server_config:
+                  env_var = server_config["api_key_env"]
+                  if not os.getenv(env_var):
+                      missing_vars.append({
+                          "server": server_name,
+                          "env_var": env_var,
+                      })
+              
+              # Проверяем env секцию
+              if "env" in server_config:
+                  for env_key, env_value in server_config["env"].items():
+                      # Если значение содержит ${}, проверяем переменную
+                      if isinstance(env_value, str) and env_value.startswith("${"):
+                          var_name = env_value[2:-1]
+                          if not os.getenv(var_name):
+                              missing_vars.append({
+                                  "server": server_name,
+                                  "env_var": var_name,
+                              })
+      
+      if missing_vars:
+          print("⚠️  Отсутствующие переменные окружения:")
+          for item in missing_vars:
+              print(f"  [{item['server']}] {item['env_var']}")
+          print()
+          print("Убедитесь, что все переменные установлены в .env")
+      else:
+          print("✅ Все необходимые переменные окружения установлены")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Verify Server Accessibility
+    shell: bash
+    run: |
+      set -e
+      echo "[validate-mcp-config] Проверка доступности серверов..."
+      
+      python - <<'PYCODE'
+      import json
+      import os
+      import sys
+      from pathlib import Path
+      
+      config_file = Path("{{ config_file }}")
+      config = json.loads(config_file.read_text(encoding="utf-8"))
+      servers = config.get("mcpServers", {})
+      
+      enabled_servers = [
+          (name, cfg) for name, cfg in servers.items()
+          if isinstance(cfg, dict) and cfg.get("enabled", False)
+      ]
+      
+      print(f"Найдено включённых серверов: {len(enabled_servers)}")
+      print()
+      
+      for server_name, server_config in enabled_servers:
+          print(f"🔍 [{server_name}]")
+          
+          if "url" in server_config:
+              url = server_config["url"]
+              print(f"   Type: URL-based")
+              print(f"   URL: {url}")
+          
+          if "command" in server_config:
+              command = server_config["command"]
+              args = server_config.get("args", [])
+              print(f"   Type: Command-based")
+              print(f"   Command: {command} {' '.join(args[:2])}...")
+          
+          # Проверка API ключей
+          if "api_key_env" in server_config:
+              env_var = server_config["api_key_env"]
+              if os.getenv(env_var):
+                  key_preview = os.getenv(env_var)[:8] + "..." if len(os.getenv(env_var)) > 8 else "***"
+                  print(f"   API Key: ✅ ({key_preview})")
+              else:
+                  print(f"   API Key: ❌ ({env_var} не установлен)")
+          
+          print()
+      
+      print("✅ Проверка завершена")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Generate Summary
+    shell: bash
+    run: |
+      set -e
+      echo "[validate-mcp-config] Генерация итогового резюме..."
+      
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      
+      report_file = Path("{{ output_dir }}/mcp_config_validation.json")
+      
+      if report_file.exists():
+          results = json.loads(report_file.read_text(encoding="utf-8"))
+          
+          print("\n" + "=" * 70)
+          print("MCP Configuration Validation Summary")
+          print("=" * 70)
+          print()
+          print(f"Valid: {'✅ Yes' if results['valid'] else '❌ No'}")
+          print(f"Errors: {results['summary']['errors']}")
+          print(f"Warnings: {results['summary']['warnings']}")
+          print(f"Info: {results['summary']['info']}")
+          print()
+          
+          if results['valid']:
+              print("✅ Конфигурация MCP корректна и готова к использованию!")
+          else:
+              print("❌ Обнаружены проблемы — проверьте отчёт для деталей")
+              print()
+              if results.get('errors'):
+                  print("Критические ошибки:")
+                  for error in results['errors'][:3]:
+                      print(f"  - [{error['component']}] {error['message']}")
+          
+          print()
+          print("Reports:")
+          print(f"  - {{ output_dir }}/mcp_config_validation.json")
+          print(f"  - {{ output_dir }}/mcp_config_validation.md")
+          print("=" * 70)
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Update Metrics
+    shell: bash
+    run: |
+      set -e
+      echo "[validate-mcp-config] Обновление метрик..."
+      
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      from datetime import datetime, timezone
+      
+      metrics_file = Path("cursor-metrics.json")
+      validation_file = Path("{{ output_dir }}/mcp_config_validation.json")
+      
+      if validation_file.exists():
+          validation = json.loads(validation_file.read_text(encoding="utf-8"))
+          
+          if metrics_file.exists():
+              metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+          else:
+              metrics = {"metrics": {}}
+          
+          # Обновляем метрики MCP конфигурации
+          if "mcp" not in metrics["metrics"]:
+              metrics["metrics"]["mcp"] = {}
+          
+          metrics["metrics"]["mcp"]["config_valid"] = validation["valid"]
+          metrics["metrics"]["mcp"]["config_errors"] = validation["summary"]["errors"]
+          metrics["metrics"]["mcp"]["config_warnings"] = validation["summary"]["warnings"]
+          metrics["metrics"]["mcp"]["config_last_validation"] = datetime.now(timezone.utc).isoformat()
+          
+          metrics_file.write_text(
+              json.dumps(metrics, indent=2, ensure_ascii=False),
+              encoding="utf-8"
+          )
+          
+          print("[validate-mcp-config] ✅ Metrics updated")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Final Summary
+    shell: bash
+    run: |
+      echo ""
+      echo "────────── MCP Config Validation Complete ──────────"
+      echo ""
+      echo "Reports:"
+      echo "  - {{ output_dir }}/mcp_config_validation.json"
+      echo "  - {{ output_dir }}/mcp_config_validation.md"
+      echo ""
+      echo "Next steps:"
+      echo "  1. Review the Markdown report for detailed findings"
+      echo "  2. Fix any errors reported"
+      echo "  3. Reload Cursor window (Ctrl+Shift+P → Developer: Reload Window)"
+      echo "  4. Check MCP servers in Tools → Installed MCP Servers"
+      echo ""
+      echo "───────────────────────────────────────────────────────"
+
+
+
+
+
+
+
+
+
+
+
+

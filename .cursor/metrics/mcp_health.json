@@ -1,0 +1,30 @@
+{
+  "reflexio-api": {
+    "status": "disabled",
+    "error": "API not running",
+    "latency_ms": null
+  },
+  "reflexio-edge": {
+    "status": "disabled",
+    "latency_ms": null,
+    "reason": "Edge listener check not implemented"
+  },
+  "brave": {
+    "status": "disabled",
+    "error": "BRAVE_API_KEY not set",
+    "latency_ms": null
+  },
+  "brightdata": {
+    "status": "disabled",
+    "error": "gh CLI not installed",
+    "latency_ms": null
+  },
+  "docker": {
+    "status": "disabled",
+    "latency_ms": null
+  },
+  "timestamp": "2025-11-03T17:41:40.246738+00:00",
+  "total_services": 5,
+  "enabled_services": 4,
+  "healthy_services": 0
+}

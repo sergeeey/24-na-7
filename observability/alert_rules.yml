@@ -1,0 +1,68 @@
+groups:
+  - name: reflexio_alerts
+    interval: 30s
+    rules:
+      - alert: ReflexioAPIDown
+        expr: up{job="reflexio-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Reflexio API is down"
+          description: "API endpoint has been down for more than 2 minutes"
+
+      - alert: ReflexioHealthCheckFailed
+        expr: reflexio_health == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reflexio health check failed"
+          description: "Health endpoint returned unhealthy status"
+
+      - alert: LLMErrorRateHigh
+        expr: rate(reflexio_llm_errors_total[5m]) > 0.02
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM error rate is high"
+          description: "LLM error rate is above 2% for 5 minutes"
+
+      - alert: DeepConfLowConfidence
+        expr: reflexio_deepconf_avg_confidence < 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DeepConf average confidence is low"
+          description: "Average DeepConf confidence is below 0.8 for 10 minutes"
+
+      - alert: MCPServiceDown
+        expr: reflexio_mcp_service_up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MCP service is down"
+          description: "MCP service has been unavailable for 5 minutes"
+
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(reflexio_request_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency"
+          description: "P95 latency is above 5 seconds"
+
+
+
+
+
+
+
+
+
+
+
