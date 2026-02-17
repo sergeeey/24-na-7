@@ -1,0 +1,11 @@
+---
+description: Правила тестирования (интеграция из Golos)
+globs: tests/**/*.py
+alwaysApply: false
+---
+
+# Testing rules
+
+- Тесты для модулей `reflexio.audio` и `reflexio.transcription`: использовать временные директории и файлы; не полагаться на реальный микрофон в CI.
+- Проверять импорты: `from reflexio.audio import AudioRecorder`, `from reflexio.transcription import WhisperEngine`.
+- Не менять версии зависимостей в requirements.txt ради тестов; использовать уже установленные пакеты 24 na 7.

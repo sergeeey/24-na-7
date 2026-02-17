@@ -1,0 +1,92 @@
+{
+  "timestamp": "2025-11-03T17:31:53.858424+00:00",
+  "compliance_score": 0.9571428571428572,
+  "checks": {
+    "M1": {
+      "name": "DeepConf Bayesian UQ",
+      "status": "passed",
+      "compliance_level": "required",
+      "message": "Isotonic Regression usage",
+      "weight": 1.0,
+      "module": "src/osint/deepconf.py"
+    },
+    "M2": {
+      "name": "Memory Bank DQ Metrics",
+      "status": "passed",
+      "compliance_level": "required",
+      "message": "DQ metrics present",
+      "weight": 1.0,
+      "module": "src/osint/memory_curator.py"
+    },
+    "M3": {
+      "name": "Source Attribution",
+      "status": "passed",
+      "compliance_level": "required",
+      "message": "Claim schema has source_urls",
+      "weight": 1.0,
+      "module": "src/osint/schemas.py"
+    },
+    "M4": {
+      "name": "Governance Methodology Check",
+      "status": "passed",
+      "compliance_level": "required",
+      "message": "Methodology compliance check present",
+      "weight": 1.0,
+      "module": ".cursor/metrics/governance_loop.py"
+    },
+    "M5": {
+      "name": "RAG Layer Activation",
+      "status": "passed",
+      "compliance_level": "recommended",
+      "message": "Module exists and is accessible",
+      "weight": 0.7,
+      "module": "src/osint/collector.py"
+    },
+    "M6": {
+      "name": "Adaptive Mission Scoring",
+      "status": "passed",
+      "compliance_level": "recommended",
+      "message": "Scoring formula matches specification",
+      "weight": 0.7,
+      "module": "src/osint/adaptive_scoring.py"
+    },
+    "M7": {
+      "name": "Closed-Loop Learning",
+      "status": "passed",
+      "compliance_level": "recommended",
+      "message": "Auto-regeneration implemented",
+      "weight": 0.7,
+      "module": "src/osint/deepconf_feedback.py"
+    },
+    "M8": {
+      "name": "Explainability SHAP/LIME",
+      "status": "warning",
+      "compliance_level": "optional",
+      "message": "Module file not found: notion_mcp",
+      "weight": 0.3,
+      "module": "notion_mcp"
+    },
+    "M9": {
+      "name": "Bayesian Neural Networks",
+      "status": "passed",
+      "compliance_level": "optional",
+      "message": "Module exists and is accessible",
+      "weight": 0.3,
+      "module": "src/osint/deepconf.py"
+    },
+    "M10": {
+      "name": "Automatic Explainability Reports",
+      "status": "passed",
+      "compliance_level": "optional",
+      "message": "Module exists and is accessible",
+      "weight": 0.3,
+      "module": "src/osint/adaptive_scoring.py"
+    }
+  },
+  "summary": {
+    "total_checks": 10,
+    "passed": 9,
+    "failed": 0,
+    "warnings": 1
+  }
+}

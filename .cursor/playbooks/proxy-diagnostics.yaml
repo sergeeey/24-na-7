@@ -1,0 +1,144 @@
+name: proxy-diagnostics
+version: 1.0
+description: >
+  Диагностика Bright Data Proxy — проверка доступности, скорости, геолокации и работоспособности.
+  Генерирует отчёты в JSON и Markdown для мониторинга здоровья сети.
+
+parameters:
+  - name: output_dir
+    default: ".cursor/audit"
+    description: "Директория для сохранения отчётов"
+
+steps:
+  # ------------------------------------------------------------
+  - name: Check Environment Variables
+    shell: bash
+    run: |
+      set -e
+      echo "[proxy-diagnostics] Проверка переменных окружения..."
+      
+      python - <<'PYCODE'
+      import os
+      
+      proxy_http = os.getenv("BRIGHTDATA_PROXY_HTTP")
+      
+      if not proxy_http:
+          print("❌ BRIGHTDATA_PROXY_HTTP не установлен в .env")
+          exit(1)
+      else:
+          print(f"✅ BRIGHTDATA_PROXY_HTTP найден: {proxy_http[:50]}...")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Run Proxy Diagnostics
+    shell: bash
+    run: |
+      set -e
+      echo "[proxy-diagnostics] Запуск диагностики proxy..."
+      
+      python scripts/proxy_diagnostics.py \
+        --output-json {{ output_dir }}/proxy_diagnostics.json \
+        --output-markdown {{ output_dir }}/proxy_diagnostics.md
+
+  # ------------------------------------------------------------
+  - name: Check Diagnostics Results
+    shell: bash
+    run: |
+      set -e
+      echo "[proxy-diagnostics] Проверка результатов..."
+      
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      
+      report_file = Path("{{ output_dir }}/proxy_diagnostics.json")
+      
+      if report_file.exists():
+          data = json.loads(report_file.read_text(encoding="utf-8"))
+          status = data.get("summary", {}).get("overall_status", "unknown")
+          passed = data.get("summary", {}).get("checks_passed", 0)
+          total = len(data.get("checks", {}))
+          
+          print(f"\nProxy Status: {status.upper()}")
+          print(f"Checks: {passed}/{total}")
+          
+          if status == "healthy":
+              print("✅ Proxy is working correctly!")
+          elif status == "degraded":
+              print("⚠️  Proxy has some issues - review diagnostics")
+          else:
+              print("❌ Proxy is not working - check credentials")
+      else:
+          print("❌ Diagnostics report not found")
+          exit(1)
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Update Metrics
+    shell: bash
+    run: |
+      set -e
+      echo "[proxy-diagnostics] Обновление метрик..."
+      
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      from datetime import datetime, timezone
+      
+      # Обновляем cursor-metrics.json с proxy метриками
+      metrics_file = Path("cursor-metrics.json")
+      diagnostics_file = Path("{{ output_dir }}/proxy_diagnostics.json")
+      
+      if diagnostics_file.exists():
+          diagnostics = json.loads(diagnostics_file.read_text(encoding="utf-8"))
+          
+          if metrics_file.exists():
+              metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+          else:
+              metrics = {"metrics": {}}
+          
+          # Обновляем метрики MCP
+          if "mcp" not in metrics["metrics"]:
+              metrics["metrics"]["mcp"] = {}
+          
+          connectivity = diagnostics.get("checks", {}).get("connectivity", {})
+          speed = diagnostics.get("checks", {}).get("speed", {})
+          
+          metrics["metrics"]["mcp"]["brightdata_proxy_status"] = diagnostics.get("summary", {}).get("overall_status")
+          metrics["metrics"]["mcp"]["brightdata_latency_ms"] = connectivity.get("latency_ms")
+          metrics["metrics"]["mcp"]["brightdata_download_speed_kbps"] = speed.get("download_speed_kbps")
+          metrics["metrics"]["mcp"]["brightdata_last_check"] = datetime.now(timezone.utc).isoformat()
+          
+          metrics_file.write_text(
+              json.dumps(metrics, indent=2, ensure_ascii=False),
+              encoding="utf-8"
+          )
+          
+          print("[proxy-diagnostics] ✅ Metrics updated")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Summary
+    shell: bash
+    run: |
+      echo ""
+      echo "────────── Proxy Diagnostics Complete ──────────"
+      echo ""
+      echo "Reports:"
+      echo "  - {{ output_dir }}/proxy_diagnostics.json"
+      echo "  - {{ output_dir }}/proxy_diagnostics.md"
+      echo ""
+      echo "───────────────────────────────────────────────"
+
+
+
+
+
+
+
+
+
+
+
+
+

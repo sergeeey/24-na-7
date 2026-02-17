@@ -1,0 +1,253 @@
+# Full Audit — универсальный сценарий для агента/раннера.
+# Адаптирован под репозиторий: hybrid (Python backend, summarizer/voice_agent/RAG, Android, webapp, GitHub Actions).
+# Выходы: audit_output/
+
+full_audit:
+  id: full_system_ai_audit
+  name: "Full System & AI-Native Audit"
+  description: >
+    Универсальный комплексный аудит проекта: процессы, архитектура,
+    код и качество, (опционально) AI-данные и когнитивный слой,
+    безопасность и эмерджентные риски. Формирует единый отчёт и POA&M.
+
+  config:
+    project_type: "hybrid"
+    backend_test_command: "pytest tests/ -v --cov=src --cov-report=term-missing --json-report --json-report-file=tests/.report.json"
+    frontend_test_command: "echo 'no frontend test suite'"
+    ai_features_enabled: true
+
+  steps:
+    - id: inventory
+      title: "Inventory & Context"
+      goal: "Собрать карту проекта и основные артефакты"
+      actions:
+        - type: analyze_files
+          params:
+            patterns:
+              - "src/**"
+              - "tests/**"
+              - "docs/**"
+              - "config/**"
+              - "android/**"
+              - "webapp/**"
+              - "scripts/**"
+              - ".github/workflows/**"
+              - ".cursor/audit/**"
+              - "backend/**"
+              - "server/**"
+              - "services/**"
+              - "frontend/**"
+              - "app/**"
+              - "components/**"
+              - "spec/**"
+              - "e2e/**"
+              - "ml/**"
+              - "ai/**"
+              - "agents/**"
+              - "rag/**"
+              - "graph/**"
+              - "*.md"
+              - "docker-compose*.yml"
+              - "Dockerfile*"
+              - "pyproject.toml"
+              - "requirements.txt"
+              - "schema.sql"
+        - type: summarize
+          params:
+            output: "audit_output/inventory_summary.md"
+            prompt: >
+              Сформируй краткий обзор структуры проекта, основных технологий,
+              типов компонентов (backend, frontend, infra, AI/ML/LLM, tests)
+              и ключевых файлов документации и конфигураций.
+
+    - id: process_governance
+      title: "Process & Governance Audit"
+      goal: "Оценить процессы управления, качества и CI/CD"
+      inputs:
+        - "audit_output/inventory_summary.md"
+      actions:
+        - type: analyze_files
+          params:
+            patterns:
+              - "**/CONTRIBUTING.*"
+              - "**/PROCESS.*"
+              - "**/QUALITY.*"
+              - "**/SECURITY.*"
+              - "**/OPERATIONS.*"
+              - "SECURITY.md"
+              - "RUNBOOKS.md"
+              - "docs/**"
+              - ".github/workflows/**"
+              - ".gitlab-ci.yml"
+              - "Jenkinsfile"
+              - "azure-pipelines.yml"
+        - type: summarize
+          params:
+            output: "audit_output/process_audit.md"
+            prompt: >
+              На основе найденных файлов опиши:
+              - как организованы процессы разработки, review и релизов;
+              - какие проверки автоматизированы в CI/CD;
+              - блокируют ли тесты и проверки мерж/деплой;
+              - как устроено управление конфигурацией и версиями.
+              Оформи вывод в виде таблицы зрелости процессов (низкий/средний/высокий)
+              и списка конкретных рекомендаций.
+
+    - id: architecture_threat
+      title: "Architecture & Threat Assessment"
+      goal: "Оценить архитектуру и ключевые угрозы"
+      inputs:
+        - "audit_output/inventory_summary.md"
+      actions:
+        - type: analyze_files
+          params:
+            patterns:
+              - "docs/**"
+              - "**/ARCHITECTURE.*"
+              - "**/SYSTEM_DESIGN.*"
+              - "src/**"
+              - "config/**"
+              - "schema.sql"
+              - "docker-compose*.yml"
+              - "Dockerfile*"
+              - "infra/**"
+        - type: summarize
+          params:
+            output: "audit_output/architecture_threat_assessment.md"
+            prompt: >
+              Построй обзор архитектуры: компоненты, сервисы, базы данных,
+              очереди, внешние API, интеграции. Выдели ключевые активы и 3–7
+              основных сценариев угроз (security, отказоустойчивость, данные,
+              для AI-проектов — также угрозы prompt injection и data leakage).
+              Оцени, какие контрмеры уже есть, а какие отсутствуют.
+
+    - id: code_quality
+      title: "Code & Quality (ISO 25010, V&V)"
+      goal: "Оценить качество кода, тесты и покрытие"
+      actions:
+        - type: run_commands
+          params:
+            commands:
+              - "{{config.backend_test_command}} || echo 'backend_tests_failed'"
+              - "{{config.frontend_test_command}} || echo 'frontend_tests_failed'"
+        - type: analyze_files
+          params:
+            patterns:
+              - "tests/**"
+              - "spec/**"
+              - "e2e/**"
+              - "coverage.*"
+              - "coverage/**"
+              - "tests/.report.json"
+              - "**/pytest.*"
+              - "**/jest.*"
+              - "**/vitest.*"
+              - "package.json"
+              - "pyproject.toml"
+              - "pom.xml"
+              - "go.mod"
+              - "requirements.txt"
+        - type: summarize
+          params:
+            output: "audit_output/code_quality_snapshot.md"
+            prompt: >
+              На основе структуры tests/ и результатов тестовых команд
+              оцени качество по ISO 25010: функциональная пригодность, надёжность,
+              безопасность, поддерживаемость. Если есть данные по покрытию,
+              зафиксируй процент. Определи критические пробелы и дай конкретные
+              рекомендации по V&V (какие тесты добавить в первую очередь).
+
+    - id: ai_cognitive
+      title: "AI Data & Cognitive Audit"
+      goal: "Оценить данные, контекст и когнитивную архитектуру (если проект AI)"
+      conditions:
+        - "config.ai_features_enabled == true"
+      actions:
+        - type: analyze_files
+          params:
+            patterns:
+              - "src/summarizer/**"
+              - "src/voice_agent/**"
+              - "src/explainability/**"
+              - "src/utils/guardrails.py"
+              - "config/asr.yaml"
+              - "tasks/**"
+              - "ml/**"
+              - "ai/**"
+              - "models/**"
+              - "agents/**"
+              - "rag/**"
+              - "graph/**"
+              - "data/**"
+              - "prompts/**"
+        - type: summarize
+          params:
+            output: "audit_output/cognitive_audit_card.md"
+            prompt: >
+              Опиши:
+              - источники и пайплайны данных (data lineage);
+              - RAG/контекст (vector/graph/hybrid, кэш, память);
+              - паттерны работы агентов (Observe-Decide-Act, планирование, memory);
+              - наличие и качество объяснений (Chain-of-Thought, reasoning).
+              При возможности сделай мысленные контрфактические тесты и оцени
+              faithfulness reasoning качественно (низкая/средняя/высокая).
+              Сформируй карту рисков для данных и reasoning.
+
+    - id: security_mas_emergent
+      title: "Security, MAS & Emergent Risks"
+      goal: "Оценить безопасность, multi-agent и эмерджентные риски"
+      actions:
+        - type: analyze_files
+          params:
+            patterns:
+              - "src/**"
+              - ".github/workflows/security.yml"
+              - "SECURITY.md"
+              - "scripts/*vault*"
+              - ".env.example"
+              - "auth/**"
+              - "config/**"
+              - "tests/security/**"
+              - "tests/*security*"
+              - "tests/*integration_security*"
+        - type: summarize
+          params:
+            output: "audit_output/security_emergent_risks.md"
+            prompt: >
+              Оцени:
+              - как реализованы аутентификация и авторизация;
+              - как управляются секреты (env, vault, k8s secrets);
+              - какие security-проверки есть в CI/CD;
+              - для AI-проектов — защита от prompt injection, jailbreak,
+                data exfiltration, multi-agent конфликты.
+              Сформируй список критичных, высоких и средних рисков
+              и предложи меры по их снижению.
+
+    - id: report_synthesis
+      title: "Report Synthesis & POA&M"
+      goal: "Собрать финальный отчёт и план действий"
+      inputs:
+        - "audit_output/inventory_summary.md"
+        - "audit_output/process_audit.md"
+        - "audit_output/architecture_threat_assessment.md"
+        - "audit_output/code_quality_snapshot.md"
+        - "audit_output/cognitive_audit_card.md"
+        - "audit_output/security_emergent_risks.md"
+      actions:
+        - type: summarize
+          params:
+            output: "audit_output/FULL_AUDIT_REPORT.md"
+            prompt: >
+              Объедини все входные документы в единый Full Audit Report.
+              Следуй структуре из Приложения B к FULL_AUDIT_SPEC.md:
+              паспорт проекта, архитектура, данные, модели, бизнес, артефакты,
+              чек-листы, 5C (Criteria, Condition, Cause, Consequence, Corrective Action),
+              Cognitive Audit Card, LLM-Behavior Compliance, зрелость, итоговый вывод.
+              Стиль: только факты; при отсутствии данных — «неизвестно».
+        - type: summarize
+          params:
+            output: "audit_output/POAM.md"
+            prompt: >
+              На основе findings составь POA&M: список задач, приоритет (P0-P3),
+              оценку риска (вероятность/влияние), ответственных и целевые сроки.
+              Раздели действия на короткосрочные/среднесрочные/долгосрочные.

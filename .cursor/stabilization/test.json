@@ -1,0 +1,53 @@
+{
+  "timestamp": "2025-11-03T15:35:29.630282+00:00",
+  "period": "morning",
+  "mcp": {
+    "status": "ok",
+    "total_services": 2,
+    "enabled_services": 2,
+    "healthy_services": 0,
+    "services": {
+      "reflexio-api": {
+        "status": "disabled",
+        "latency_ms": null
+      },
+      "reflexio-edge": {
+        "status": "disabled",
+        "latency_ms": null
+      }
+    },
+    "timestamp": "2025-11-03T15:31:15.973013"
+  },
+  "governance": {
+    "status": "ok",
+    "active_profile": "automated",
+    "current_level": 4,
+    "reliability_index": 0.79,
+    "context_hit_rate": 0.69,
+    "last_audit_score": 79,
+    "mcp_governance": {
+      "alerts": [],
+      "enabled_count": 0,
+      "failed_services": [],
+      "healthy_count": 0,
+      "last_check": null,
+      "warnings": []
+    }
+  },
+  "api": {
+    "status": "not_running"
+  },
+  "database": {
+    "status": "not_exists"
+  },
+  "audit": {
+    "status": "ok",
+    "score": 79,
+    "level": 4,
+    "level_name": "Automated",
+    "ai_reliability_index": 0.79,
+    "context_hit_rate": 0.69,
+    "date": "2025-11-03"
+  },
+  "day": 1
+}

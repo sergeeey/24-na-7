@@ -1,0 +1,44 @@
+[Unit]
+Description=Reflexio 24/7 Listener Service
+After=network.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Замените на своего пользователя
+User=your-user
+# Замените на путь к проекту
+WorkingDirectory=/path/to/reflexio
+# Замените на путь к виртуальному окружению
+Environment="PATH=/path/to/venv/bin"
+# API URL (или используйте .env)
+Environment="API_URL=http://127.0.0.1:8000"
+# Запуск listener
+ExecStart=/path/to/venv/bin/python src/edge/listener.py
+# Перезапуск при сбое
+Restart=always
+RestartSec=10
+# Логи
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=reflexio-listener
+
+# Ограничения ресурсов (опционально)
+MemoryLimit=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
+
+
+
+
+
+
+
+
+
+
+
+
+

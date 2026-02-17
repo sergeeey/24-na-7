@@ -1,0 +1,65 @@
+active_profile: self-adaptive
+config:
+  adaptive_rules: true
+  auto_audit: true
+  auto_fix: true
+  deepconf_feedback_loop: true
+  memory_auto_curation: true
+  methodology_compliance: true
+  metrics_collection: true
+  osint_auto_regeneration: true
+  strict_validation: true
+context_hit_rate: 0.81
+current_level: 5
+description: Полностью самоприспосабливающаяся система с автоматической оптимизацией
+goals:
+  enable_governance_loop: true
+  enable_mcp_gateway: true
+  enable_rules_engine: true
+  enable_validation: true
+governance_policies:
+- action: downgrade_to_safe_mode
+  active: false
+  condition: reliability_index < 0.5
+  name: Safety Mode
+- action: upgrade_to_automated
+  active: true
+  condition: audit_score >= 70
+  name: Auto Upgrade
+- action: enable_self_adaptive
+  active: false
+  condition: audit_score >= 90 and reliability_index >= 0.95
+  name: Self-Adaptive
+- action: lower_mcp_priority
+  active: false
+  condition: mcp_governance.failed_services.length > 0
+  description: Понизить приоритет при сбоях MCP-сервисов
+  name: MCP Service Failure
+last_audit_date: '2025-11-15'
+last_audit_level: 5
+last_audit_score: 91
+mcp_governance:
+  alerts: []
+  enabled_count: 0
+  failed_services: []
+  healthy_count: 0
+  last_check: null
+  warnings: []
+metadata:
+  created_at: '2025-11-15T18:35:23.873847'
+  updated_at: '2025-11-15T18:35:23.873877'
+  version: '1.0'
+methodology_compliance:
+  active: false
+  compliance_score: null
+  last_check: null
+  status: unknown
+osint_governance:
+  auto_regeneration_active: false
+  avg_deepconf_confidence: null
+  knowledge_health: unknown
+  last_curation: null
+  missions_completed: 0
+previous_profile: production
+reliability_index: 0.91
+target_level: 5

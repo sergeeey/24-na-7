@@ -1,0 +1,5 @@
+# CEB-E Audit Pack Dependencies
+# Python 3.11+ required
+
+pyyaml>=6.0
+

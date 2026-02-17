@@ -1,0 +1,69 @@
+name: daily-energy-watch
+version: 1.0
+description: >
+  Ежедневный мониторинг энергетического рынка через OSINT KDS.
+  Автоматически запускает миссию по энергетике и обновляет знания.
+
+steps:
+  # ------------------------------------------------------------
+  - name: Run Energy Market Mission
+    shell: bash
+    run: |
+      set -e
+      echo "[daily-energy-watch] Запуск миссии Energy Market..."
+      
+      @playbook osint-mission --mission_file .cursor/osint/missions/EnergyMarket_Updates_Nov2025.json
+
+  # ------------------------------------------------------------
+  - name: Update Knowledge Graph
+    shell: bash
+    run: |
+      set -e
+      echo "[daily-energy-watch] Обновление Knowledge Graph..."
+      
+      python -m src.osint.knowledge_graph --build --export .cursor/osint/energy_graph.json --format json
+
+  # ------------------------------------------------------------
+  - name: Analyze Knowledge Health
+    shell: bash
+    run: |
+      set -e
+      echo "[daily-energy-watch] Анализ здоровья знаний..."
+      
+      python -m src.osint.adaptive_scoring --analyze
+
+  # ------------------------------------------------------------
+  - name: Apply DeepConf Feedback
+    shell: bash
+    run: |
+      set -e
+      echo "[daily-energy-watch] Применение DeepConf Feedback..."
+      
+      python -m src.osint.deepconf_feedback --apply || true
+
+  # ------------------------------------------------------------
+  - name: Summary
+    shell: bash
+    run: |
+      echo ""
+      echo "────────── Daily Energy Watch Complete ──────────"
+      echo ""
+      echo "Check:"
+      echo "  - .cursor/osint/results/energymarket_*_result_*.json"
+      echo "  - .cursor/osint/energy_graph.json"
+      echo "  - .cursor/memory/osint_research.md"
+      echo ""
+      echo "───────────────────────────────────────────────"
+
+
+
+
+
+
+
+
+
+
+
+
+

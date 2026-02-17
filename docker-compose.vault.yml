@@ -1,0 +1,62 @@
+# Docker Compose для HashiCorp Vault
+# Используется для безопасного хранения secrets
+#
+# Запуск:
+#   docker compose -f docker-compose.vault.yml up -d
+#
+# Инициализация (первый запуск):
+#   docker compose -f docker-compose.vault.yml exec vault vault operator init
+
+version: "3.8"
+
+services:
+  vault:
+    image: hashicorp/vault:latest
+    container_name: reflexio-vault
+    hostname: vault
+    ports:
+      - "8200:8200"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=reflexio-dev-token
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+      - VAULT_ADDR=http://127.0.0.1:8200
+    volumes:
+      - vault-data:/vault/file
+      - ./vault/config:/vault/config:ro
+      - ./vault/policies:/vault/policies:ro
+    cap_add:
+      - IPC_LOCK  # Required for Vault to lock memory
+    command: server -dev -dev-root-token-id="reflexio-dev-token"
+    networks:
+      - reflexio-net
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Опционально: Redis для rate limiting (production)
+  redis:
+    image: redis:7-alpine
+    container_name: reflexio-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - reflexio-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  vault-data:
+  redis-data:
+
+networks:
+  reflexio-net:
+    driver: bridge
+    external: true  # Используем существующую сеть из основного docker-compose

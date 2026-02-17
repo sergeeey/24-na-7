@@ -1,0 +1,121 @@
+{
+  "version": "1.0",
+  "hooks": {
+    "pre_commit": {
+      "enabled": true,
+      "scripts": [
+        "python .cursor/validation/validators.py --check safe",
+        "python -m pytest tests/ -v"
+      ],
+      "description": "Проверки перед коммитом"
+    },
+    "post_merge": {
+      "enabled": true,
+      "scripts": [
+        "python scripts/metrics_snapshot.py"
+      ],
+      "description": "Обновление метрик после слияния веток"
+    },
+    "on_env_change": {
+      "enabled": true,
+      "watch": [
+        ".env"
+      ],
+      "action": "python .cursor/validation/validators.py --check safe",
+      "description": "Проверка валидности при изменении .env"
+    },
+    "on_audit_complete": {
+      "enabled": true,
+      "trigger": ".cursor/audit/audit_report.json",
+      "action": "python .cursor/metrics/governance_loop.py --apply results",
+      "description": "Автоматическое применение Governance после аудита"
+    },
+    "on_config_change": {
+      "enabled": true,
+      "watch": [
+        ".cursor/mcp.json",
+        ".cursor/governance/profile.yaml"
+      ],
+      "action": "python .cursor/validation/validators.py --check cove",
+      "description": "Проверка согласованности при изменении конфигурации"
+    },
+    "daily_metrics": {
+      "enabled": false,
+      "schedule": "0 23 * * *",
+      "scripts": [
+        "python scripts/metrics_snapshot.py",
+        "python scripts/generate_digest.py --date today"
+      ],
+      "description": "Ежедневный сбор метрик и генерация дайджеста"
+    },
+    "on_mcp_validation": {
+      "enabled": true,
+      "schedule": "*/30 * * * *",
+      "trigger": ".cursor/metrics/mcp_health.json",
+      "action": "@playbook validate-mcp",
+      "description": "Автоматическая проверка MCP-сервисов каждые 30 минут"
+    },
+    "on_audit_success": {
+      "enabled": true,
+      "trigger": ".cursor/audit/audit_report.json",
+      "condition": "score >= 90",
+      "action": "@playbook level5-self-adaptive-upgrade",
+      "description": "Автоматический апгрейд до Level 5 при достижении Score >= 90"
+    },
+    "on_mcp_degraded": {
+      "enabled": true,
+      "trigger": ".cursor/metrics/mcp_health.json",
+      "condition": "failed_services.length > 0",
+      "action": "@playbook proxy-diagnostics",
+      "fallback": "python src/osint/zone_manager.py --rotate",
+      "description": "Диагностика и ротация зон при деградации MCP"
+    },
+    "on_low_confidence": {
+      "enabled": true,
+      "trigger": "cursor-metrics.json",
+      "condition": "avg_deepconf_confidence < 0.8",
+      "action": "python src/osint/deepconf_feedback.py --trigger-auto-mission",
+      "description": "Автоматический запуск миссии обновления при низкой уверенности DeepConf"
+    },
+    "on_agent_spawn": {
+      "enabled": true,
+      "action": "python scripts/agents/spawn_isolated.py --agent {agent_name} --script {script_path}",
+      "description": "Изолированный запуск агентов через Git worktrees"
+    },
+    "on_production_deploy": {
+      "enabled": true,
+      "trigger": ".github/workflows/cd.yml",
+      "action": "@playbook prod-readiness",
+      "description": "Проверка готовности перед production деплоем"
+    },
+    "on_digest_generated": {
+      "enabled": true,
+      "trigger": "digests/*.json",
+      "action": "python .cursor/validation/validators.py --check cove",
+      "description": "CoVe валидация сгенерированного дайджеста"
+    },
+    "on_validation_failed": {
+      "enabled": true,
+      "trigger": ".cursor/validation/*_failed.json",
+      "action": "python .cursor/metrics/governance_loop.py --apply results",
+      "description": "Обновление Governance при ошибках валидации"
+    },
+    "on_agent_completed": {
+      "enabled": true,
+      "trigger": ".cursor/agents/results/*.json",
+      "condition": "status == 'completed'",
+      "action": "python scripts/update_metrics_from_agents.py",
+      "description": "Обновление метрик после завершения работы агента"
+    },
+    "on_safe_validation_failed": {
+      "enabled": true,
+      "trigger": ".cursor/audit/safe_validation_failed.json",
+      "action": "@playbook security-validate",
+      "description": "Автоматическая проверка безопасности при ошибках SAFE"
+    }
+  },
+  "metadata": {
+    "created_at": "2025-11-03",
+    "last_updated": "2025-11-04"
+  }
+}

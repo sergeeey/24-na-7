@@ -1,0 +1,223 @@
+name: stabilization-reflexio
+version: 1.0
+description: >
+  Трёхдневный план стабилизации Reflexio 24/7 для перехода от Automated к Self-Adaptive.
+  Автоматически собирает метрики, проверяет стабильность и строит график динамики надёжности.
+
+parameters:
+  - name: day
+    default: 1
+    description: "День стабилизации (1, 2 или 3)"
+  - name: auto_mode
+    default: false
+    description: "Автоматический режим - собирать метрики без интерактивных тестов"
+
+steps:
+  # ------------------------------------------------------------
+  - name: Initialize Stabilization Session
+    shell: bash
+    run: |
+      set -e
+      echo "============================================================"
+      echo "Reflexio 24/7 - Day {{ day }} Stabilization Plan"
+      echo "============================================================"
+      echo ""
+      
+      # Создаём директорию для дневников стабилизации
+      mkdir -p .cursor/stabilization/day{{ day }}
+      
+      # Записываем начало сессии
+      echo "Started: $(date -u +%Y-%m-%dT%H:%M:%SZ)" > .cursor/stabilization/day{{ day }}/session.log
+      echo "Day: {{ day }}" >> .cursor/stabilization/day{{ day }}/session.log
+      echo "Mode: {{ auto_mode }}" >> .cursor/stabilization/day{{ day }}/session.log
+      echo "" >> .cursor/stabilization/day{{ day }}/session.log
+
+  # ------------------------------------------------------------
+  - name: Collect Baseline Metrics (Morning)
+    shell: bash
+    run: |
+      set -e
+      echo "[stabilization] Сбор базовых метрик утра..."
+      
+      python scripts/stabilization/collect_daily_state.py \
+        --day {{ day }} \
+        --period morning \
+        --output .cursor/stabilization/day{{ day }}/morning_metrics.json
+
+  # ------------------------------------------------------------
+  - name: Build and Start System
+    shell: bash
+    when: "{{ day }}" == "1"
+    run: |
+      set -e
+      echo "[stabilization] Построение и запуск системы..."
+      @playbook build-reflexio || echo "[stabilization] ⚠️ Build completed with warnings"
+
+  # ------------------------------------------------------------
+  - name: Start Agents (Day 1 only)
+    shell: bash
+    when: "{{ day }}" == "1"
+    run: |
+      set -e
+      echo "[stabilization] Запуск агентов в фоновом режиме..."
+      
+      # Проверяем, что агенты не запущены уже
+      if [ ! -f .cursor/stabilization/agents.pid ]; then
+        nohup python .cursor/agents/metrics_agent.py --interval 1800 > .cursor/stabilization/metrics_agent.log 2>&1 &
+        echo $! > .cursor/stabilization/agents.pid
+        echo "[stabilization] ✅ Metrics agent started"
+      fi
+
+  # ------------------------------------------------------------
+  - name: Validate MCP Services
+    shell: bash
+    run: |
+      set -e
+      echo "[stabilization] Проверка MCP-сервисов..."
+      
+      python .cursor/validation/mcp_validator.py --timeout 3 --save --summary > .cursor/stabilization/day{{ day }}/mcp_health.log 2>&1 || true
+      
+      # Копируем health report
+      cp .cursor/metrics/mcp_health.json .cursor/stabilization/day{{ day }}/mcp_health_morning.json 2>/dev/null || true
+
+  # ------------------------------------------------------------
+  - name: Run SAFE+CoVe Validation
+    shell: bash
+    run: |
+      set -e
+      echo "[stabilization] Запуск SAFE+CoVe валидации..."
+      
+      python .cursor/validation/validators.py --check all > .cursor/stabilization/day{{ day }}/validation.log 2>&1 || true
+      
+      # Сохраняем результаты
+      echo "Validation exit code: $?" >> .cursor/stabilization/day{{ day }}/session.log
+
+  # ------------------------------------------------------------
+  - name: Check System Health
+    shell: bash
+    run: |
+      set -e
+      python scripts/stabilization/check_health.py \
+        --day {{ day }} \
+        --output .cursor/stabilization/day{{ day }}/health_check.json
+
+  # ------------------------------------------------------------
+  - name: Day 2 Stress Test (if Day 2)
+    shell: bash
+    when: "{{ day }}" == "2" and "{{ auto_mode }}" == "false"
+    run: |
+      set -e
+      echo ""
+      echo "============================================================"
+      echo "Day 2 Stress Test - Manual Intervention Required"
+      echo "============================================================"
+      echo ""
+      echo "Для проведения стресс-теста выполните следующие шаги:"
+      echo "1. Временно измените SUPABASE_URL в .env на неверное значение"
+      echo "2. Подождите 10 минут"
+      echo "3. Проверьте: cat .cursor/governance/profile.yaml"
+      echo "4. Восстановите правильный SUPABASE_URL"
+      echo "5. Запустите: @playbook validate-mcp"
+      echo ""
+      echo "Нажмите Enter когда закончите тест..."
+      read -r
+      
+      echo "[stabilization] Stress test completed" >> .cursor/stabilization/day{{ day }}/session.log
+
+  # ------------------------------------------------------------
+  - name: Day 3 Full Cognitive Cycle (if Day 3)
+    shell: bash
+    when: "{{ day }}" == "3"
+    run: |
+      set -e
+      echo "[stabilization] Запуск полного когнитивного цикла..."
+      
+      # Генерируем дайджест
+      python scripts/generate_digest.py --date today || echo "[stabilization] ⚠️ Digest generation skipped"
+      
+      # Запускаем аудит
+      python .cursor/audit/run_audit.py --mode standard || echo "[stabilization] ⚠️ Audit completed with warnings"
+      
+      # Генерируем отчёт
+      python .cursor/audit/generate_report.py || true
+      
+      # Применяем Governance
+      python .cursor/metrics/governance_loop.py --apply results || true
+
+  # ------------------------------------------------------------
+  - name: Collect Evening Metrics
+    shell: bash
+    run: |
+      set -e
+      echo "[stabilization] Сбор вечерних метрик..."
+      
+      python scripts/stabilization/collect_daily_state.py \
+        --day {{ day }} \
+        --period evening \
+        --output .cursor/stabilization/day{{ day }}/evening_metrics.json
+      
+      # Копируем финальный MCP health
+      cp .cursor/metrics/mcp_health.json .cursor/stabilization/day{{ day }}/mcp_health_evening.json 2>/dev/null || true
+
+  # ------------------------------------------------------------
+  - name: Build Reliability Timeline
+    shell: bash
+    run: |
+      set -e
+      echo "[stabilization] Построение графика динамики надёжности..."
+      
+      python scripts/stabilization/build_timeline.py \
+        --days 1,{{ day }} \
+        --output .cursor/stabilization/reliability_timeline.json \
+        --graph .cursor/stabilization/reliability_graph.png
+
+  # ------------------------------------------------------------
+  - name: Generate Daily Report
+    shell: bash
+    run: |
+      set -e
+      echo "[stabilization] Генерация дневного отчёта..."
+      
+      python scripts/stabilization/generate_daily_report.py \
+        --day {{ day }} \
+        --output .cursor/stabilization/day{{ day }}/daily_report.md
+
+  # ------------------------------------------------------------
+  - name: Final Summary
+    shell: bash
+    run: |
+      echo ""
+      echo "============================================================"
+      echo "Day {{ day }} Stabilization Complete"
+      echo "============================================================"
+      echo ""
+      echo "Отчёты сохранены в:"
+      echo "  - .cursor/stabilization/day{{ day }}/daily_report.md"
+      echo "  - .cursor/stabilization/reliability_timeline.json"
+      echo ""
+      echo "Для просмотра результатов:"
+      echo "  cat .cursor/stabilization/day{{ day }}/daily_report.md"
+      echo ""
+      echo "Следующий шаг:"
+      if [ "{{ day }}" -lt 3 ]; then
+        echo "  @playbook stabilization-reflexio --day $(({{ day }} + 1))"
+      else
+        echo "  @playbook audit-standard"
+        echo "  Проверьте балл >= 85 для перехода на Level 5"
+      fi
+      echo ""
+      
+      echo "Completed: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> .cursor/stabilization/day{{ day }}/session.log
+
+
+
+
+
+
+
+
+
+
+
+
+

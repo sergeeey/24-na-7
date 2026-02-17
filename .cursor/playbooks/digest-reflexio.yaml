@@ -1,0 +1,105 @@
+name: digest-reflexio
+version: 1.0
+description: >
+  Генерация ночной сводки (digest) из транскриптов за день.
+  Анализирует информационную плотность, извлекает факты и инсайты,
+  создаёт markdown-дайджест и сохраняет в digests/.
+
+parameters:
+  date: "today"  # "today", "yesterday", или "YYYY-MM-DD"
+  output_format: "markdown"  # "markdown" или "json"
+  min_confidence: 0.7
+  include_metadata: true
+
+steps:
+  # ------------------------------------------------------------
+  - name: Validate Date Parameter
+    shell: bash
+    run: |
+      set -e
+      if [ "{{ date }}" = "today" ]; then
+        TARGET_DATE=$(date +%Y-%m-%d)
+      elif [ "{{ date }}" = "yesterday" ]; then
+        TARGET_DATE=$(date -d "yesterday" +%Y-%m-%d 2>/dev/null || date -v-1d +%Y-%m-%d)
+      else
+        TARGET_DATE="{{ date }}"
+      fi
+      echo "TARGET_DATE=$TARGET_DATE" > .cursor/digest_date.env
+      echo "[digest] Target date: $TARGET_DATE"
+
+  # ------------------------------------------------------------
+  - name: Check Database
+    shell: bash
+    run: |
+      set -e
+      if [ ! -f "src/storage/reflexio.db" ]; then
+        echo "[digest] ⚠️  Database not found, initializing..."
+        if [ -f "scripts/db_init.py" ] && [ -f "schema.sql" ]; then
+          python scripts/db_init.py schema.sql
+        else
+          echo "[digest] ❌ Cannot initialize database - schema files missing"
+          exit 1
+        fi
+      fi
+      echo "[digest] ✅ Database ready"
+
+  # ------------------------------------------------------------
+  - name: Generate Digest
+    shell: bash
+    run: |
+      set -e
+      source .cursor/digest_date.env
+      echo "[digest] Generating digest for $TARGET_DATE..."
+      
+      python scripts/generate_digest.py \
+        --date "$TARGET_DATE" \
+        --format "{{ output_format }}" \
+        --min-confidence {{ min_confidence }} \
+        --include-metadata "{{ include_metadata }}"
+      
+      echo "[digest] ✅ Digest generated"
+
+  # ------------------------------------------------------------
+  - name: Calculate Information Density
+    shell: bash
+    run: |
+      set -e
+      source .cursor/digest_date.env
+      echo "[digest] Analyzing information density..."
+      
+      python scripts/generate_digest.py \
+        --date "$TARGET_DATE" \
+        --analyze-density \
+        --output-digest false
+      
+      echo "[digest] ✅ Density analysis complete"
+
+  # ------------------------------------------------------------
+  - name: Summary
+    shell: bash
+    run: |
+      source .cursor/digest_date.env
+      DIGEST_FILE="digests/${TARGET_DATE}.md"
+      
+      if [ -f "$DIGEST_FILE" ]; then
+        echo "────────── Reflexio Digest Summary ──────────"
+        echo "Date: $TARGET_DATE"
+        echo "Digest: $DIGEST_FILE"
+        echo "Size: $(wc -l < "$DIGEST_FILE" 2>/dev/null || echo 0) lines"
+        echo "────────────────────────────────────────────"
+      else
+        echo "[digest] ⚠️  Digest file not found: $DIGEST_FILE"
+      fi
+
+
+
+
+
+
+
+
+
+
+
+
+

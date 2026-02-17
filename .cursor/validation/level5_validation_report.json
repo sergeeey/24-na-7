@@ -1,0 +1,132 @@
+{
+  "timestamp": "2025-11-04T05:58:03.927061+00:00",
+  "checks": {
+    "deepconf_metrics_file_exists": {
+      "status": "passed",
+      "message": "cursor-metrics.json найден",
+      "details": {}
+    },
+    "deepconf_confidence_present": {
+      "status": "warning",
+      "message": "avg_deepconf_confidence отсутствует (может быть None при отсутствии миссий)",
+      "details": {
+        "value": null
+      }
+    },
+    "deepconf_feedback_script_exists": {
+      "status": "passed",
+      "message": "",
+      "details": {}
+    },
+    "adaptive_scoring_script_exists": {
+      "status": "passed",
+      "message": "",
+      "details": {}
+    },
+    "osint_results_exist": {
+      "status": "warning",
+      "message": "Нет результатов миссий для анализа. Запустите хотя бы одну миссию.",
+      "details": {
+        "results_count": 0
+      }
+    },
+    "adaptive_scoring_formula": {
+      "status": "passed",
+      "message": "Формула работает, score = 2.74",
+      "details": {
+        "test_score": 2.7360444511379702,
+        "test_confidence": 0.85,
+        "test_validated": 4
+      }
+    },
+    "memory_curator_script_exists": {
+      "status": "passed",
+      "message": "",
+      "details": {}
+    },
+    "memory_bank_exists": {
+      "status": "warning",
+      "message": "Memory Bank не найден. Будет создан при первой миссии.",
+      "details": {}
+    },
+    "governance_profile_exists": {
+      "status": "passed",
+      "message": "",
+      "details": {}
+    },
+    "osint_governance_section": {
+      "status": "passed",
+      "message": "Секция osint_governance присутствует",
+      "details": {}
+    },
+    "governance_level": {
+      "status": "passed",
+      "message": "Текущий уровень: 4",
+      "details": {
+        "target_level": 5,
+        "current_level": 4
+      }
+    },
+    "governance_loop_osint_integration": {
+      "status": "passed",
+      "message": "governance_loop.py содержит osint_governance",
+      "details": {}
+    },
+    "brave_configured": {
+      "status": "passed",
+      "message": "Brave Search настроен, enabled: True",
+      "details": {}
+    },
+    "brightdata_configured": {
+      "status": "passed",
+      "message": "Bright Data настроен, enabled: True",
+      "details": {}
+    },
+    "brave_api_key_set": {
+      "status": "passed",
+      "message": "BRAVE_API_KEY присутствует в .env",
+      "details": {}
+    },
+    "brightdata_api_key_set": {
+      "status": "passed",
+      "message": "BRIGHTDATA_API_KEY присутствует в .env",
+      "details": {}
+    },
+    "mcp_clients_importable": {
+      "status": "passed",
+      "message": "",
+      "details": {}
+    },
+    "playbook_osint-mission_exists": {
+      "status": "passed",
+      "message": "Playbook: osint-mission.yaml",
+      "details": {}
+    },
+    "playbook_level5-upgrade_exists": {
+      "status": "passed",
+      "message": "Playbook: level5-upgrade.yaml",
+      "details": {}
+    },
+    "playbook_validate-mcp_exists": {
+      "status": "passed",
+      "message": "Playbook: validate-mcp.yaml",
+      "details": {}
+    },
+    "hooks_new_topic_handler": {
+      "status": "passed",
+      "message": "Hook для new_topic_detected присутствует",
+      "details": {}
+    },
+    "hooks_intelligence_integration": {
+      "status": "passed",
+      "message": "Hook интегрирован с intelligence",
+      "details": {}
+    }
+  },
+  "summary": {
+    "total_checks": 19,
+    "passed": 19,
+    "failed": 0,
+    "warnings": 3
+  }
+}

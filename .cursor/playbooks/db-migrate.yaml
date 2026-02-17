@@ -1,0 +1,138 @@
+name: db-migrate
+version: 1.0
+description: >
+  Миграция базы данных: SQLite → Supabase.
+  Выполняет dry-run, backup, миграцию схемы и данных, проверку.
+
+parameters:
+  - name: target
+    default: "supabase"
+    description: "Целевой бэкенд: supabase | sqlite"
+  - name: dry_run
+    default: false
+    description: "Dry run mode (без реальной миграции)"
+  - name: backup
+    default: true
+    description: "Создать backup SQLite перед миграцией"
+
+steps:
+  - name: Check prerequisites
+    shell: bash
+    run: |
+      echo "[db-migrate] Checking prerequisites..."
+      
+      if [ "{{ target }}" == "supabase" ]; then
+        if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+          echo "❌ Supabase credentials not set"
+          exit 1
+        fi
+        echo "✅ Supabase credentials found"
+      fi
+      
+      if [ ! -f "src/storage/reflexio.db" ]; then
+        echo "⚠️  SQLite database not found, skipping data migration"
+      else
+        echo "✅ SQLite database found"
+      fi
+
+  - name: Backup SQLite database
+    shell: bash
+    run: |
+      if [ "{{ backup }}" == "true" ] && [ -f "src/storage/reflexio.db" ]; then
+        echo "[db-migrate] Creating backup..."
+        backup_file="src/storage/reflexio.db.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "src/storage/reflexio.db" "$backup_file"
+        echo "✅ Backup created: $backup_file"
+      fi
+
+  - name: Apply schema migrations
+    shell: bash
+    run: |
+      echo "[db-migrate] Applying schema migrations..."
+      python src/storage/migrate.py --to {{ target }} --apply-schema
+
+  - name: Dry run data migration
+    shell: bash
+    run: |
+      if [ "{{ dry_run }}" == "true" ]; then
+        echo "[db-migrate] DRY RUN: Checking migration feasibility..."
+        python src/storage/migrate.py --to {{ target }} --migrate-data --dry-run
+      fi
+
+  - name: Migrate data (if not dry run)
+    shell: bash
+    run: |
+      if [ "{{ dry_run }}" == "false" ] && [ -f "src/storage/reflexio.db" ]; then
+        echo "[db-migrate] Migrating data..."
+        python src/storage/migrate.py --to {{ target }} --migrate-data
+      else
+        echo "⏭️  Skipping data migration (dry_run={{ dry_run }})"
+      fi
+
+  - name: Verify row counts
+    shell: bash
+    run: |
+      if [ "{{ target }}" == "supabase" ] && [ "{{ dry_run }}" == "false" ]; then
+        echo "[db-migrate] Verifying row counts..."
+        python src/storage/migrate.py --verify
+      fi
+
+  - name: Verify migration
+    shell: bash
+    run: |
+      echo "[db-migrate] Verifying migration..."
+      python - <<'PYCODE'
+      import sys
+      import json
+      from pathlib import Path
+      sys.path.insert(0, str(Path.cwd()))
+      
+      from src.storage.db import get_db_backend
+      
+      report = {
+          "timestamp": __import__("datetime").datetime.utcnow().isoformat(),
+          "tables": {},
+          "status": "success"
+      }
+      
+      try:
+          backend = get_db_backend()
+          
+          # Проверяем новые таблицы
+          new_tables = ["missions", "claims", "audio_meta", "text_entries", "insights", "metrics"]
+          # Проверяем старые таблицы (для совместимости)
+          old_tables = ["ingest_queue", "transcriptions", "facts", "digests"]
+          
+          all_tables = new_tables + old_tables
+          
+          for table in all_tables:
+              try:
+                  rows = backend.select(table, limit=10)
+                  count = len(rows) if rows else 0
+                  report["tables"][table] = {"accessible": True, "sample_count": count}
+                  print(f"✅ {table}: accessible (sample: {count} rows)")
+              except Exception as e:
+                  report["tables"][table] = {"accessible": False, "error": str(e)}
+                  print(f"⚠️  {table}: {e}")
+          
+          # Сохраняем отчёт
+          report_path = Path(".cursor/audit/db_migration_report.json")
+          report_path.parent.mkdir(parents=True, exist_ok=True)
+          with open(report_path, "w") as f:
+              json.dump(report, f, indent=2, ensure_ascii=False)
+          
+          print(f"✅ Migration verification complete")
+          print(f"📄 Report saved: {report_path}")
+      except Exception as e:
+          report["status"] = "failed"
+          report["error"] = str(e)
+          print(f"❌ Verification failed: {e}")
+          sys.exit(1)
+      PYCODE
+
+  - name: Log completion
+    run: |
+      echo ""
+      echo "✅ Database migration complete"
+      echo "📄 Report: .cursor/audit/db_migration_report.json"
+

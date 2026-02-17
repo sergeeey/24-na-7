@@ -1,0 +1,103 @@
+{
+  "id": "energymarket_updates_nov2025",
+  "name": "Energy Market Updates Nov 2025",
+  "description": "Отследить текущие слияния и сделки на рынке энергетики Европы",
+  "tasks": [
+    {
+      "id": "task_energy_mergers",
+      "query": "energy merger Europe 2025 site:reuters.com OR site:bloomberg.com",
+      "role": "OSINT аналитик по энергетическим рынкам",
+      "goggle_url": null,
+      "instruction": "Извлечь компании, участвующие в сделках, суммы и даты соглашений. Фокусироваться на сделках в Европе за ноябрь 2025.",
+      "format_schema": {
+        "type": "object",
+        "properties": {
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Полное описание сделки"
+                },
+                "deal_date": {
+                  "type": "string",
+                  "format": "YYYY-MM-DD",
+                  "description": "Дата сделки"
+                },
+                "companies": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "Компании-участники"
+                },
+                "amount": {
+                  "type": "string",
+                  "description": "Сумма сделки с валютой"
+                },
+                "category": {
+                  "type": "string",
+                  "enum": ["merger", "acquisition", "joint_venture", "partnership"]
+                },
+                "source": {
+                  "type": "string",
+                  "format": "url"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": ["text", "deal_date", "companies", "amount"]
+            }
+          }
+        },
+        "required": ["claims"]
+      },
+      "max_results": 15
+    },
+    {
+      "id": "task_renewable_deals",
+      "query": "renewable energy investment Europe 2025",
+      "role": "Аналитик возобновляемой энергетики",
+      "instruction": "Найти инвестиции в возобновляемую энергетику в Европе. Извлечь суммы инвестиций, компании, типы проектов (солнечные, ветровые, водородные).",
+      "format_schema": {
+        "type": "object",
+        "properties": {
+          "claims": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {"type": "string"},
+                "investment_amount": {"type": "string"},
+                "project_type": {"type": "string"},
+                "location": {"type": "string"},
+                "companies": {"type": "array", "items": {"type": "string"}},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+              },
+              "required": ["text", "investment_amount", "project_type"]
+            }
+          }
+        }
+      },
+      "max_results": 10
+    }
+  ],
+  "created_at": "2025-11-03T21:00:00Z",
+  "target_confidence": 0.85
+}
+
+
+
+
+
+
+
+
+
+
+
+
+

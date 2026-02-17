@@ -1,0 +1,90 @@
+# ASR Configuration
+# Reflexio 24/7 — November 2025 Integration Sprint
+
+# Provider selection
+provider: openai  # openai | whisperx | parakeet | local | distil-whisper
+
+# Model selection
+model: whisper-v3-turbo  # whisper-v3-turbo | whisperx | parakeet-v2 | faster-whisper | distil-small.en | distil-medium.en | distil-large-v2
+
+# Edge mode (offline transcription)
+edge_mode: false  # true = use distil-whisper for offline mode
+
+# Features
+diarization: false  # Enable speaker diarization (requires WhisperX)
+timestamps: true    # Enable word-level timestamps
+
+# OpenAI API settings (if provider = openai)
+openai:
+  api_key: ${OPENAI_API_KEY}
+  model: whisper-large-v3-turbo
+  response_format: verbose_json  # verbose_json | json | text | srt | vtt
+
+# Modal settings (if provider = modal)
+modal:
+  app_name: reflexio-asr
+  function_name: transcribe
+  timeout: 300
+
+# WhisperX settings (if model = whisperx)
+whisperx:
+  model_size: large-v3
+  device: cuda  # cuda | cpu
+  compute_type: float16  # float16 | float32 | int8
+  language: null  # null for auto-detect
+  align_model: WAV2VEC2_ASR_BASE_960H
+  diarize: false
+  min_speakers: null
+  max_speakers: null
+
+# ParaKeet settings (if model = parakeet-v2)
+parakeet:
+  model_id: nvidia/parakeet-tdt-v2
+  device: cuda
+  batch_size: 16
+  use_fp16: true
+
+# Distil-Whisper settings (if provider = distil-whisper or edge_mode = true)
+distil_whisper:
+  model_size: distil-small.en  # distil-small.en | distil-medium.en | distil-large-v2
+  device: cpu  # cpu | cuda (cpu recommended for offline)
+  compute_type: int8  # int8 | float16
+  offline_mode: true
+  max_offline_duration_minutes: 30  # Максимальная длительность офлайн транскрипции
+
+# Local faster-whisper settings (if provider = local)
+local:
+  model_size: large-v3  # tiny | base | small | medium | large | large-v2 | large-v3
+  device: cuda  # cuda | cpu
+  compute_type: float16  # float16 | float32 | int8
+  cpu_threads: 4
+  num_workers: 1
+
+# Audio format support
+audio_formats:
+  supported: [wav, mp3, m4a, flac, opus, aac, ogg]
+  preferred: wav  # Предпочтительный формат для edge_mode
+  opus:
+    enabled: true
+    bitrate: 64  # kbps
+  aac:
+    enabled: true
+    bitrate: 128  # kbps
+
+# Performance targets
+targets:
+  wer: 0.10  # Word Error Rate ≤ 10%
+  latency_ms: 1000  # < 1 сек при 44 кГц
+  throughput_multiplier: 5.0  # ≥ 5× реального времени
+
+# Fallback strategy
+fallback:
+  enabled: true
+  primary: whisper-v3-turbo
+  secondary: whisperx
+  tertiary: parakeet-v2
+  trigger_conditions:
+    - latency > 2000ms
+    - error_rate > 0.15
+    - api_unavailable: true
+

@@ -1,0 +1,214 @@
+name: serp-diagnostics
+version: 1.0
+description: >
+  Диагностика SERP API — проверка всех поисковых систем (Google, Bing, Yahoo)
+  через разные зоны Bright Data. Создаёт отчёт с рейтингом зон по латентности,
+  успешности и количеству результатов.
+
+parameters:
+  - name: output_dir
+    default: ".cursor/audit"
+    description: "Директория для сохранения отчётов"
+
+steps:
+  # ------------------------------------------------------------
+  - name: Check Environment Variables
+    shell: bash
+    run: |
+      set -e
+      echo "[serp-diagnostics] Проверка переменных окружения..."
+      
+      python - <<'PYCODE'
+      import os
+      
+      api_key = os.getenv("BRIGHTDATA_API_KEY")
+      
+      if not api_key:
+          print("❌ BRIGHTDATA_API_KEY не установлен в .env")
+          print("   SERP API требует API ключ (не proxy)")
+          exit(1)
+      else:
+          print(f"✅ BRIGHTDATA_API_KEY найден")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Check Zones Configuration
+    shell: bash
+    run: |
+      set -e
+      echo "[serp-diagnostics] Проверка конфигурации зон..."
+      
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      
+      zones_file = Path(".cursor/config/brightdata_zones.json")
+      
+      if not zones_file.exists():
+          print("⚠️  Конфигурация зон не найдена")
+          print("   Создаётся базовая конфигурация...")
+          zones_file.parent.mkdir(parents=True, exist_ok=True)
+          
+          default_config = {
+              "zones": {
+                  "serp_api1": {
+                      "name": "SERP API Zone 1",
+                      "type": "serp",
+                      "engines": ["google", "bing"],
+                      "priority": 1,
+                      "rotation_enabled": True,
+                  }
+              },
+              "rotation": {
+                  "enabled": True,
+                  "method": "round_robin",
+              }
+          }
+          
+          with open(zones_file, "w", encoding="utf-8") as f:
+              json.dump(default_config, f, indent=2, ensure_ascii=False)
+          
+          print(f"✅ Создана базовая конфигурация: {zones_file}")
+      else:
+          with open(zones_file, "r", encoding="utf-8") as f:
+              config = json.load(f)
+          
+          zones = config.get("zones", {})
+          serp_zones = [name for name, cfg in zones.items() if cfg.get("type") == "serp"]
+          
+          print(f"✅ Конфигурация зон найдена")
+          print(f"   Всего зон: {len(zones)}")
+          print(f"   SERP зон: {len(serp_zones)}")
+          
+          if serp_zones:
+              print(f"   Зоны: {', '.join(serp_zones)}")
+          else:
+              print("⚠️  SERP зон не найдено")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Run SERP Diagnostics
+    shell: bash
+    run: |
+      set -e
+      echo "[serp-diagnostics] Запуск диагностики SERP..."
+      
+      python scripts/serp_diagnostics.py \
+        --output-json {{ output_dir }}/serp_diagnostics.json \
+        --output-markdown {{ output_dir }}/serp_diagnostics.md
+
+  # ------------------------------------------------------------
+  - name: Check Diagnostics Results
+    shell: bash
+    run: |
+      set -e
+      echo "[serp-diagnostics] Проверка результатов..."
+      
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      
+      report_file = Path("{{ output_dir }}/serp_diagnostics.json")
+      
+      if report_file.exists():
+          data = json.loads(report_file.read_text(encoding="utf-8"))
+          summary = data.get("summary", {})
+          rankings = data.get("rankings", {})
+          
+          print(f"\nSERP Diagnostics Results:")
+          print(f"  Zones Tested: {summary.get('zones_tested', 0)}")
+          print(f"  Healthy: {summary.get('zones_healthy', 0)}")
+          print(f"  Degraded: {summary.get('zones_degraded', 0)}")
+          print(f"  Unhealthy: {summary.get('zones_unhealthy', 0)}")
+          
+          if rankings.get("by_latency"):
+              best = rankings["by_latency"][0]
+              print(f"\n🏆 Best Zone: {best['zone']} ({best['latency_ms']}ms)")
+          
+          if summary.get("zones_unhealthy", 0) > 0:
+              print("\n⚠️  Some zones are unhealthy - check the report")
+          else:
+              print("\n✅ All SERP zones are healthy!")
+      else:
+          print("❌ Diagnostics report not found")
+          exit(1)
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Update Metrics
+    shell: bash
+    run: |
+      set -e
+      echo "[serp-diagnostics] Обновление метрик..."
+      
+      python - <<'PYCODE'
+      import json
+      from pathlib import Path
+      from datetime import datetime, timezone
+      
+      # Обновляем cursor-metrics.json с SERP метриками
+      metrics_file = Path("cursor-metrics.json")
+      diagnostics_file = Path("{{ output_dir }}/serp_diagnostics.json")
+      
+      if diagnostics_file.exists():
+          diagnostics = json.loads(diagnostics_file.read_text(encoding="utf-8"))
+          
+          if metrics_file.exists():
+              metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+          else:
+              metrics = {"metrics": {}}
+          
+          # Обновляем метрики SERP
+          if "osint" not in metrics["metrics"]:
+              metrics["metrics"]["osint"] = {}
+          
+          summary = diagnostics.get("summary", {})
+          rankings = diagnostics.get("rankings", {})
+          
+          metrics["metrics"]["osint"]["serp_zones_tested"] = summary.get("zones_tested", 0)
+          metrics["metrics"]["osint"]["serp_zones_healthy"] = summary.get("zones_healthy", 0)
+          metrics["metrics"]["osint"]["serp_last_diagnostics"] = datetime.now(timezone.utc).isoformat()
+          
+          if rankings.get("by_latency"):
+              best = rankings["by_latency"][0]
+              metrics["metrics"]["osint"]["serp_best_zone"] = best["zone"]
+              metrics["metrics"]["osint"]["serp_best_latency_ms"] = best["latency_ms"]
+          
+          metrics_file.write_text(
+              json.dumps(metrics, indent=2, ensure_ascii=False),
+              encoding="utf-8"
+          )
+          
+          print("[serp-diagnostics] ✅ Metrics updated")
+      PYCODE
+
+  # ------------------------------------------------------------
+  - name: Summary
+    shell: bash
+    run: |
+      echo ""
+      echo "────────── SERP Diagnostics Complete ──────────"
+      echo ""
+      echo "Reports:"
+      echo "  - {{ output_dir }}/serp_diagnostics.json"
+      echo "  - {{ output_dir }}/serp_diagnostics.md"
+      echo ""
+      echo "Use the Markdown report to review zone rankings:"
+      echo "  - Fastest zones (by latency)"
+      echo "  - Most reliable zones (by success rate)"
+      echo "  - Most productive zones (by results count)"
+      echo ""
+      echo "───────────────────────────────────────────────"
+
+
+
+
+
+
+
+
+
+
+
+
+

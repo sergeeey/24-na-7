@@ -1,0 +1,85 @@
+{
+  "timestamp": "2025-11-03T18:13:00.412779",
+  "status": "pending",
+  "profile": "automated",
+  "level": 4,
+  "score": 82,
+  "checks": {
+    "environment": {
+      "status": "fail",
+      "issues": [
+        "SUPABASE_URL not set",
+        "SUPABASE_ANON_KEY not set",
+        "OPENAI_API_KEY not set (optional)",
+        "ANTHROPIC_API_KEY not set (optional)",
+        "BRAVE_API_KEY not set (optional)",
+        "BRIGHTDATA_API_KEY not set (optional)"
+      ],
+      "safe_mode": "audit",
+      "db_backend": "sqlite"
+    },
+    "supabase": {
+      "status": "error",
+      "connection": false
+    },
+    "security": {
+      "status": "ok",
+      "safe": true,
+      "cove": true
+    },
+    "llm": {
+      "status": "warn",
+      "provider": "openai",
+      "available": false,
+      "error": "openai API key not set"
+    },
+    "observability": {
+      "status": "ok",
+      "components": {
+        "prometheus": true,
+        "alerts": true,
+        "grafana": true
+      }
+    },
+    "governance": {
+      "status": "ok",
+      "profile": "automated",
+      "level": 4,
+      "score": 79
+    },
+    "audit": {
+      "status": "ok",
+      "score": 82,
+      "level": 4
+    },
+    "metrics": {
+      "status": "ok",
+      "metrics": {
+        "osint": {
+          "avg_deepconf_confidence": null,
+          "missions_completed": 0,
+          "total_claims": 0,
+          "validated_claims": 0,
+          "last_mission": null
+        },
+        "mcp": {
+          "brave_latency_ms": null,
+          "brightdata_latency_ms": null,
+          "brave_success_rate": null,
+          "brightdata_success_rate": null
+        },
+        "governance": {
+          "current_level": 4,
+          "reliability_index": 0.79,
+          "context_hit_rate": 0.69
+        }
+      }
+    }
+  },
+  "metrics": {
+    "ai_reliability_index": 0.79,
+    "context_hit_rate": 0.69,
+    "deepconf_confidence": null
+  },
+  "ready": false
+}

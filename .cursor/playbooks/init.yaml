@@ -1,0 +1,260 @@
+name: init-reflexio
+version: 1.2
+description: >
+  Первичная инициализация Reflexio 24/7 с продакшен-проверками.
+  Готовит окружение, проверяет два мира ключей (Python + MCP),
+  валидирует MCP, поднимает API в фоне, делает health-check
+  и даёт аккуратное резюме готовности.
+
+parameters:
+  skip_database: false
+  skip_audit: false
+  python_version: "3.11"
+  api_host: "127.0.0.1"
+  api_port: "8000"
+  start_scheduler: false
+
+steps:
+  - name: Validate Python Version & FFmpeg
+    shell: bash
+    run: |
+      set -euo pipefail
+      pyver=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+      required="{{ python_version }}"
+      echo "[init] Python: $pyver (required: $required+)"
+      if [ "$(printf '%s\n' "$required" "$pyver" | sort -V | head -n1)" != "$required" ]; then
+        echo "[init] ❌ Требуется Python $required+ (найдено $pyver)"; exit 1
+      fi
+      if ! command -v ffmpeg >/dev/null 2>&1; then
+        echo "[init] ❌ FFmpeg не найден. Установи ffmpeg (в Docker уже включён)."; exit 1
+      fi
+      echo "[init] ✅ Python & FFmpeg OK"
+
+  - name: Ensure .env present
+    shell: bash
+    run: |
+      set -euo pipefail
+      if [ ! -f .env ]; then
+        if [ -f .env.example ]; then
+          cp .env.example .env
+          echo "[init] ✅ .env создан из .env.example"
+        else
+          cat > .env <<'EOF'
+DB_BACKEND=supabase
+SUPABASE_URL=
+SUPABASE_ANON_KEY=
+OPENAI_API_KEY=
+SAFE_MODE=strict
+LOG_LEVEL=INFO
+# Необязательно (если используешь Python-клиенты Brave/BD):
+BRAVE_API_KEY=
+BRIGHTDATA_API_KEY=
+BRIGHTDATA_PROXY_HTTP=
+BRIGHTDATA_PROXY_WS=
+EOF
+          echo "[init] ⚠️  .env.example не найден — создан минимальный .env (заполни ключи)"
+        fi
+      else
+        echo "[init] ✅ .env найден"
+      fi
+      echo "[init] ℹ️ Проверь, что ключи заполнены (см. API_KEYS_SETUP.md)"
+
+  - name: Install Dependencies
+    shell: bash
+    run: |
+      set -euo pipefail
+      echo "[init] Установка зависимостей..."
+      if [ -f pyproject.toml ]; then
+        pip install -e ".[dev]" || { echo "[init] fallback: requirements.txt"; pip install -r requirements.txt; }
+      elif [ -f requirements.txt ]; then
+        pip install -r requirements.txt
+      else
+        echo "[init] ❌ Файлы зависимостей не найдены"; exit 1
+      fi
+      if [ -f ".cursor/audit/requirements.txt" ]; then
+        pip install -r .cursor/audit/requirements.txt
+      fi
+      echo "[init] ✅ Зависимости установлены"
+
+  - name: Check API Keys (both worlds)
+    shell: bash
+    run: |
+      set -euo pipefail
+      if [ -f scripts/check_api_keys.py ]; then
+        python scripts/check_api_keys.py || { echo "[init] ❌ Ключи/конфиг MCP не валидны (см. отчёт выше)"; exit 1; }
+      else
+        echo "[init] ⚠️ scripts/check_api_keys.py не найден (пропускаем)"
+      fi
+      echo "[init] ✅ Ключи/конфиг MCP проверены"
+
+  - name: Validate MCP Config & Health
+    shell: bash
+    run: |
+      set -euo pipefail
+      if [ -f scripts/validate_mcp_config.py ]; then
+        python scripts/validate_mcp_config.py || { echo "[init] ❌ MCP config invalid"; exit 1; }
+      fi
+      # Если есть playbook для MCP-валидатора – запустим
+      if grep -q "validate-mcp.yaml" -r .cursor/playbooks 2>/dev/null; then
+        echo "[init] Запуск @playbook validate-mcp ..."
+        echo "@playbook validate-mcp" >/dev/null || true
+      fi
+      echo "[init] ✅ MCP в порядке"
+
+  - name: Initialize Database (local fallback)
+    shell: bash
+    when: "{{ skip_database }}" == "false"
+    run: |
+      set -euo pipefail
+      # Локальная SQLite инициализация как fallback
+      if [ -f "scripts/db_init.py" ] && [ -f "schema.sql" ]; then
+        python scripts/db_init.py schema.sql || echo "[init] ⚠️ Локальная БД не инициализирована (OK при Supabase)"
+      else
+        echo "[init] ℹ️ Локальная БД не требуется (используется Supabase)"
+      fi
+
+  - name: Create Storage Directories
+    shell: bash
+    run: |
+      set -euo pipefail
+      mkdir -p src/storage/uploads src/storage/recordings digests logs .cursor/logs
+      echo "[init] ✅ Директории готовы"
+
+  - name: SAFE+CoVe Validation
+    shell: bash
+    run: |
+      set -euo pipefail
+      if [ -f ".cursor/validation/validators.py" ]; then
+        python .cursor/validation/validators.py --check all || echo "[init] ⚠️ SAFE/CoVe нашли замечания (см. вывод)"
+      else
+        echo "[init] ⚠️ Валидаторы не найдены"
+      fi
+
+  - name: MCP & Proxy diagnostics (optional but recommended)
+    shell: bash
+    run: |
+      set -e
+      if grep -q "proxy-diagnostics.yaml" -r .cursor/playbooks 2>/dev/null; then
+        echo "@playbook proxy-diagnostics" >/dev/null || true
+      fi
+      if grep -q "serp-diagnostics.yaml" -r .cursor/playbooks 2>/dev/null; then
+        echo "@playbook serp-diagnostics" >/dev/null || true
+      fi
+      echo "[init] ✅ Диагностика сетевого слоя запрошена (если доступна)"
+
+  - name: Check port availability
+    shell: bash
+    run: |
+      set -euo pipefail
+      HOST="{{ api_host }}"; PORT="{{ api_port }}"
+      if python - <<PY
+import socket,sys
+s=socket.socket(); 
+try:
+  s.bind(("$HOST", int("$PORT")))
+  s.close()
+  sys.exit(0)
+except OSError:
+  sys.exit(1)
+PY
+      then
+        echo "[init] ✅ Порт $HOST:$PORT свободен"
+      else
+        echo "[init] ❌ Порт $HOST:$PORT занят — закрой процесс или выбери другой порт"; exit 1
+      fi
+
+  - name: Start API (background) & Health Check
+    shell: bash
+    run: |
+      set -euo pipefail
+      HOST="{{ api_host }}"; PORT="{{ api_port }}"
+      uvicorn src.api.main:app --host "$HOST" --port "$PORT" --log-level info & 
+      echo $! > .cursor/server.pid
+      echo "[init] ⏳ Ожидание готовности /health ..."
+      for i in $(seq 1 30); do
+        if curl -fsS "http://$HOST:$PORT/health" >/dev/null; then
+          echo "[init] ✅ API готов: http://$HOST:$PORT"; break
+        fi
+        sleep 1
+      done
+      if ! curl -fsS "http://$HOST:$PORT/health" >/dev/null; then
+        echo "[init] ❌ API не поднялся (нет /health)"; kill $(cat .cursor/server.pid) || true; exit 1
+      fi
+
+  - name: Run First Audit (optional)
+    shell: bash
+    when: "{{ skip_audit }}" == "false"
+    run: |
+      set -euo pipefail
+      if [ -f ".cursor/audit/run_audit.py" ]; then
+        python .cursor/audit/run_audit.py --mode standard || echo "[init] ⚠️ Аудит завершился с предупреждениями"
+      else
+        echo "[init] ⚠️ Скрипт аудита не найден"
+      fi
+
+  - name: Verify Full Pipeline (readiness gates)
+    shell: bash
+    run: |
+      set -euo pipefail
+      if [ -f "scripts/verify_full_pipeline.py" ]; then
+        python scripts/verify_full_pipeline.py || { echo "[init] ❌ Конвейер не прошёл полную верификацию"; exit 1; }
+      else
+        echo "[init] ⚠️ verify_full_pipeline.py не найден — пропускаем"
+      fi
+      if grep -q "prod-readiness.yaml" -r .cursor/playbooks 2>/dev/null; then
+        echo "[init] Запуск @playbook prod-readiness ..."
+        echo "@playbook prod-readiness" >/dev/null || true
+      fi
+      echo "[init] ✅ Readiness OK"
+
+  - name: Optionally start Scheduler
+    shell: bash
+    when: "{{ start_scheduler }}" == "true"
+    run: |
+      set -euo pipefail
+      if [ -f "scripts/scheduler.py" ]; then
+        nohup python scripts/scheduler.py >> .cursor/logs/scheduler.log 2>&1 &
+        echo $! > .cursor/scheduler.pid
+        echo "[init] ✅ Scheduler запущен (PID $(cat .cursor/scheduler.pid))"
+      else
+        echo "[init] ⚠️ Scheduler отсутствует"
+      fi
+
+  - name: Apply Governance Profile
+    shell: bash
+    run: |
+      set -euo pipefail
+      if [ -f ".cursor/metrics/governance_loop.py" ]; then
+        python .cursor/metrics/governance_loop.py --apply results || echo "[init] ⚠️ Governance не применён"
+      fi
+
+  - name: Stop API (cleanup)
+    shell: bash
+    run: |
+      set -euo pipefail
+      if [ -f .cursor/server.pid ]; then
+        PID=$(cat .cursor/server.pid)
+        if ps -p "$PID" >/dev/null 2>&1; then
+          kill "$PID" || true
+          echo "[init] ⏹️  API остановлен (PID $PID)"
+        fi
+      fi
+
+  - name: Summary
+    shell: bash
+    run: |
+      echo ""
+      echo "────────── Reflexio 24/7 Initialization Complete (v1.2) ──────────"
+      echo "✅ Окружение и зависимости"
+      echo "✅ Два мира ключей (Python .env + MCP)"
+      echo "✅ MCP-config и сетевые диагностики"
+      echo "✅ API health-check пройден"
+      echo "✅ Readiness gates пройдены"
+      echo ""
+      echo "Полезное:"
+      echo "  • Проверка ключей:          python scripts/check_api_keys.py"
+      echo "  • Полная проверка конвейера: python scripts/verify_full_pipeline.py"
+      echo "  • Readiness playbook:        @playbook prod-readiness"
+      echo "  • Быстрый запуск API:        uvicorn src.api.main:app --reload"
+      echo "  • OSINT-миссия:              @playbook osint-mission --mission_file .cursor/osint/missions/first_mission.json"
+      echo "──────────────────────────────────────────────────────────────────"

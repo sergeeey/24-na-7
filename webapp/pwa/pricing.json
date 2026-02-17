@@ -1,0 +1,59 @@
+{
+  "version": "2.1",
+  "updated_at": "2025-11-04",
+  "plans": {
+    "free": {
+      "name": "Free",
+      "price": 0,
+      "currency": "USD",
+      "duration_minutes_per_day": 30,
+      "features": [
+        "30 минут записи в день",
+        "Базовые дайджесты",
+        "Офлайн транскрипция",
+        "Базовый эмоциональный анализ"
+      ],
+      "stripe_price_id": null
+    },
+    "premium_monthly": {
+      "name": "Premium Monthly",
+      "price": 9.99,
+      "currency": "USD",
+      "duration_minutes_per_day": -1,
+      "features": [
+        "Неограниченная запись",
+        "Расширенные дайджесты (PDF)",
+        "Эмоциональный анализ (полный)",
+        "Приоритетная поддержка",
+        "Экспорт данных"
+      ],
+      "stripe_price_id": "price_premium_monthly"
+    },
+    "premium_yearly": {
+      "name": "Premium Yearly",
+      "price": 99.99,
+      "currency": "USD",
+      "duration_minutes_per_day": -1,
+      "features": [
+        "Неограниченная запись",
+        "Расширенные дайджесты (PDF)",
+        "Эмоциональный анализ (полный)",
+        "Приоритетная поддержка",
+        "Экспорт данных",
+        "Скидка 17%"
+      ],
+      "stripe_price_id": "price_premium_yearly"
+    }
+  },
+  "referral": {
+    "enabled": true,
+    "bonus_minutes": 100,
+    "required_invites": 3,
+    "description": "Пригласи 3 друзей и получи +100 минут"
+  }
+}
+
+
+
+
+

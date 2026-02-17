@@ -1,0 +1,108 @@
+# SAFE (Security And Functionality Evaluation) Policies
+# Политики безопасности для Reflexio 24/7
+
+version: "1.0"
+updated: "2025-11-03"
+
+pii_mask:
+  enabled: true
+  patterns:
+    # Email addresses
+    - pattern: '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+      replacement: '[EMAIL_REDACTED]'
+    # Phone numbers (RU format)
+    - pattern: '\+?7[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}'
+      replacement: '[PHONE_REDACTED]'
+    # International phone
+    - pattern: '\+\d{1,3}[\s\-]?\d{1,4}[\s\-]?\d{1,4}[\s\-]?\d{1,9}'
+      replacement: '[PHONE_REDACTED]'
+    # Credit cards (16 digits)
+    - pattern: '\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b'
+      replacement: '[CARD_REDACTED]'
+    # Passport numbers (RU format)
+    - pattern: '\d{4}\s?\d{6}'
+      replacement: '[PASSPORT_REDACTED]'
+    # IP addresses (internal tracking)
+    - pattern: '\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b'
+      replacement: '[IP_REDACTED]'
+
+domain_allowlist:
+  enabled: true
+  # Разрешённые домены для внешних запросов
+  allowed:
+    - "api.search.brave.com"
+    - "api.brightdata.com"
+    - "brd.superproxy.io"
+    - "*.supabase.co"
+    - "api.openai.com"
+    - "api.anthropic.com"
+    - "www.google.com"
+    - "www.bing.com"
+    - "search.yahoo.com"
+  # Блокируемые домены
+  blocked:
+    - "*.malicious.com"
+    - "*.phishing.net"
+  mode: "whitelist"  # whitelist или blacklist
+
+outbound_safeguards:
+  # Защита от утечки данных во внешние запросы
+  enabled: true
+  max_payload_size_mb: 10
+  max_requests_per_minute: 60
+  require_pii_mask: true
+  block_file_uploads: true  # Блокировать загрузку файлов во внешние сервисы
+  allowed_content_types:
+    - "application/json"
+    - "text/plain"
+    - "text/markdown"
+
+file_validation:
+  enabled: true
+  max_file_size_mb: 100
+  allowed_extensions:
+    - ".wav"
+    - ".mp3"
+    - ".flac"
+    - ".ogg"
+    - ".txt"
+    - ".json"
+    - ".md"
+  blocked_extensions:
+    - ".exe"
+    - ".bat"
+    - ".sh"
+    - ".py"
+    - ".js"
+  scan_for_malware: false  # Требует внешний антивирус
+
+log_security:
+  enabled: true
+  # Не логировать PII
+  mask_in_logs: true
+  # Не логировать секреты
+  mask_secrets: true
+  secret_patterns:
+    - pattern: 'api[_-]?key["\s:=]+([a-zA-Z0-9_\-]{20,})'
+      replacement: '[API_KEY_REDACTED]'
+    - pattern: 'password["\s:=]+([^\s"\']{6,})'
+      replacement: '[PASSWORD_REDACTED]'
+    - pattern: 'token["\s:=]+([a-zA-Z0-9_\-]{20,})'
+      replacement: '[TOKEN_REDACTED]'
+
+rate_limiting:
+  enabled: true
+  per_ip_limit: 100  # запросов в минуту
+  per_endpoint_limit: 200
+  burst_limit: 50
+
+
+
+
+
+
+
+
+
+
+

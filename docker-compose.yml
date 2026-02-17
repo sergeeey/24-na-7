@@ -1,0 +1,138 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: reflexio-api
+    ports:
+      - "8080:8000"
+    env_file:
+      - .env
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DB_BACKEND=${DB_BACKEND:-sqlite}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE=${SUPABASE_SERVICE_ROLE}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - BRIGHTDATA_API_KEY=${BRIGHTDATA_API_KEY}
+      - BRIGHTDATA_PROXY_HTTP=${BRIGHTDATA_PROXY_HTTP}
+      - SAFE_MODE=${SAFE_MODE:-audit}
+      - SAFE_PII_MASK=${SAFE_PII_MASK:-1}
+    volumes:
+      - ./src/storage:/app/src/storage
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - reflexio-net
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: reflexio-worker
+    env_file:
+      - .env
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DB_BACKEND=${DB_BACKEND:-sqlite}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE=${SUPABASE_SERVICE_ROLE}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - BRIGHTDATA_API_KEY=${BRIGHTDATA_API_KEY}
+      - BRIGHTDATA_PROXY_HTTP=${BRIGHTDATA_PROXY_HTTP}
+    volumes:
+      - ./src/storage:/app/src/storage
+      - ./.cursor:/app/.cursor
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      - api
+    networks:
+      - reflexio-net
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: reflexio-scheduler
+    command: ["python", "scripts/scheduler.py"]
+    env_file:
+      - .env
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DB_BACKEND=${DB_BACKEND:-sqlite}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE=${SUPABASE_SERVICE_ROLE}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - BRIGHTDATA_API_KEY=${BRIGHTDATA_API_KEY}
+    volumes:
+      - ./src/storage:/app/src/storage
+      - ./.cursor:/app/.cursor
+      - ./logs:/app/logs
+      - ./scripts:/app/scripts
+    restart: always
+    depends_on:
+      - api
+      - worker
+    networks:
+      - reflexio-net
+
+  # Опционально: Prometheus для метрик
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: reflexio-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - reflexio-net
+    profiles:
+      - observability
+
+  # Опционально: Grafana для визуализации
+  grafana:
+    image: grafana/grafana:latest
+    container_name: reflexio-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana_dashboards:/etc/grafana/provisioning/dashboards
+    networks:
+      - reflexio-net
+    profiles:
+      - observability
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  reflexio-net:
+    driver: bridge
+

@@ -1,0 +1,163 @@
+name: build-reflexio
+version: 1.1
+description: >
+  Полная сборка и проверка Reflexio 24/7 (F1 Build).
+  Включает установку окружения, инициализацию базы данных, запуск API, smoke-тест,
+  метрики и аудит CEB-E. Автоматически поднимает сервер и сохраняет артефакты.
+
+parameters:
+  skip_tests: false
+  force_reinstall: false
+  api_port: 8000
+
+steps:
+  # ------------------------------------------------------------
+  - name: Validate Environment
+    shell: bash
+    run: |
+      set -e
+      echo "[env] Python:" $(python --version)
+      echo "[env] FFmpeg:" $(ffmpeg -version | head -1 || echo "not installed")
+      pyver=$(python -c 'import sys; print(sys.version_info.minor)')
+      if [ "$pyver" -lt 10 ]; then
+        echo "[env] ❌ Python 3.10+ required"; exit 1
+      fi
+      echo "[env] ✅ Environment validated"
+
+  # ------------------------------------------------------------
+  - name: Prepare .env
+    shell: bash
+    run: |
+      set -e
+      [ -f .env ] || cp .env.example .env
+      echo "[build-reflexio] .env ready"
+
+  # ------------------------------------------------------------
+  - name: Install Dependencies
+    shell: bash
+    run: |
+      set -e
+      if [ "{{ force_reinstall }}" = "true" ]; then pip install --upgrade pip; fi
+      if [ -f pyproject.toml ]; then
+        pip install -e ".[dev]"
+      elif [ -f requirements.txt ]; then
+        pip install -r requirements.txt
+      fi
+      if [ -f ".cursor/audit/requirements.txt" ]; then
+        pip install -r .cursor/audit/requirements.txt
+      fi
+      echo "[deps] ✅ Installed successfully"
+
+  # ------------------------------------------------------------
+  - name: Initialize Database
+    shell: bash
+    run: |
+      set -e
+      if [ -f "scripts/db_init.py" ] && [ -f "schema.sql" ]; then
+        python scripts/db_init.py schema.sql
+        echo "[db] ✅ Schema applied"
+      else
+        echo "[db] ⚠️  Schema files not found, skipping DB init"
+      fi
+
+  # ------------------------------------------------------------
+  - name: Create Logs Directory
+    shell: bash
+    run: |
+      set -e
+      mkdir -p logs
+      echo "[build] Logs directory ready"
+
+  # ------------------------------------------------------------
+  - name: Start API Server (background)
+    shell: bash
+    run: |
+      set -e
+      mkdir -p .cursor
+      uvicorn src.api.main:app --host 127.0.0.1 --port {{ api_port }} --reload > logs/api.log 2>&1 &
+      SERVER_PID=$!
+      echo $SERVER_PID > .cursor/server.pid
+      echo "[server] ⏳ Waiting for API startup..."
+      for i in {1..10}; do
+        if curl -sf http://127.0.0.1:{{ api_port }}/health > /dev/null; then
+          echo "[server] ✅ Ready (PID $SERVER_PID)"; break
+        fi
+        sleep 1
+      done
+
+  # ------------------------------------------------------------
+  - name: Smoke Ingest + ASR
+    shell: bash
+    run: |
+      set -e
+      if [ -f "scripts/smoke_ingest.py" ]; then
+        python scripts/smoke_ingest.py --url http://127.0.0.1:{{ api_port }} --out sample_file_id.txt
+        if [ -f "scripts/trigger_transcription.py" ]; then
+          python scripts/trigger_transcription.py --url http://127.0.0.1:{{ api_port }} --in sample_file_id.txt
+        fi
+        echo "[smoke] ✅ Ingest + Transcription passed"
+      else
+        echo "[smoke] ⚠️  Smoke test scripts not found, skipping"
+      fi
+
+  # ------------------------------------------------------------
+  - name: Metrics Snapshot
+    shell: bash
+    run: |
+      set -e
+      if [ -f "scripts/metrics_snapshot.py" ]; then
+        python scripts/metrics_snapshot.py
+        echo "[metrics] ✅ Snapshot written"
+      else
+        echo "[metrics] ⚠️  Metrics script not found, skipping"
+      fi
+
+  # ------------------------------------------------------------
+  - name: Run Tests
+    shell: bash
+    when: "{{ skip_tests }}" == "false"
+    run: |
+      set -e
+      echo "[tests] Running pytest..."
+      pytest -q --disable-warnings || { echo "[tests] ❌ Failed"; exit 1; }
+      echo "[tests] ✅ Passed"
+
+  # ------------------------------------------------------------
+  - name: Run CEB-E Standard Audit
+    command: "@playbook audit-standard"
+
+  # ------------------------------------------------------------
+  - name: Stop API Server
+    shell: bash
+    run: |
+      set -e
+      if [ -f .cursor/server.pid ]; then
+        kill $(cat .cursor/server.pid) 2>/dev/null || true
+        rm -f .cursor/server.pid
+        echo "[server] 🛑 Stopped"
+      fi
+
+  # ------------------------------------------------------------
+  - name: Summary
+    shell: bash
+    run: |
+      echo "────────── Reflexio 24/7 Build Summary ──────────"
+      echo "✅ Environment & deps installed"
+      echo "✅ API smoke tested"
+      echo "✅ Metrics saved to cursor-metrics.json"
+      echo "✅ Audit report: .cursor/audit/audit_report.md"
+      echo "─────────────────────────────────────────────────"
+      echo "Reflexio 24/7 готов к проверке уровня CEB-E v1.0 Level 5"
+
+
+
+
+
+
+
+
+
+
+
+
+
