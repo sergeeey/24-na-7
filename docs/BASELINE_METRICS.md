@@ -1,8 +1,65 @@
-# Baseline Metrics — Reflexio 24/7
+# Baseline Metrics — Reflexio 24/7 v4
 
-**Дата создания:** 2025-11-15  
-**Версия:** 1.0  
-**Статус:** ✅ Baseline установлен
+**Дата создания:** 2026-02-17
+**Версия:** 2.0 (v4 Fact-Grounded Baseline)
+**Статус:** 🔄 Synthetic baseline (awaiting production data)
+
+---
+
+## 🎯 v4 Anti-Hallucination Metrics
+
+### Hallucination Rate
+
+**Current (v3 estimated):** ~2-5%
+**v4 Target:** ≤0.5%
+**Gap:** 4-10x improvement needed
+
+**Measurement Method:**
+```bash
+python scripts/measure_baseline.py --sample-size 50
+```
+
+**Definition:** Percentage of facts in digests that cannot be grounded in source transcription.
+
+**Current Limitations:**
+- ❌ No citation system (facts floating without source attribution)
+- ❌ No hallucination detection
+- ❌ Confidence is LLM opinion, not verified
+
+---
+
+### Citation Coverage
+
+**Current (v3):** 0% (no system exists)
+**v4 Target:** ≥98%
+**Gap:** New feature required
+
+**Measurement Method:**
+```bash
+# Run after v4 implementation
+pytest tests/golden/test_golden_set.py --json-report
+```
+
+**Definition:** Percentage of facts that have `source_span` with character offsets in transcription.
+
+**v4 Requirements:**
+- Every fact must have: `{start_char, end_char, text}` from source
+- `confidence_score` based on grounding strength
+- `fact_version = "1.0"` for tracking
+
+---
+
+### Test Coverage
+
+**Current:** 2.1% (314 test lines / 14,634 production lines)
+**v4 Target:** ≥80% on critical packages
+**Gap:** 38x improvement needed
+
+**Critical Packages:**
+- `src/models/fact.py`: 0% → 100% (new)
+- `src/digest/validators.py`: 0% → ≥80% (new)
+- `src/digest/cove_pipeline.py`: 0% → ≥80% (new)
+- `src/digest/fact_extractor.py`: 0% → ≥80% (new)
 
 ---
 
