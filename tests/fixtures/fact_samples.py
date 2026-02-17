@@ -405,6 +405,219 @@ def generate_financial_test_suite() -> List[Dict]:
     return cases
 
 
+def create_legal_case(
+    agreement_type: str,
+    party: str,
+    date: str,
+    clause: str = "confidentiality",
+) -> Dict:
+    """Create legal test case from template.
+
+    Args:
+        agreement_type: Type of agreement (contract, NDA, etc.)
+        party: Party name
+        date: Agreement date
+        clause: Key clause
+
+    Returns:
+        Legal test case dict
+    """
+    case_id = f"legal_{agreement_type}_{party}_{date}".replace(" ", "_")
+
+    transcription = (
+        f"We signed a {agreement_type} with {party} on {date}. "
+        f"The agreement includes a {clause} clause. "
+        f"Both parties agreed to the terms."
+    )
+
+    expected_facts = [
+        {
+            "fact_text": f"Agreement type is {agreement_type}",
+            "source_span": {"start_char": 11, "end_char": 11 + len(agreement_type), "text": agreement_type},
+            "confidence": 0.95,
+        },
+        {
+            "fact_text": f"Agreement with {party}",
+            "source_span": {
+                "start_char": transcription.index(party),
+                "end_char": transcription.index(party) + len(party),
+                "text": party,
+            },
+            "confidence": 0.95,
+        },
+        {
+            "fact_text": f"Signed on {date}",
+            "source_span": {
+                "start_char": transcription.index(date),
+                "end_char": transcription.index(date) + len(date),
+                "text": date,
+            },
+            "confidence": 0.90,
+        },
+    ]
+
+    return {
+        "id": case_id,
+        "transcription": transcription,
+        "expected_facts": expected_facts,
+        "category": "legal",
+    }
+
+
+def generate_legal_test_suite() -> List[Dict]:
+    """Generate 16 legal test cases from template."""
+    cases = []
+
+    agreement_types = ["contract", "NDA", "SLA", "MOU"]
+    parties = ["ACME Corp", "TechStart Inc"]
+    dates = ["January 15th", "last month"]
+
+    for agreement_type in agreement_types:
+        for party in parties:
+            for date in dates:
+                cases.append(create_legal_case(agreement_type, party, date))
+
+    return cases
+
+
+def create_technical_case(
+    system: str,
+    metric: str,
+    value: str,
+    status: str = "normal",
+) -> Dict:
+    """Create technical test case from template.
+
+    Args:
+        system: System name (CPU, memory, disk, etc.)
+        metric: Metric type (usage, temperature, latency, etc.)
+        value: Metric value
+        status: Status (normal, warning, critical)
+
+    Returns:
+        Technical test case dict
+    """
+    case_id = f"tech_{system}_{metric}_{value}".replace(" ", "_").replace("%", "pct")
+
+    transcription = (
+        f"System monitoring shows {system} {metric} at {value}. "
+        f"Status is {status}. No immediate action required."
+    )
+
+    expected_facts = [
+        {
+            "fact_text": f"{system} {metric} is {value}",
+            "source_span": {
+                "start_char": transcription.index(system),
+                "end_char": transcription.index(value) + len(value),
+                "text": f"{system} {metric} at {value}",
+            },
+            "confidence": 0.95,
+        },
+        {
+            "fact_text": f"Status is {status}",
+            "source_span": {
+                "start_char": transcription.index(status),
+                "end_char": transcription.index(status) + len(status),
+                "text": status,
+            },
+            "confidence": 0.90,
+        },
+    ]
+
+    return {
+        "id": case_id,
+        "transcription": transcription,
+        "expected_facts": expected_facts,
+        "category": "technical",
+    }
+
+
+def generate_technical_test_suite() -> List[Dict]:
+    """Generate 24 technical test cases from template."""
+    cases = []
+
+    systems = ["CPU", "memory", "disk"]
+    metrics = ["usage", "temperature"]
+    values = ["45%", "78°C", "2.1 GB", "500 ms"]
+
+    for system in systems:
+        for metric in metrics:
+            for value in values:
+                cases.append(create_technical_case(system, metric, value))
+
+    return cases
+
+
+def create_scientific_case(
+    experiment: str,
+    measurement: str,
+    result: str,
+    unit: str = "mg/L",
+) -> Dict:
+    """Create scientific test case from template.
+
+    Args:
+        experiment: Experiment name
+        measurement: What was measured
+        result: Measurement result
+        unit: Unit of measurement
+
+    Returns:
+        Scientific test case dict
+    """
+    case_id = f"sci_{experiment}_{measurement}_{result}".replace(" ", "_").replace("/", "_")
+
+    transcription = (
+        f"In the {experiment} experiment, we measured {measurement} "
+        f"and found levels of {result} {unit}. Results were recorded at 10:00 AM."
+    )
+
+    expected_facts = [
+        {
+            "fact_text": f"Experiment is {experiment}",
+            "source_span": {
+                "start_char": transcription.index(experiment),
+                "end_char": transcription.index(experiment) + len(experiment),
+                "text": experiment,
+            },
+            "confidence": 0.95,
+        },
+        {
+            "fact_text": f"{measurement} measured at {result} {unit}",
+            "source_span": {
+                "start_char": transcription.index(measurement),
+                "end_char": transcription.index(unit) + len(unit),
+                "text": f"{measurement} and found levels of {result} {unit}",
+            },
+            "confidence": 0.90,
+        },
+    ]
+
+    return {
+        "id": case_id,
+        "transcription": transcription,
+        "expected_facts": expected_facts,
+        "category": "scientific",
+    }
+
+
+def generate_scientific_test_suite() -> List[Dict]:
+    """Generate 16 scientific test cases from template."""
+    cases = []
+
+    experiments = ["pH analysis", "concentration test", "toxicity assay", "purity check"]
+    measurements = ["pH levels", "concentration", "toxicity", "purity"]
+    results = ["7.2", "15.5", "0.03", "99.8"]
+
+    for i, experiment in enumerate(experiments):
+        measurement = measurements[i]
+        for result in results:
+            cases.append(create_scientific_case(experiment, measurement, result))
+
+    return cases
+
+
 # ============================================================================
 # EXPORTS
 # ============================================================================
@@ -420,9 +633,23 @@ __all__ = [
     "get_sample_fact",
     "get_cove_scenario",
 
-    # Generators
+    # Generators - Medical
     "create_medical_case",
-    "create_financial_case",
     "generate_medical_test_suite",
+
+    # Generators - Financial
+    "create_financial_case",
     "generate_financial_test_suite",
+
+    # Generators - Legal
+    "create_legal_case",
+    "generate_legal_test_suite",
+
+    # Generators - Technical
+    "create_technical_case",
+    "generate_technical_test_suite",
+
+    # Generators - Scientific
+    "create_scientific_case",
+    "generate_scientific_test_suite",
 ]
