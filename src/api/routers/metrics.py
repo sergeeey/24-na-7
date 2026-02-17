@@ -101,77 +101,50 @@ async def get_metrics():
 
 
 @router.get("/prometheus")
-async def get_prometheus_metrics(request: Request):
+async def get_prometheus_metrics_endpoint(request: Request):
     """
-    Prometheus-compatible metrics endpoint.
-    
-    Возвращает метрики в формате Prometheus.
-    
+    Prometheus-compatible metrics endpoint (v4.1 Enhanced).
+
+    Возвращает comprehensive метрики в формате Prometheus:
+    - Core metrics (transcriptions, facts, digests)
+    - CoVe metrics (confidence, verification rounds)
+    - Fact quality metrics (hallucination rate, citation coverage)
+    - Retention metrics (deleted records, errors)
+    - ProcessLock metrics (active locks, stale locks)
+
     **Пример запроса:**
     ```bash
     curl "http://localhost:8000/metrics/prometheus"
     ```
-    
+
     **Пример ответа:**
     ```
-    # HELP reflexio_uploads_total Total number of uploaded files
-    # TYPE reflexio_uploads_total counter
-    reflexio_uploads_total 10
-    
-    # HELP reflexio_transcriptions_total Total number of transcriptions
+    # HELP reflexio_transcriptions_total Total transcriptions
     # TYPE reflexio_transcriptions_total counter
     reflexio_transcriptions_total 100
+
+    # HELP reflexio_hallucination_rate_24h Hallucination rate (last 24h)
+    # TYPE reflexio_hallucination_rate_24h gauge
+    reflexio_hallucination_rate_24h 0.0023
+
+    # HELP reflexio_cove_avg_confidence_24h Average CoVe confidence (last 24h)
+    # TYPE reflexio_cove_avg_confidence_24h gauge
+    reflexio_cove_avg_confidence_24h 0.8542
     ```
     """
-    prometheus_metrics = []
-    
-    # Базовые метрики
-    uploads_path = settings.UPLOADS_PATH
-    uploads_count = len(list(uploads_path.glob("*.wav"))) if uploads_path.exists() else 0
-    
-    prometheus_metrics.append("# HELP reflexio_uploads_total Total number of uploaded files")
-    prometheus_metrics.append("# TYPE reflexio_uploads_total counter")
-    prometheus_metrics.append(f"reflexio_uploads_total {uploads_count}")
-    
-    # Метрики из БД
-    db_path = settings.STORAGE_PATH / "reflexio.db"
-    if db_path.exists():
-        import sqlite3
-        try:
-            conn = sqlite3.connect(str(db_path))
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM transcriptions")
-            transcriptions_count = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM facts")
-            facts_count = cursor.fetchone()[0]
-            conn.close()
-            
-            prometheus_metrics.append("# HELP reflexio_transcriptions_total Total number of transcriptions")
-            prometheus_metrics.append("# TYPE reflexio_transcriptions_total counter")
-            prometheus_metrics.append(f"reflexio_transcriptions_total {transcriptions_count}")
-            
-            prometheus_metrics.append("# HELP reflexio_facts_total Total number of facts")
-            prometheus_metrics.append("# TYPE reflexio_facts_total counter")
-            prometheus_metrics.append(f"reflexio_facts_total {facts_count}")
-        except Exception:
-            pass
-    
-    # Health метрика
-    prometheus_metrics.append("# HELP reflexio_health Health status (1 = healthy, 0 = unhealthy)")
-    prometheus_metrics.append("# TYPE reflexio_health gauge")
-    prometheus_metrics.append("reflexio_health 1")
-    
-    # Метрики из cursor-metrics.json
-    metrics_file = Path("cursor-metrics.json")
-    if metrics_file.exists():
-        try:
-            file_metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
-            osint_metrics = file_metrics.get("metrics", {}).get("osint", {})
-            if osint_metrics.get("avg_deepconf_confidence") is not None:
-                prometheus_metrics.append("# HELP reflexio_deepconf_avg_confidence Average DeepConf confidence")
-                prometheus_metrics.append("# TYPE reflexio_deepconf_avg_confidence gauge")
-                prometheus_metrics.append(f"reflexio_deepconf_avg_confidence {osint_metrics['avg_deepconf_confidence']}")
-        except Exception:
-            pass
-    
-    return Response(content="\n".join(prometheus_metrics) + "\n", media_type="text/plain")
+    from src.monitoring import get_prometheus_metrics
+
+    try:
+        metrics_content = get_prometheus_metrics()
+        logger.info("prometheus_metrics_collected")
+        return Response(content=metrics_content, media_type="text/plain")
+    except Exception as e:
+        logger.error(f"prometheus_metrics_collection_failed: {e}")
+        # Fallback to basic metrics
+        fallback_metrics = [
+            "# HELP reflexio_health Health status",
+            "# TYPE reflexio_health gauge",
+            "reflexio_health 0",
+            f"# ERROR {str(e)}"
+        ]
+        return Response(content="\n".join(fallback_metrics) + "\n", media_type="text/plain")
