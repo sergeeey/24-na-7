@@ -61,8 +61,8 @@ class TestRetentionAudit:
 
         assert results["transcriptions"] == 2  # 2 expired records
 
-        # Check audit log
-        audit_logs = policy.get_audit_log(limit=10)
+        # Check audit log для transcriptions
+        audit_logs = policy.get_audit_log(limit=10, table_filter="transcriptions")
 
         assert len(audit_logs) > 0
         latest_log = audit_logs[0]
@@ -82,8 +82,8 @@ class TestRetentionAudit:
 
         assert results["transcriptions"] == 2
 
-        # Check audit log
-        audit_logs = policy.get_audit_log(limit=10)
+        # Check audit log для transcriptions
+        audit_logs = policy.get_audit_log(limit=10, table_filter="transcriptions")
 
         assert len(audit_logs) > 0
         latest_log = audit_logs[0]
@@ -107,8 +107,8 @@ class TestRetentionAudit:
         # Cleanup
         policy.cleanup_expired_data(dry_run=False)
 
-        # Check audit log
-        audit_logs = policy.get_audit_log(limit=1)
+        # Check audit log для transcriptions
+        audit_logs = policy.get_audit_log(limit=1, table_filter="transcriptions")
         latest_log = audit_logs[0]
 
         # Deleted IDs should be JSON array
@@ -184,8 +184,8 @@ class TestRetentionAudit:
         # Cleanup
         policy.cleanup_expired_data(dry_run=False)
 
-        # Check rule in audit log
-        audit_logs = policy.get_audit_log(limit=1)
+        # Check rule in audit log для transcriptions
+        audit_logs = policy.get_audit_log(limit=1, table_filter="transcriptions")
         latest_log = audit_logs[0]
 
         import json

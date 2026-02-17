@@ -77,8 +77,8 @@ class RetentionPolicy:
                 count = self._cleanup_table(cursor, rule, dry_run)
                 results[rule.table] = count
 
-            if not dry_run:
-                conn.commit()
+            # ВСЕГДА коммитить audit log (даже в dry_run mode)
+            conn.commit()
 
         except Exception as e:
             conn.rollback()
@@ -113,6 +113,12 @@ class RetentionPolicy:
             (rule.table,)
         )
         if not cursor.fetchone():
+            # Log даже для несуществующих таблиц (для мониторинга)
+            operation = "SOFT_DELETE" if rule.soft_delete else "DELETE"
+            self._log_audit(
+                cursor, rule.table, operation, 0, [],
+                rule, cutoff_date, dry_run, error_message="Table does not exist"
+            )
             return 0
 
         # Получаем IDs для audit trail (до удаления)
@@ -331,6 +337,9 @@ class RetentionPolicy:
         cursor = conn.cursor()
 
         try:
+            # Ensure audit table exists перед запросом
+            self._ensure_audit_table(cursor)
+
             query = "SELECT * FROM retention_audit_log WHERE 1=1"
             params = []
 
