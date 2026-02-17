@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.digest.generator import DigestGenerator
 from src.utils.logging import setup_logging, get_logger
+from src.utils.process_lock import ProcessLock, ProcessLockError
 
 setup_logging()
 logger = get_logger("cron.daily_digest")
@@ -44,57 +45,74 @@ def wait_until_time(target_hour: int = 22, target_minute: int = 50):
 def generate_and_send_digest(target_date: date = None, send_telegram: bool = True):
     """
     Генерирует дайджест и отправляет в Telegram.
-    
+
     Args:
         target_date: Дата для дайджеста (если None, используется сегодня)
         send_telegram: Отправлять ли в Telegram
+
+    Returns:
+        True если успешно, False при ошибке
+
+    Raises:
+        ProcessLockError: Если другой process уже генерирует дайджест
     """
     if target_date is None:
         target_date = date.today()
-    
-    logger.info("daily_digest_started", date=target_date.isoformat())
-    
+
+    # Acquire process lock — prevent duplicate execution
     try:
-        # Генерируем дайджест
-        generator = DigestGenerator()
-        
-        # Генерируем markdown и PDF
-        md_file = generator.generate(
-            target_date=target_date,
-            output_format="markdown",
-            include_metadata=True,
-        )
-        
-        pdf_file = generator.generate(
-            target_date=target_date,
-            output_format="pdf",
-            include_metadata=True,
-        )
-        
-        logger.info(
-            "digest_generated",
-            date=target_date.isoformat(),
-            markdown_file=str(md_file),
-            pdf_file=str(pdf_file),
-        )
-        
-        # Отправляем в Telegram если нужно
-        if send_telegram:
+        with ProcessLock("daily_digest", timeout=10):
+            logger.info("daily_digest_started", date=target_date.isoformat())
+
             try:
-                from src.digest.telegram_sender import TelegramDigestSender
-                sender = TelegramDigestSender()
-                sender.send_digest(target_date, md_file, pdf_file)
-                logger.info("digest_sent_to_telegram", date=target_date.isoformat())
-            except ImportError:
-                logger.warning("telegram_sender_not_available", fallback="skip")
+                # Генерируем дайджест
+                generator = DigestGenerator()
+
+                # Генерируем markdown и PDF
+                md_file = generator.generate(
+                    target_date=target_date,
+                    output_format="markdown",
+                    include_metadata=True,
+                )
+
+                pdf_file = generator.generate(
+                    target_date=target_date,
+                    output_format="pdf",
+                    include_metadata=True,
+                )
+
+                logger.info(
+                    "digest_generated",
+                    date=target_date.isoformat(),
+                    markdown_file=str(md_file),
+                    pdf_file=str(pdf_file),
+                )
+
+                # Отправляем в Telegram если нужно
+                if send_telegram:
+                    try:
+                        from src.digest.telegram_sender import TelegramDigestSender
+                        sender = TelegramDigestSender()
+                        sender.send_digest(target_date, md_file, pdf_file)
+                        logger.info("digest_sent_to_telegram", date=target_date.isoformat())
+                    except ImportError:
+                        logger.warning("telegram_sender_not_available", fallback="skip")
+                    except Exception as e:
+                        logger.error("telegram_send_failed", error=str(e))
+
+                return True
+
             except Exception as e:
-                logger.error("telegram_send_failed", error=str(e))
-        
-        return True
-        
-    except Exception as e:
-        logger.error("daily_digest_failed", date=target_date.isoformat(), error=str(e))
-        return False
+                logger.error("daily_digest_failed", date=target_date.isoformat(), error=str(e))
+                return False
+
+    except ProcessLockError as e:
+        logger.warning(
+            "daily_digest_already_running",
+            date=target_date.isoformat(),
+            message=str(e),
+        )
+        return False  # Graceful exit — another process is running
 
 
 def main():

@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     LLM_MODEL_CRITIC: str = "gpt-4o-mini"
     LLM_TEMPERATURE_ACTOR: float = 0.3
     LLM_TEMPERATURE_CRITIC: float = 0.0
+
+    # CoVe (Chain-of-Verification) Settings
+    ENABLE_COVE: bool = False  # Enable real LLM-based hallucination detection
+    COVE_CONFIDENCE_THRESHOLD: float = 0.70  # Minimum confidence after CoVe
+    COVE_MAX_VERIFICATION_ROUNDS: int = 2  # Max iterations for verification
     
     # SAFE / Security
     SAFE_MODE: str = "audit"  # strict | audit | disabled

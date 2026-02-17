@@ -41,15 +41,20 @@ class CoVePipeline:
         self,
         llm_client: Optional[LLMClient] = None,
         confidence_threshold: float = 0.70,
+        enable_fallback: bool = True,
     ):
         """Инициализация CoVe Pipeline.
 
         Args:
             llm_client: LLM client (если None — mock mode)
             confidence_threshold: Порог confidence
+            enable_fallback: Fallback к mock при LLM failure
         """
         self.llm_client = llm_client
         self.confidence_threshold = confidence_threshold
+        self.enable_fallback = enable_fallback
+        self._llm_failures = 0  # Track consecutive failures
+        self._max_failures = 3  # Switch to mock after 3 failures
 
     def verify_facts(
         self,
@@ -116,12 +121,19 @@ class CoVePipeline:
         Returns:
             Список verification questions
         """
-        # Mock mode
-        if not self.llm_client:
+        # Mock mode or fallback mode (после failures)
+        if not self.llm_client or self._llm_failures >= self._max_failures:
+            if self._llm_failures >= self._max_failures:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"CoVe switched to mock mode after {self._llm_failures} consecutive LLM failures"
+                )
             return self._mock_questions(fact)
 
-        # LLM generation (упрощённо — в production использовать structured output)
-        prompt = f"""Generate a verification question for this fact.
+        # LLM generation with fallback
+        try:
+            prompt = f"""Generate a verification question for this fact.
 
 Fact: {fact.fact_text}
 
@@ -132,19 +144,34 @@ Question should:
 
 Output only the question, nothing else."""
 
-        result = self.llm_client.call(prompt=prompt, max_tokens=100)
-        question_text = result.get("content", result.get("text", "")).strip()
+            result = self.llm_client.call(prompt=prompt, max_tokens=100)
+            question_text = result.get("content", result.get("text", "")).strip()
 
-        if not question_text:
-            question_text = f"Is it true that: {fact.fact_text}?"
+            if not question_text:
+                raise ValueError("Empty response from LLM")
 
-        return [
-            VerificationQuestion(
-                fact_id=fact.fact_id,
-                question=question_text,
-                expected_answer="yes" if "?" in question_text else fact.fact_text,
-            )
-        ]
+            # Reset failure counter on success
+            self._llm_failures = 0
+
+            return [
+                VerificationQuestion(
+                    fact_id=fact.fact_id,
+                    question=question_text,
+                    expected_answer="yes" if "?" in question_text else fact.fact_text,
+                )
+            ]
+
+        except Exception as e:
+            self._llm_failures += 1
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"CoVe LLM failure ({self._llm_failures}/{self._max_failures}): {e}")
+
+            # Fallback to mock
+            if self.enable_fallback:
+                return self._mock_questions(fact)
+            else:
+                raise
 
     def _mock_questions(self, fact: Fact) -> List[VerificationQuestion]:
         """Mock question generation."""
@@ -173,13 +200,14 @@ Output only the question, nothing else."""
         answers = []
 
         for question in questions:
-            # Mock mode
-            if not self.llm_client:
+            # Mock mode or fallback mode
+            if not self.llm_client or self._llm_failures >= self._max_failures:
                 answers.append(self._mock_answer(question, context))
                 continue
 
-            # LLM answering from source
-            prompt = f"""Answer this question using ONLY the information from the source text below.
+            # LLM answering from source with fallback
+            try:
+                prompt = f"""Answer this question using ONLY the information from the source text below.
 If the answer is not in the source, say "NOT STATED".
 
 Question: {question.question}
@@ -189,10 +217,27 @@ Source text:
 
 Answer (be brief):"""
 
-            result = self.llm_client.call(prompt=prompt, max_tokens=150)
-            answer = result.get("content", result.get("text", "")).strip()
+                result = self.llm_client.call(prompt=prompt, max_tokens=150)
+                answer = result.get("content", result.get("text", "")).strip()
 
-            answers.append(answer)
+                if not answer:
+                    raise ValueError("Empty response from LLM")
+
+                # Reset failure counter on success
+                self._llm_failures = 0
+                answers.append(answer)
+
+            except Exception as e:
+                self._llm_failures += 1
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"CoVe LLM failure in answer stage ({self._llm_failures}/{self._max_failures}): {e}")
+
+                # Fallback to mock
+                if self.enable_fallback:
+                    answers.append(self._mock_answer(question, context))
+                else:
+                    raise
 
         return answers
 
