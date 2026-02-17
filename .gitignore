@@ -54,6 +54,7 @@ src/storage/recordings/*
 # Logs
 *.log
 logs/
+android/logs/
 
 # Testing
 .pytest_cache/
@@ -73,6 +74,9 @@ Thumbs.db
 # Cursor
 .cursor/audit/audit_report.json
 .cursor/audit/audit_report.md
+
+# Full Audit outputs (optional: remove to commit audit reports)
+audit_output/
 
 
 # Auto Claude data directory

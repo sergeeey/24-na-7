@@ -97,7 +97,6 @@ class VoiceflowRAG:
         """Fallback на GPT-mini при недоступности Voiceflow."""
         try:
             from src.llm.providers import OpenAIClient
-            import os
             
             client = OpenAIClient(model="gpt-4o-mini")
             

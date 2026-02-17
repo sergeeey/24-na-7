@@ -9,7 +9,6 @@ import numpy as np
 import soundfile as sf
 
 from src.asr.providers import get_asr_provider
-from src.asr.transcribe import transcribe_audio
 
 
 def calculate_wer(reference: str, hypothesis: str) -> float:
@@ -32,7 +31,6 @@ def calculate_wer(reference: str, hypothesis: str) -> float:
     # Простой алгоритм Левенштейна для слов
     # Используем упрощённую версию
     errors = 0
-    max_len = max(len(ref_words), len(hyp_words))
     
     # Простое сравнение (можно улучшить через библиотеку)
     for i in range(min(len(ref_words), len(hyp_words))):

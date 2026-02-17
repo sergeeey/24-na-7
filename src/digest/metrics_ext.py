@@ -1,5 +1,4 @@
 """Расширенные метрики для когнитивного анализа речи."""
-from collections import Counter
 from typing import List, Dict, Optional
 import numpy as np
 

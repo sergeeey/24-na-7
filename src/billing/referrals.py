@@ -2,10 +2,8 @@
 Referral система — invite 3 → +100 мин.
 Reflexio v2.1 — Surpass Smart Noter Sprint
 """
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any
 from datetime import datetime
-from pathlib import Path
-import json
 
 from src.utils.logging import get_logger
 from src.storage.db import get_db
@@ -40,7 +38,6 @@ class ReferralManager:
         Returns:
             Referral код
         """
-        import hashlib
         import secrets
         
         # Генерируем уникальный код
@@ -153,7 +150,7 @@ class ReferralManager:
         """Начисляет бонусные минуты пользователю."""
         try:
             from src.billing.freemium import get_freemium_manager
-            freemium = get_freemium_manager()
+            get_freemium_manager()  # инициализация/проверка лимитов
             
             # Добавляем бонусные минуты (можно через отдельную таблицу bonus_minutes)
             # Упрощённая версия: увеличиваем лимит на день

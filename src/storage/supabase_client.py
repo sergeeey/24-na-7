@@ -1,7 +1,6 @@
 """Клиент для работы с Supabase."""
 import os
 from typing import Optional, Dict, Any
-from pathlib import Path
 
 try:
     from supabase import create_client, Client
@@ -61,7 +60,7 @@ def test_connection() -> Dict[str, Any]:
             "status": "ok",
             "message": "Supabase connection successful"
         }
-    except Exception as e:
+    except Exception:
         # Если таблицы _health нет, пробуем просто подключиться
         try:
             # Пробуем запрос к REST API

@@ -5,7 +5,7 @@ MCP Intelligence Module — интеллектуальный поиск и из�
 """
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from datetime import datetime, timezone
 
 # Добавляем путь к проекту
@@ -178,7 +178,7 @@ def save_to_memory_bank(topic: str, data: List[Dict[str, Any]]) -> bool:
             f"# External Research: {topic}",
             "",
             f"**Date:** {datetime.now(timezone.utc).isoformat()}",
-            f"**Source:** Brave Search + Bright Data",
+            "**Source:** Brave Search + Bright Data",
             f"**Results:** {len(data)}",
             "",
             "---",
@@ -243,7 +243,7 @@ def discover_topics(query: str, depth: int = 2) -> List[str]:
         # Извлекаем потенциальные темы из заголовков
         for item in search_results[:depth * 3]:
             title = item.get("title", "")
-            description = item.get("description", "")
+            _ = item.get("description", "")  # резерв для будущей эвристики
             
             # Простая эвристика: извлекаем ключевые слова
             # В реальности можно использовать NLP
@@ -315,7 +315,7 @@ def main():
     # Сохраняем в Memory Bank если запрошено
     if args.save:
         save_to_memory_bank(args.query, results)
-        print(f"✅ Results saved to Memory Bank\n")
+        print("✅ Results saved to Memory Bank\n")
     
     return 0
 

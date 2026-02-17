@@ -8,7 +8,6 @@ Security Features:
 - Input Sanitization
 """
 import re
-import json
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
@@ -130,7 +129,7 @@ class PromptInjectionDetector:
         if not text:
             return False, ThreatLevel.LOW, []
         
-        text_lower = text.lower()
+        _ = text.lower()  # нормализация для возможных будущих проверок
         threats = []
         
         # Проверка критичных паттернов (немедленная блокировка)

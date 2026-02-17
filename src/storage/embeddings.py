@@ -7,7 +7,6 @@ from pathlib import Path
 import os
 import hashlib
 import json
-from functools import lru_cache
 
 from src.utils.logging import get_logger
 
@@ -189,8 +188,8 @@ def search_phrases(
             from src.storage.db import get_db
             db_backend = get_db()
         
-        # Генерируем embedding для запроса
-        query_embedding = generate_embeddings(query)
+        # Генерируем embedding для запроса (для pgvector — пока не используется)
+        generate_embeddings(query)
         
         # Поиск через pgvector (если доступен)
         # Иначе используем простой поиск по тексту

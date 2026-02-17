@@ -4,8 +4,7 @@ Reflexio v2.1 — Surpass Smart Noter Sprint
 """
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, Any, List
-import json
+from typing import Dict
 
 from src.utils.logging import get_logger
 from src.storage.audio_manager import get_audio_manager

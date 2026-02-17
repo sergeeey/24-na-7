@@ -3,10 +3,9 @@ Plugin Gateway — система подключения внешних MCP пл
 
 Позволяет Reflexio подключать дополнительные источники данных (Twitter, YouTube, Patents и т.д.).
 """
-import json
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 

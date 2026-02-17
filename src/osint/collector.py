@@ -4,14 +4,14 @@ OSINT Collector — сбор данных через Brave Search и Bright Data
 Реализует паттерны A (Brave-first) и B (BrightData-first) для сбора информации.
 """
 import re
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.mcp.clients import get_brave_client, get_bright_client
-from src.utils.config import settings
 from src.osint.schemas import Source
 from src.osint.serp_collector import collect_serp_results
 from src.osint.zone_manager import get_zone_for_mission

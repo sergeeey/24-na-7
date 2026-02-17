@@ -2,7 +2,7 @@
 Pipeline: Summarizer → Critic → Refiner
 Reflexio 24/7 — November 2025 Integration Sprint
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from src.loop.reflexio_loop import ReflexioLoop
 

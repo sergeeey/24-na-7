@@ -7,7 +7,7 @@ import tempfile
 import numpy as np
 import wave
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.asr.providers import DistilWhisperProvider, get_asr_provider
 
@@ -53,7 +53,7 @@ class TestOfflineTranscription:
         """Тест: Distil-Whisper работает в офлайн режиме."""
         provider = DistilWhisperProvider(model_size="distil-small.en", device="cpu")
         
-        assert provider.is_offline() == True, "Distil-Whisper должен быть в офлайн режиме"
+        assert provider.is_offline(), "Distil-Whisper должен быть в офлайн режиме"
     
     @patch("requests.get")
     @patch("requests.post")
@@ -77,7 +77,7 @@ class TestOfflineTranscription:
             )
             
             assert "text" in result
-            assert result["offline_mode"] == True
+            assert result["offline_mode"]
             assert "segments" in result
             
         finally:
@@ -102,13 +102,17 @@ class TestOfflineTranscription:
                 provider = get_asr_provider(provider="distil-whisper", model_size="distil-small.en", device="cpu")
                 
                 assert isinstance(provider, DistilWhisperProvider)
-                assert provider.is_offline() == True
+                assert provider.is_offline()
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(
+    __import__("sys").platform == "win32",
+    reason="ctranslate2/faster_whisper skipped on Windows (DLL load)",
+)
 class TestLongOfflineTranscription:
     """Тесты длительной офлайн транскрипции (≥ 30 мин)."""
-    
+
     def test_30_minute_offline_capability(self):
         """
         Тест: Проверка возможности транскрибировать ≥ 30 мин без сети.
@@ -130,7 +134,7 @@ class TestLongOfflineTranscription:
                 timestamps=True,
             )
             
-            assert result["offline_mode"] == True
+            assert result["offline_mode"]
             assert "duration" in result or "segments" in result
             
             # Проверяем, что latency разумная (не более 2x реального времени)
@@ -160,7 +164,7 @@ class TestLongOfflineTranscription:
             
             # Проверяем, что все файлы обработаны
             assert len(results) == 3
-            assert all(r["offline_mode"] == True for r in results)
+            assert all(r["offline_mode"] for r in results)
             
         finally:
             for audio_path in audio_files:

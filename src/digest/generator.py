@@ -8,6 +8,7 @@ import json
 from src.utils.config import settings
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics
+from src.storage.ingest_persist import ensure_ingest_tables
 from src.memory.core_memory import get_core_memory
 from src.memory.session_memory import get_session_memory
 
@@ -47,10 +48,12 @@ class DigestGenerator:
         Returns:
             Список транскрипций с метаданными
         """
+        if not self.db_path.parent.exists():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_ingest_tables(self.db_path)
         if not self.db_path.exists():
             logger.warning("database_not_found", db_path=str(self.db_path))
             return []
-        
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         
@@ -188,6 +191,97 @@ class DigestGenerator:
         
         return metrics
     
+    def _get_recording_analyses_for_date(self, target_date: date) -> List[Dict]:
+        """Возвращает анализы записей (recording_analyses) за день по транскрипциям."""
+        if not self.db_path.exists():
+            return []
+        conn = sqlite3.connect(str(self.db_path))
+        conn.row_factory = sqlite3.Row
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT ra.id, ra.transcription_id, ra.summary, ra.emotions, ra.actions, ra.topics, ra.urgency
+                FROM recording_analyses ra
+                INNER JOIN transcriptions t ON ra.transcription_id = t.id
+                WHERE DATE(t.created_at) = ?
+                ORDER BY t.created_at ASC
+            """, (target_date.isoformat(),))
+            rows = cursor.fetchall()
+            out = []
+            for row in rows:
+                d = dict(row)
+                for key in ("emotions", "actions", "topics"):
+                    if isinstance(d.get(key), str):
+                        try:
+                            d[key] = json.loads(d[key]) if d[key] else []
+                        except (json.JSONDecodeError, TypeError):
+                            d[key] = []
+                out.append(d)
+            return out
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e).lower():
+                return []
+            raise
+        finally:
+            conn.close()
+
+    def get_daily_digest_json(self, target_date: date, user_id: Optional[str] = None) -> Dict:
+        """
+        Дневной итог в формате API для Android (ROADMAP Phase 2).
+        Возвращает: date, summary_text, key_themes, emotions, actions, total_recordings, total_duration, repetitions.
+        """
+        transcriptions = self.get_transcriptions(target_date)
+        analyses = self._get_recording_analyses_for_date(target_date)
+        total_duration_sec = sum(t.get("duration", 0) or 0 for t in transcriptions)
+        total_recordings = len(transcriptions)
+        total_duration_str = f"{int(total_duration_sec // 60)}m {int(total_duration_sec % 60)}s" if total_duration_sec else "0m 0s"
+
+        key_themes: List[str] = []
+        emotions: List[str] = []
+        actions: List[Dict] = []
+        summary_parts: List[str] = []
+
+        if analyses:
+            for a in analyses:
+                summary_parts.append((a.get("summary") or "").strip())
+                for t in (a.get("topics") or []):
+                    if t and t not in key_themes:
+                        key_themes.append(t)
+                for e in (a.get("emotions") or []):
+                    if e and e not in emotions:
+                        emotions.append(e)
+                for act in (a.get("actions") or []):
+                    if isinstance(act, str) and act:
+                        actions.append({"text": act, "done": False})
+                    elif isinstance(act, dict) and act.get("text"):
+                        actions.append({"text": act["text"], "done": act.get("done", False)})
+            summary_text = " ".join(p for p in summary_parts if p).strip() or "Нет итога за день."
+        else:
+            facts = self.extract_facts(transcriptions)
+            for f in facts:
+                if f.get("type") == "task":
+                    actions.append({"text": f.get("text", ""), "done": False})
+                elif f.get("type") == "emotion":
+                    emo_text = f.get("text", "").replace("Эмоции: ", "")
+                    for e in emo_text.split(","):
+                        e = e.strip()
+                        if e and e not in emotions:
+                            emotions.append(e)
+            key_themes = list(dict.fromkeys(f.get("text", "").split(":")[-1].strip() for f in facts if f.get("type") == "fact" and len((f.get("text") or "")) > 15))[:15]
+            full_text = " ".join(t.get("text", "").strip() for t in transcriptions if t.get("text", "").strip())
+            summary_text = full_text[:500] + "…" if len(full_text) > 500 else full_text or "Нет записей за день."
+
+        return {
+            "date": target_date.isoformat(),
+            "summary_text": summary_text,
+            "key_themes": key_themes,
+            "emotions": emotions,
+            "actions": actions,
+            "total_recordings": total_recordings,
+            "total_duration": total_duration_str,
+            "repetitions": [],
+        }
+
     def _get_density_level(self, score: float) -> str:
         """Определяет уровень информационной плотности."""
         if score >= 80:
@@ -363,7 +457,6 @@ class DigestGenerator:
         
         # CoVe валидация дайджеста
         try:
-            import sys
             import importlib.util
             from pathlib import Path as PathLib
             cove_path = PathLib(__file__).parent.parent.parent / ".cursor" / "validation" / "cove" / "verify.py"
@@ -438,7 +531,7 @@ class DigestGenerator:
                     try:
                         hour = datetime.fromisoformat(trans["created_at"]).strftime("%H")
                         hourly_dist[hour] = hourly_dist.get(hour, 0) + 1
-                    except:
+                    except Exception:
                         pass
             
             extended = calculate_extended_metrics(

@@ -12,7 +12,6 @@ from typing import List, Dict, Any, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.osint.pemm_agent import run_osint_mission, load_mission
-from src.osint.adaptive_scoring import analyze_knowledge_health
 
 try:
     from src.utils.logging import setup_logging, get_logger

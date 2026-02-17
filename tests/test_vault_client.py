@@ -3,8 +3,9 @@
 Проверка безопасного хранения secrets.
 """
 import os
+import sys
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 
 from src.utils.vault_client import (
     VaultClient,
@@ -48,61 +49,58 @@ class TestVaultClientDisabled:
 
 
 class TestVaultClientMocked:
-    """Тесты с замоканным Vault."""
-    
+    """Тесты с замоканным Vault (hvac может быть не установлен)."""
+
     @pytest.fixture
     def mock_hvac(self):
-        """Фикстура для мока hvac клиента."""
-        with patch("src.utils.vault_client.hvac") as mock_hvac:
-            mock_client = MagicMock()
-            mock_client.is_authenticated.return_value = True
-            mock_hvac.Client.return_value = mock_client
-            yield mock_hvac, mock_client
-    
-    @patch.dict(os.environ, {"VAULT_ENABLED": "true", "VAULT_TOKEN": "test-token"})
+        """Подмена hvac в sys.modules и включение Vault (ENABLED читается при загрузке класса)."""
+        mock_hvac_mod = MagicMock()
+        mock_client = MagicMock()
+        mock_client.is_authenticated.return_value = True
+        mock_hvac_mod.Client.return_value = mock_client
+        old_hvac = sys.modules.get("hvac")
+        sys.modules["hvac"] = mock_hvac_mod
+        with patch.object(VaultConfig, "ENABLED", True):
+            try:
+                yield mock_hvac_mod, mock_client
+            finally:
+                if old_hvac is None:
+                    sys.modules.pop("hvac", None)
+                else:
+                    sys.modules["hvac"] = old_hvac
+
     def test_vault_client_creation(self, mock_hvac):
         """Создание клиента при включенном Vault."""
-        mock_hvac_module, mock_client = mock_hvac
-        
+        mock_client_class, mock_client = mock_hvac
         client = VaultClient()
         assert client.is_available()
         mock_client.is_authenticated.assert_called_once()
-    
-    @patch.dict(os.environ, {"VAULT_ENABLED": "true", "VAULT_TOKEN": "test-token"})
+
     def test_get_secret_from_vault(self, mock_hvac):
         """Получение secret из Vault."""
-        mock_hvac_module, mock_client = mock_hvac
+        mock_client_class, mock_client = mock_hvac
         mock_client.secrets.kv.v2.read_secret_version.return_value = {
             "data": {"data": {"value": "secret-from-vault"}}
         }
-        
         client = VaultClient()
         result = client.get_secret("test_key")
-        
         assert result == "secret-from-vault"
         mock_client.secrets.kv.v2.read_secret_version.assert_called_once()
-    
-    @patch.dict(os.environ, {"VAULT_ENABLED": "true", "VAULT_TOKEN": "test-token"})
+
     def test_set_secret(self, mock_hvac):
         """Сохранение secret в Vault."""
-        mock_hvac_module, mock_client = mock_hvac
-        mock_client.secrets.kv.v2.create_or_update_secret.return_value = {"success": True}
-        
+        mock_client_class, mock_client = mock_hvac
         client = VaultClient()
         result = client.set_secret("new_key", "new_value")
-        
         assert result is True
         mock_client.secrets.kv.v2.create_or_update_secret.assert_called_once()
-    
-    @patch.dict(os.environ, {"VAULT_ENABLED": "true", "VAULT_TOKEN": "test-token"})
+
     def test_get_secret_not_found_returns_none(self, mock_hvac):
         """При отсутствии secret возвращается None."""
-        mock_hvac_module, mock_client = mock_hvac
+        mock_client_class, mock_client = mock_hvac
         mock_client.secrets.kv.v2.read_secret_version.side_effect = Exception("Not found")
-        
         client = VaultClient()
         result = client.get_secret("nonexistent")
-        
         assert result is None
 
 
@@ -151,29 +149,43 @@ class TestGetSecretFunction:
 
 class TestVaultClientErrors:
     """Тесты обработки ошибок."""
-    
-    @patch.dict(os.environ, {"VAULT_ENABLED": "true", "VAULT_TOKEN": "test-token"})
+
     def test_auth_failure_logs_warning(self):
         """При ошибке аутентификации логируется warning."""
-        with patch("src.utils.vault_client.hvac") as mock_hvac:
-            mock_client = MagicMock()
-            mock_client.is_authenticated.return_value = False
-            mock_hvac.Client.return_value = mock_client
-            
-            client = VaultClient()
-            assert not client.is_available()
-    
-    @patch.dict(os.environ, {"VAULT_ENABLED": "true", "VAULT_TOKEN": "test-token"})
+        mock_hvac_mod = MagicMock()
+        mock_client = MagicMock()
+        mock_client.is_authenticated.return_value = False
+        mock_hvac_mod.Client.return_value = mock_client
+        old = sys.modules.get("hvac")
+        sys.modules["hvac"] = mock_hvac_mod
+        try:
+            with patch.object(VaultConfig, "ENABLED", True):
+                client = VaultClient()
+                assert not client.is_available()
+        finally:
+            if old is None:
+                sys.modules.pop("hvac", None)
+            else:
+                sys.modules["hvac"] = old
+
     def test_set_secret_when_not_available(self):
         """set_secret возвращает False когда Vault недоступен."""
-        with patch("src.utils.vault_client.hvac") as mock_hvac:
-            mock_client = MagicMock()
-            mock_client.is_authenticated.return_value = False
-            mock_hvac.Client.return_value = mock_client
-            
-            client = VaultClient()
-            result = client.set_secret("key", "value")
-            assert result is False
+        mock_hvac_mod = MagicMock()
+        mock_client = MagicMock()
+        mock_client.is_authenticated.return_value = False
+        mock_hvac_mod.Client.return_value = mock_client
+        old = sys.modules.get("hvac")
+        sys.modules["hvac"] = mock_hvac_mod
+        try:
+            with patch.object(VaultConfig, "ENABLED", True):
+                client = VaultClient()
+                result = client.set_secret("key", "value")
+                assert result is False
+        finally:
+            if old is None:
+                sys.modules.pop("hvac", None)
+            else:
+                sys.modules["hvac"] = old
 
 
 class TestVaultCache:

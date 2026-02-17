@@ -3,7 +3,6 @@
 """
 import pytest
 import json
-from unittest.mock import patch, MagicMock
 
 from src.utils.guardrails import (
     Guardrails,
@@ -13,7 +12,6 @@ from src.utils.guardrails import (
     GuardrailResult,
     ValidationError,
     SummaryOutput,
-    FactOutput,
     IntentOutput,
     validate_output,
     get_guardrails,
@@ -135,7 +133,7 @@ class TestOutputValidator:
     def test_validates_toxicity(self, validator):
         """Валидация токсичности."""
         result = GuardrailResult(is_valid=True)
-        is_valid = validator.validate_toxicity("Attack everyone", result)
+        is_valid = validator.validate_toxicity("Attack all users", result)
         assert is_valid is False
         assert result.errors[0]["type"] == ValidationError.TOXIC_CONTENT.value
     
@@ -227,7 +225,7 @@ class TestGuardrails:
     
     def test_blocks_toxic_output(self, guardrails):
         """Блокировка токсичного output."""
-        result = guardrails.validate("You should attack everyone")
+        result = guardrails.validate("You should attack all users")
         assert result.is_valid is False
         assert any(e["type"] == ValidationError.TOXIC_CONTENT.value for e in result.errors)
     

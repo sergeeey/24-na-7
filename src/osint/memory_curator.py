@@ -3,10 +3,9 @@ Memory Curation Agent — курация и обновление Memory Bank.
 
 Пересматривает утверждения, удаляет устаревшие, обновляет достоверность на основе новых данных.
 """
-import json
 import sys
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -215,7 +214,7 @@ def curate_memory_bank(
     
     for claim in claims:
         status = claim.get("status", "uncertain")
-        confidence = claim.get("confidence", 0.5)
+        _ = claim.get("confidence", 0.5)  # резерв для фильтрации по порогу
         
         # Удаляем опровергнутые если нужно
         if remove_refuted and status == "refuted":

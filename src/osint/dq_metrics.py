@@ -3,9 +3,8 @@ Data Quality (DQ) Metrics для Memory Bank.
 
 Реализует измерение качества данных: Accuracy, Completeness, Timeliness, Consistency, Validity.
 """
-from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+from typing import List, Dict, Any
+from datetime import datetime, timezone
 
 try:
     from src.utils.logging import setup_logging, get_logger

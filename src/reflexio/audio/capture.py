@@ -9,7 +9,6 @@ from typing import Optional, Callable, List
 
 import numpy as np
 import sounddevice as sd
-import webrtcvad
 
 from reflexio.audio.vad import VADetector
 from reflexio.audio.buffer import AudioBuffer

@@ -1,0 +1,47 @@
+name: full_audit
+version: 1.0
+description: >
+  Автоматизируемая часть Full Audit: установка зависимостей, запуск тестов с покрытием,
+  линтеры (ruff, mypy). Анализ и синтез отчётов выполняются агентом по правилу full_audit.mdc
+  и сценарию из FULL_AUDIT_SPEC.md / full_audit.yml.
+
+parameters:
+  skip_tests: false
+
+steps:
+  - name: Install dependencies
+    shell: bash
+    run: |
+      set -e
+      pip install -e ".[dev]" 2>/dev/null || pip install -r requirements.txt
+      echo "[full_audit] Dependencies ready"
+
+  - name: Create audit_output directory
+    shell: bash
+    run: |
+      mkdir -p audit_output
+      echo "[full_audit] audit_output/ ready"
+
+  - name: Run backend tests with coverage
+    shell: bash
+    run: |
+      set -e
+      if [ "{{ skip_tests }}" = "true" ]; then
+        echo "[full_audit] Tests skipped (skip_tests=true)"
+      else
+        pytest tests/ -v --cov=src --cov-report=term-missing --json-report --json-report-file=tests/.report.json || echo "[full_audit] Tests completed with exit code $?"
+      fi
+
+  - name: Lint (ruff)
+    shell: bash
+    run: |
+      ruff check src tests 2>/dev/null || echo "[full_audit] Ruff completed with warnings"
+
+  - name: Type check (mypy)
+    shell: bash
+    run: |
+      mypy src --ignore-missing-imports 2>/dev/null || echo "[full_audit] Mypy completed with warnings"
+
+  - name: Note for agent
+    run: |
+      echo "Run the full audit scenario via the agent: request 'full audit' or '/full_audit'. Outputs will be written to audit_output/."

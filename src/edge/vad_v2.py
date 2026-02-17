@@ -4,7 +4,7 @@ Reflexio v2.1 — Surpass Smart Noter Sprint
 """
 import webrtcvad
 import numpy as np
-from typing import Tuple, Optional, List
+from typing import Tuple, List
 from collections import deque
 
 from src.utils.logging import get_logger

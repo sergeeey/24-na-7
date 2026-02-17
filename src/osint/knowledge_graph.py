@@ -6,7 +6,7 @@ Reflexio Knowledge Graph — визуализация взаимосвязей �
 import json
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Set, Tuple
+from typing import List, Dict, Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -185,14 +185,14 @@ class KnowledgeGraph:
             xml_parts.append(f'    <node id="{node_id}">')
             xml_parts.append(f'      <data key="type">{node["type"]}</data>')
             xml_parts.append(f'      <data key="confidence">{avg_confidence:.2f}</data>')
-            xml_parts.append(f'    </node>')
+            xml_parts.append('    </node>')
         
         # Связи
         for idx, edge in enumerate(self.edges):
             edge_id = f"e{idx}"
             xml_parts.append(f'    <edge id="{edge_id}" source="{edge["source"]}" target="{edge["target"]}">')
             xml_parts.append(f'      <data key="weight">{edge["weight"]}</data>')
-            xml_parts.append(f'    </edge>')
+            xml_parts.append('    </edge>')
         
         xml_parts.extend([
             '  </graph>',

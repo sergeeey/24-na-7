@@ -2,7 +2,7 @@
 Core Memory — предпочтения пользователя.
 Reflexio 24/7 — November 2025 Integration Sprint
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from pathlib import Path
 import json
 

@@ -2,7 +2,7 @@
 DeepConf — метрики confidence и token entropy для саммари.
 Reflexio 24/7 — November 2025 Integration Sprint
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import json
 import math
 from collections import Counter

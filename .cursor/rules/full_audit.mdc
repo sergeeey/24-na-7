@@ -1,0 +1,32 @@
+---
+description: Full Audit — пошаговое выполнение сценария комплексного аудита по FULL_AUDIT_SPEC.md и full_audit.yml. Активируется при запросе пользователя «full audit», «/full_audit», «полный аудит».
+globs:
+alwaysApply: false
+---
+
+# Full Audit Rule
+
+Когда пользователь запрашивает **full audit**, **/full_audit** или **полный аудит**:
+
+1. Выполняй сценарий по [FULL_AUDIT_SPEC.md](/FULL_AUDIT_SPEC.md) и [full_audit.yml](/full_audit.yml) **по шагам 0–6 по порядку**.
+
+2. Для каждого шага:
+   - **analyze_files:** просканируй репозиторий по указанным в YAML паттернам (paths/patterns), изучи структуру и содержимое.
+   - **run_commands:** выполни команды из `config` (backend_test_command, frontend_test_command), если шаг это предусматривает.
+   - **summarize:** сформируй вывод по описанному в шаге и сохрани в указанный выходной файл.
+
+3. Промежуточные выводы сохраняй в **audit_output/** с именами из спецификации:
+   - Step 0: `audit_output/inventory_summary.md`
+   - Step 1: `audit_output/process_audit.md`
+   - Step 2: `audit_output/architecture_threat_assessment.md`
+   - Step 3: `audit_output/code_quality_snapshot.md`
+   - Step 4 (если ai_features_enabled): `audit_output/cognitive_audit_card.md`
+   - Step 5: `audit_output/security_emergent_risks.md`
+
+4. Шаг 6: на основе всех перечисленных файлов сформируй:
+   - `audit_output/FULL_AUDIT_REPORT.md` — по структуре из **Приложения B** к FULL_AUDIT_SPEC.md (паспорт проекта, архитектура, данные, чек-листы, 5C, Cognitive Audit Card, зрелость, итоговый вывод).
+   - `audit_output/POAM.md` — план действий (задачи, приоритет, ответственные, сроки).
+
+5. Стиль: только факты, без предположений; при отсутствии данных указывай «неизвестно». Все выводы в формате аудита: факты → оценка → риски → рекомендации.
+
+6. Перед началом создай директорию `audit_output/`, если её нет.

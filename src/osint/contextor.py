@@ -3,11 +3,12 @@
 
 Реализует методологию Role-Context-Task-Format для структурированных LLM промптов.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import json
 import re
 
 from src.osint.schemas import RCTFContext, Source
+from src.llm.schemas.osint import Claim
 
 try:
     from src.utils.logging import setup_logging, get_logger

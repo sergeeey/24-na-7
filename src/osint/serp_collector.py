@@ -5,7 +5,7 @@ SERP Collector — сбор данных из поисковых систем ч
 """
 import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))

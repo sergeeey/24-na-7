@@ -183,7 +183,6 @@ def transcribe_audio(
     
     # Fallback на local faster-whisper
     try:
-        from faster_whisper import WhisperModel
         model = get_model()
         
         if model is None:

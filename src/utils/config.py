@@ -1,5 +1,4 @@
 """Конфигурация приложения."""
-import os
 from pathlib import Path
 from typing import Dict
 from pydantic_settings import BaseSettings

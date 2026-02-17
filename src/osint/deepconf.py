@@ -3,14 +3,14 @@ DeepConf — Actor-Critic валидация с калибровкой дове�
 
 Реализует методологию DeepConf для проверки утверждений и калибровки уверенности.
 """
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone
 from pathlib import Path
-import json
+from typing import Any, Dict, List, Optional
 
 from src.osint.schemas import Claim, ValidatedClaim, Source
 
 try:
-    from sklearn.isotonic import IsotonicRegression
+    from sklearn.isotonic import IsotonicRegression  # noqa: F401
     HAS_SKLEARN = True
 except ImportError:
     HAS_SKLEARN = False
@@ -226,7 +226,6 @@ def validate_claims(
             
             # CoVe валидация
             try:
-                import sys
                 import importlib.util
                 from pathlib import Path as PathLib
                 cove_path = PathLib(__file__).parent.parent.parent / ".cursor" / "validation" / "cove" / "verify.py"

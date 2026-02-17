@@ -5,7 +5,6 @@ Reflexio v2.1 — Surpass Smart Noter Sprint
 from pathlib import Path
 from datetime import date, datetime
 from typing import Dict, List, Optional
-import io
 
 from src.utils.logging import get_logger
 
@@ -17,8 +16,8 @@ try:
     from reportlab.lib.units import inch
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle
     from reportlab.lib import colors
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfbase import pdfmetrics  # noqa: F401
+    from reportlab.pdfbase.ttfonts import TTFont  # noqa: F401
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False

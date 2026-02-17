@@ -1,6 +1,6 @@
 """Анализатор информационной плотности и паттернов."""
 from datetime import date
-from typing import Dict, List
+from typing import Dict
 import sqlite3
 from pathlib import Path
 

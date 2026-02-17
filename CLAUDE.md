@@ -25,7 +25,8 @@
 
 - `.cursor/memory/` — контекст 24 na 7.
 - `.cursor/memory_bank/` — практики из Golos (activeContext, projectbrief, systemPatterns, decisions, progress).
-- `.cursor/rules/` — base_rules.yaml, reflexio-patterns.md и файлы *.mdc (00-general, 05-security, 20-testing) из интеграции Golos.
+- `.cursor/rules/` — base_rules.yaml, reflexio-patterns.md и файлы *.mdc (00-general, 05-security, 20-testing, full_audit.mdc) из интеграции Golos.
+- **Full Audit:** при запросе «full audit» или «/full_audit» выполнять сценарий по FULL_AUDIT_SPEC.md и full_audit.yml пошагово; выходы сохранять в `audit_output/`.
 
 ---
 *При наличии оригинального CLAUDE.md из Golos его содержимое можно объединить с этим файлом (добавить секции выше или ниже).*

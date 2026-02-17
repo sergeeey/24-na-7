@@ -2,7 +2,7 @@
 Chain of Density (CoD) — постепенное уплотнение саммари.
 Reflexio 24/7 — November 2025 Integration Sprint
 """
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 import json
 
 from src.utils.logging import get_logger
@@ -62,7 +62,6 @@ def generate_dense_summary(
     # Если указана модель, обновляем клиент
     if model:
         from src.llm.providers import OpenAIClient, AnthropicClient
-        import os
         
         if model.startswith("gpt") or model.startswith("o1"):
             client = OpenAIClient(model=model)

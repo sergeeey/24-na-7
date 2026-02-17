@@ -5,14 +5,13 @@
 import pytest
 import os
 import time
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Устанавливаем переменные окружения для тестов
 os.environ["SAFE_MODE"] = "disabled"
 os.environ["VAULT_ENABLED"] = "false"
 
-from src.utils.rate_limiter import RateLimitConfig
-from src.utils.vault_client import VaultClient, SecretManager
+from src.utils.vault_client import SecretManager
 from src.utils.input_guard import InputGuard, ThreatLevel
 from src.utils.guardrails import Guardrails, PIIDetector
 

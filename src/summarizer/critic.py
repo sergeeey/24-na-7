@@ -2,7 +2,7 @@
 Critic — валидация и оценка качества саммари с DeepConf.
 Reflexio 24/7 — November 2025 Integration Sprint
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from src.utils.logging import get_logger
 from src.summarizer.deepconf import calculate_confidence_score, should_refine

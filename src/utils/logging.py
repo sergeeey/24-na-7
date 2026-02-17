@@ -1,8 +1,6 @@
 """Настройка логирования с structlog."""
-import sys
 import structlog
 from structlog.types import Processor
-from pathlib import Path
 
 from .config import settings
 

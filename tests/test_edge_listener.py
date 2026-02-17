@@ -3,11 +3,8 @@
 """
 import pytest
 import numpy as np
-from unittest.mock import Mock, patch, MagicMock
-from pathlib import Path
-import tempfile
+from unittest.mock import patch, MagicMock
 
-import pytest
 
 # Может быть не установлен webrtcvad
 try:
@@ -67,32 +64,28 @@ class TestSpeechFilter:
         assert filt.method == "energy"
     
     def test_filter_disabled(self):
-        """Отключенный фильтр пропускает все."""
+        """Отключенный фильтр пропускает все (check возвращает is_speech=True)."""
         filt = SpeechFilter(enabled=False)
-        
-        # Генерируем тестовый сигнал
         audio = np.random.randn(16000).astype(np.float32)
-        result = filt.filter(audio)
-        
-        # Если фильтр отключен, возвращает исходный сигнал
-        assert result is not None
+        is_speech, metrics = filt.check(audio)
+        assert is_speech is True
+        assert metrics.get("method") == "disabled"
     
     def test_filter_detects_speech(self, filter_enabled):
-        """Фильтр обнаруживает речь."""
-        # Создаем сигнал похожий на речь (300-3000 Hz)
+        """Фильтр check возвращает (bool, dict); результат зависит от энергетического анализа."""
         sample_rate = 16000
         duration = 1.0
         t = np.linspace(0, duration, int(sample_rate * duration))
-        
-        # Смесь частот в речевом диапазоне
         audio = (
             np.sin(2 * np.pi * 500 * t) * 0.5 +
             np.sin(2 * np.pi * 1000 * t) * 0.3
         ).astype(np.float32)
-        
-        is_speech = filter_enabled.is_speech(audio)
-        # Должен определить как речь или нет (не None)
-        assert isinstance(is_speech, bool)
+        result = filter_enabled.check(audio)
+        assert isinstance(result, tuple) and len(result) == 2
+        is_speech, metrics = result
+        assert is_speech in (True, False)  # numpy.bool_ или bool
+        assert isinstance(metrics, dict)
+        assert len(metrics) >= 1
 
 
 class TestAudioProcessing:
@@ -136,15 +129,12 @@ class TestVAD:
             pytest.skip("webrtcvad not installed")
     
     def test_vad_detects_voice(self):
-        """VAD обнаруживает голос."""
+        """VAD обнаруживает голос (16kHz, 30ms = 480 samples = 960 bytes)."""
         try:
             import webrtcvad
             vad = webrtcvad.Vad(2)
-            
-            # Тестовые данные (30ms фрейм)
-            frame = b"\x00" * 480  # 16kHz, 30ms = 480 samples
-            
-            # VAD возвращает bool
+            # 16kHz * 0.03s = 480 samples, 16-bit = 960 bytes
+            frame = b"\x00" * 960
             is_speech = vad.is_speech(frame, 16000)
             assert isinstance(is_speech, bool)
         except ImportError:
@@ -157,7 +147,7 @@ class TestEdgeIntegration:
     def test_full_pipeline_mock(self):
         """Полный pipeline (mock)."""
         # Мокаем все компоненты
-        with patch("src.edge.listener.vad") as mock_vad:
+        with patch("src.edge.listener.vad") as _:
             with patch("src.edge.listener.sd") as mock_sd:
                 mock_stream = MagicMock()
                 mock_sd.InputStream.return_value = mock_stream

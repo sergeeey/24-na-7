@@ -225,7 +225,7 @@ def migrate_to_supabase(dry_run: bool = False) -> Dict[str, Any]:
                         if key in row and row[key] and isinstance(row[key], str):
                             try:
                                 row[key] = json.loads(row[key])
-                            except:
+                            except Exception:
                                 pass
                     
                     # TEXT ID → UUID (если нужно)

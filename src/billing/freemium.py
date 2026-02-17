@@ -3,8 +3,7 @@ Freemium модель — 30 мин/день бесплатно.
 Reflexio v2.1 — Surpass Smart Noter Sprint
 """
 from typing import Dict, Any, Optional
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from datetime import date, datetime
 
 from src.utils.logging import get_logger
 from src.storage.db import get_db

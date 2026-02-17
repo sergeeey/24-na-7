@@ -52,7 +52,7 @@ async def check_health() -> Dict[str, Any]:
         db = get_db()
         
         # Пробуем простой запрос
-        test_data = db.select("metrics", limit=1)
+        db.select("metrics", limit=1)
         result["checks"]["database"] = {
             "status": "ok",
             "backend": type(db).__name__,
@@ -75,7 +75,6 @@ async def check_health() -> Dict[str, Any]:
             # Пытаемся загрузить mcp_validator
             ping_service = None
             try:
-                import sys
                 from pathlib import Path as PathLib
                 mcp_validator_path = PathLib(__file__).parent.parent.parent / ".cursor" / "validation" / "mcp_validator.py"
                 if mcp_validator_path.exists():

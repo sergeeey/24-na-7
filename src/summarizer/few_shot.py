@@ -8,6 +8,7 @@ import json
 from src.utils.logging import get_logger
 from src.llm.providers import get_llm_client
 from src.summarizer.prompts import get_few_shot_actions_prompt
+from src.llm.schemas.digest import DigestAnalysis, DigestOutput
 
 logger = get_logger("summarizer.few_shot")
 
@@ -43,6 +44,16 @@ DEFAULT_EXAMPLES = [
             "emotions": ["радость", "уверенность"],
             "intensity": 0.7,
             "dominant_emotion": "радость",
+        }
+    },
+    {
+        "action": "analyze_recording",
+        "output": {
+            "summary": "Одно предложение: о чём запись",
+            "emotions": ["эмоция1", "эмоция2"],
+            "actions": ["действие 1", "действие 2"],
+            "topics": ["тема1", "тема2"],
+            "urgency": "high",
         }
     }
 ]
@@ -93,7 +104,6 @@ def generate_structured_output(
     # Если указана модель, обновляем клиент
     if model:
         from src.llm.providers import OpenAIClient, AnthropicClient, GoogleGeminiClient
-        import os
         
         if model.startswith("gpt") or model.startswith("o1"):
             client = OpenAIClient(model=model)
@@ -126,19 +136,43 @@ def generate_structured_output(
         elif "```" in result_text:
             result_text = result_text.split("```")[1].split("```")[0].strip()
         
-        result = json.loads(result_text)
+        result_dict = json.loads(result_text)
         
-        # Валидация структуры
-        if "action" not in result:
-            result["action"] = action_type
-        if "output" not in result:
-            result["output"] = {}
-        if "confidence" not in result:
-            result["confidence"] = 0.8  # Default confidence
-        
-        logger.info("few_shot_generation_complete", action_type=action_type, confidence=result.get("confidence", 0.0))
-        
-        return result
+        # Валидация структуры через Pydantic
+        try:
+            # Убеждаемся что есть обязательные поля
+            if "action" not in result_dict:
+                result_dict["action"] = action_type
+            if "output" not in result_dict:
+                result_dict["output"] = {}
+            if "confidence" not in result_dict:
+                result_dict["confidence"] = 0.8  # Default confidence
+            
+            # Валидируем через Pydantic схему
+            validated = DigestAnalysis(**result_dict)
+            
+            logger.info(
+                "few_shot_generation_complete",
+                action_type=validated.action,
+                confidence=validated.confidence,
+                validated=True
+            )
+            
+            return validated.dict()
+            
+        except Exception as validation_error:
+            logger.warning(
+                "few_shot_validation_failed",
+                error=str(validation_error),
+                raw_result=result_dict
+            )
+            # Fallback: возвращаем с предупреждением
+            return {
+                "action": action_type,
+                "output": result_dict.get("output", {}),
+                "confidence": result_dict.get("confidence", 0.5),
+                "warning": f"Validation failed: {str(validation_error)}",
+            }
         
     except json.JSONDecodeError as e:
         logger.warning("few_shot_json_parse_failed", error=str(e))
@@ -171,6 +205,33 @@ def analyze_emotions(text: str, model: Optional[str] = None) -> Dict[str, Any]:
     """
     result = generate_structured_output(text, action_type="analyze_emotions", model=model)
     return result.get("output", {})
+
+
+def analyze_recording_text(text: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Анализирует запись голоса: саммари, эмоции, действия, темы, срочность.
+    Phase 2 — формат из ROADMAP.
+    
+    Returns:
+        Словарь с summary, emotions (list), actions (list), topics (list), urgency (low/medium/high)
+    """
+    if not (text or "").strip():
+        return {
+            "summary": "",
+            "emotions": [],
+            "actions": [],
+            "topics": [],
+            "urgency": "medium",
+        }
+    result = generate_structured_output(text, action_type="analyze_recording", model=model)
+    out = result.get("output", {})
+    return {
+        "summary": out.get("summary") or "",
+        "emotions": out.get("emotions") if isinstance(out.get("emotions"), list) else [],
+        "actions": out.get("actions") if isinstance(out.get("actions"), list) else [],
+        "topics": out.get("topics") if isinstance(out.get("topics"), list) else [],
+        "urgency": out.get("urgency") if out.get("urgency") in ("low", "medium", "high") else "medium",
+    }
 
 
 

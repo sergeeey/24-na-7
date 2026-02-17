@@ -3,8 +3,6 @@
 Проверка защиты от DDoS и abuse.
 """
 import pytest
-import tempfile
-from pathlib import Path
 from fastapi.testclient import TestClient
 
 # Нужно импортировать до создания TestClient

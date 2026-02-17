@@ -6,7 +6,6 @@ import os
 import json
 from typing import Optional, List, Dict, Any
 from pathlib import Path
-from datetime import datetime
 
 try:
     from src.utils.logging import setup_logging, get_logger
@@ -15,6 +14,39 @@ try:
 except Exception:
     import logging
     logger = logging.getLogger("storage.db")
+
+
+# Whitelist разрешённых таблиц для защиты от SQL injection
+ALLOWED_TABLES = {
+    "transcriptions",
+    "ingest_queue",
+    "recordings",
+    "claims",
+    "missions",
+    "metrics",
+    "audio_meta",
+    "text_entries",
+    "insights",
+    "facts",
+    "digests",
+    "recording_analyses",
+    "_health",  # Служебная таблица Supabase
+}
+
+
+def validate_table_name(table: str) -> None:
+    """
+    Валидирует имя таблицы против whitelist.
+    
+    Args:
+        table: Имя таблицы для проверки
+        
+    Raises:
+        ValueError: Если имя таблицы не в whitelist
+    """
+    if table not in ALLOWED_TABLES:
+        logger.error("invalid_table_name", table=table, allowed_tables=list(ALLOWED_TABLES))
+        raise ValueError(f"Table '{table}' is not in allowed list. Allowed tables: {sorted(ALLOWED_TABLES)}")
 
 
 class DatabaseBackend:
@@ -48,6 +80,9 @@ class SQLiteBackend(DatabaseBackend):
     
     def insert(self, table: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Вставляет запись в SQLite."""
+        # Валидация имени таблицы
+        validate_table_name(table)
+        
         cursor = self.conn.cursor()
         
         # Конвертируем JSONB в строки для SQLite
@@ -56,17 +91,26 @@ class SQLiteBackend(DatabaseBackend):
             if isinstance(value, (dict, list)):
                 data[key] = json.dumps(value)
         
-        columns = ", ".join(data.keys())
+        # Валидация имён колонок (защита от SQL injection через имена колонок)
+        columns = list(data.keys())
+        for col in columns:
+            if not col.replace("_", "").isalnum():
+                raise ValueError(f"Invalid column name: {col}")
+        
+        columns_str = ", ".join(columns)
         placeholders = ", ".join(["?" for _ in data])
         values = list(data.values())
         
-        cursor.execute(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", values)
+        cursor.execute(f"INSERT INTO {table} ({columns_str}) VALUES ({placeholders})", values)
         self.conn.commit()
         
         return {"id": data.get("id"), **data}
     
     def select(self, table: str, filters: Optional[Dict[str, Any]] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Выбирает записи из SQLite."""
+        # Валидация имени таблицы
+        validate_table_name(table)
+        
         cursor = self.conn.cursor()
         
         query = f"SELECT * FROM {table}"
@@ -75,11 +119,16 @@ class SQLiteBackend(DatabaseBackend):
         if filters:
             conditions = []
             for key, value in filters.items():
+                # Валидация имени колонки
+                if not key.replace("_", "").isalnum():
+                    raise ValueError(f"Invalid column name in filter: {key}")
                 conditions.append(f"{key} = ?")
                 params.append(value)
             query += " WHERE " + " AND ".join(conditions)
         
         if limit:
+            if limit < 0:
+                raise ValueError("Limit must be non-negative")
             query += f" LIMIT {limit}"
         
         cursor.execute(query, params)
@@ -93,7 +142,7 @@ class SQLiteBackend(DatabaseBackend):
                 if isinstance(value, str) and (key.endswith("segments") or key.endswith("urls") or key.endswith("evidence")):
                     try:
                         row_dict[key] = json.loads(value)
-                    except:
+                    except Exception:
                         pass
             result.append(row_dict)
         
@@ -101,6 +150,9 @@ class SQLiteBackend(DatabaseBackend):
     
     def update(self, table: str, id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Обновляет запись в SQLite."""
+        # Валидация имени таблицы
+        validate_table_name(table)
+        
         cursor = self.conn.cursor()
         
         # Конвертируем JSONB в строки
@@ -109,7 +161,13 @@ class SQLiteBackend(DatabaseBackend):
             if isinstance(value, (dict, list)):
                 data[key] = json.dumps(value)
         
-        set_clause = ", ".join([f"{key} = ?" for key in data.keys()])
+        # Валидация имён колонок
+        columns = list(data.keys())
+        for col in columns:
+            if not col.replace("_", "").isalnum():
+                raise ValueError(f"Invalid column name: {col}")
+        
+        set_clause = ", ".join([f"{col} = ?" for col in columns])
         values = list(data.values()) + [id]
         
         cursor.execute(f"UPDATE {table} SET {set_clause} WHERE id = ?", values)
@@ -119,6 +177,9 @@ class SQLiteBackend(DatabaseBackend):
     
     def delete(self, table: str, id: str) -> bool:
         """Удаляет запись из SQLite."""
+        # Валидация имени таблицы
+        validate_table_name(table)
+        
         cursor = self.conn.cursor()
         cursor.execute(f"DELETE FROM {table} WHERE id = ?", (id,))
         self.conn.commit()
@@ -136,11 +197,23 @@ class SupabaseBackend(DatabaseBackend):
     
     def insert(self, table: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Вставляет запись в Supabase."""
+        # Валидация имени таблицы
+        validate_table_name(table)
+        
         response = self.client.table(table).insert(data).execute()
         return response.data[0] if response.data else data
     
     def select(self, table: str, filters: Optional[Dict[str, Any]] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Выбирает записи из Supabase."""
+        # Валидация имени таблицы
+        validate_table_name(table)
+        
+        # Валидация имён колонок в фильтрах
+        if filters:
+            for key in filters.keys():
+                if not key.replace("_", "").isalnum():
+                    raise ValueError(f"Invalid column name in filter: {key}")
+        
         query = self.client.table(table).select("*")
         
         if filters:
@@ -148,6 +221,8 @@ class SupabaseBackend(DatabaseBackend):
                 query = query.eq(key, value)
         
         if limit:
+            if limit < 0:
+                raise ValueError("Limit must be non-negative")
             query = query.limit(limit)
         
         response = query.execute()
@@ -155,11 +230,22 @@ class SupabaseBackend(DatabaseBackend):
     
     def update(self, table: str, id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Обновляет запись в Supabase."""
+        # Валидация имени таблицы
+        validate_table_name(table)
+        
+        # Валидация имён колонок
+        for key in data.keys():
+            if not key.replace("_", "").isalnum():
+                raise ValueError(f"Invalid column name: {key}")
+        
         response = self.client.table(table).update(data).eq("id", id).execute()
         return response.data[0] if response.data else data
     
     def delete(self, table: str, id: str) -> bool:
         """Удаляет запись из Supabase."""
+        # Валидация имени таблицы
+        validate_table_name(table)
+        
         response = self.client.table(table).delete().eq("id", id).execute()
         return len(response.data) > 0 if response.data else False
 
@@ -204,8 +290,8 @@ def get_db_backend() -> DatabaseBackend:
 
 # Async версии (для будущего использования)
 try:
-    import asyncio
-    import asyncpg
+    import asyncio  # noqa: F401
+    import asyncpg  # noqa: F401
     HAS_ASYNC = True
 except ImportError:
     HAS_ASYNC = False

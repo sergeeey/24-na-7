@@ -5,7 +5,7 @@ Reflexio 24/7 — November 2025 Integration Sprint
 import pytest
 from pathlib import Path
 
-from src.storage.migrate import apply_schema_migrations, verify_row_counts
+from src.storage.migrate import apply_schema_migrations
 
 
 def test_migrations_exist():

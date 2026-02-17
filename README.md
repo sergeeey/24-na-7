@@ -44,6 +44,7 @@ python scripts/check_api_keys.py
 - [QUICK_COMMANDS.md](QUICK_COMMANDS.md) — шпаргалка команд
 - [DIGEST.md](DIGEST.md) — документация по дайджестам
 - [FIRST_LAUNCH_GUIDE.md](FIRST_LAUNCH_GUIDE.md) — первый запуск с нуля
+- **Full Audit:** комплексный аудит по сценарию [FULL_AUDIT_SPEC.md](FULL_AUDIT_SPEC.md) и [full_audit.yml](full_audit.yml). Запуск: запрос к агенту «выполни full audit» или «/full_audit»; выходы — в `audit_output/`.
 
 **⚡ Самый быстрый способ (Production-Ready):**
 

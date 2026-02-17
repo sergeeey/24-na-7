@@ -2,7 +2,6 @@
 Refiner — улучшение саммари через Claude 4.5 при низком confidence.
 Reflexio 24/7 — November 2025 Integration Sprint
 """
-from typing import Dict, Any, Optional
 
 from src.utils.logging import get_logger
 from src.llm.providers import AnthropicClient, OpenAIClient

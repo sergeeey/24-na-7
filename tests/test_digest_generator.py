@@ -3,9 +3,7 @@
 """
 import pytest
 from datetime import date, datetime
-from unittest.mock import Mock, patch, MagicMock
-from pathlib import Path
-import json
+from unittest.mock import patch
 
 from src.digest.generator import DigestGenerator
 
@@ -44,12 +42,11 @@ class TestDigestGenerator:
         assert isinstance(facts, list)
     
     def test_generate_digest_no_data(self, generator):
-        """Генерация дайджеста без данных."""
-        # Мокаем отсутствие данных
+        """Генерация дайджеста без данных (метод generate возвращает Path)."""
         with patch.object(generator, 'get_transcriptions', return_value=[]):
-            result = generator.generate_digest(date.today())
-            # Должен вернуть пустой или минимальный дайджест
+            result = generator.generate(date.today())
             assert result is not None
+            assert hasattr(result, 'exists') and result.exists()
 
 
 class TestFactExtraction:

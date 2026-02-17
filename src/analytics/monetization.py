@@ -2,7 +2,7 @@
 Метрики монетизации и конверсии.
 Reflexio v2.1 — Surpass Smart Noter Sprint
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import json

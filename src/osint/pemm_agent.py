@@ -8,14 +8,14 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.osint.collector import gather_osint
 from src.osint.contextor import build_rctf_prompt, extract_claims_from_response, create_default_claim_schema
-from src.osint.deepconf import validate_claims, calibrate_confidence
-from src.osint.schemas import Mission, MissionResult, Task, Claim, ValidatedClaim, Source
+from src.osint.deepconf import validate_claims
+from src.osint.schemas import Mission, MissionResult, Claim, ValidatedClaim
 from src.osint.zone_manager import get_zone_for_mission
 
 try:

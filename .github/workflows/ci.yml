@@ -26,41 +26,54 @@ jobs:
     - name: Lint with ruff
       run: |
         ruff check src tests
-      continue-on-error: true
-    
+
     - name: Type check with mypy
       run: |
         mypy src --ignore-missing-imports
-      continue-on-error: true
-    
-    - name: Run tests
+
+    - name: Run tests with coverage
       run: |
-        pytest tests/ -v --cov=src --cov-report=term-missing --json-report --json-report-file=tests/.report.json
-      continue-on-error: true
+        pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=xml --json-report --json-report-file=tests/.report.json
+    
+    - name: Check coverage threshold
+      run: |
+        coverage report --fail-under=80 || (echo "Coverage is below 80%" && exit 1)
     
     - name: Update metrics from tests
       if: always()
       run: |
         python scripts/auto_measure.py --checklist .cursor/tasks/surpass_smart_noter_checklist.yaml --report tests/.report.json --dry-run
-      continue-on-error: true
     
     - name: Security check (SAFE)
       run: |
         if [ -f ".cursor/validation/safe/run.py" ]; then
           python .cursor/validation/safe/run.py --mode audit || true
         fi
-      continue-on-error: true
     
     - name: Security scan (Bandit)
       run: |
         pip install bandit
         bandit -r src -f json -o bandit-report.json || true
-      continue-on-error: true
     
     - name: Security scan (Ruff security)
       run: |
         ruff check src --select S || true
-      continue-on-error: true
+    
+    - name: Dependency security check (pip-audit)
+      run: |
+        pip install pip-audit
+        pip-audit --desc || true
+    
+    - name: Dependency check (safety)
+      run: |
+        pip install safety
+        safety check --json || true
+    
+    - name: Docker security scan (Trivy)
+      if: always()
+      run: |
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+          aquasec/trivy:latest image reflexio-api:latest || true
 
   build:
     runs-on: ubuntu-latest

@@ -2,8 +2,7 @@
 Эмоциональный анализ речи.
 Reflexio v2.1 — Surpass Smart Noter Sprint
 """
-from typing import Dict, List, Optional, Tuple
-import numpy as np
+from typing import Dict
 
 from src.utils.logging import get_logger
 

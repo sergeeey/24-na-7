@@ -3,7 +3,7 @@ LLM Providers — интеграция с OpenAI и Anthropic.
 """
 import os
 import time
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 from enum import Enum
 
 try:
@@ -13,6 +13,30 @@ try:
 except Exception:
     import logging
     logger = logging.getLogger("llm.providers")
+
+from src.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
+
+# Глобальные circuit breakers для каждого провайдера
+_openai_circuit_breaker = CircuitBreaker(
+    failure_threshold=5,
+    timeout=60,
+    expected_exception=Exception,
+    name="openai_llm",
+)
+
+_anthropic_circuit_breaker = CircuitBreaker(
+    failure_threshold=5,
+    timeout=60,
+    expected_exception=Exception,
+    name="anthropic_llm",
+)
+
+_google_circuit_breaker = CircuitBreaker(
+    failure_threshold=5,
+    timeout=60,
+    expected_exception=Exception,
+    name="google_llm",
+)
 
 
 class LLMProvider(str, Enum):
@@ -60,7 +84,7 @@ class OpenAIClient(LLMClient):
             logger.error("openai library not installed. Run: pip install openai")
     
     def call(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1000, **kwargs) -> Dict[str, Any]:
-        """Вызывает OpenAI API."""
+        """Вызывает OpenAI API через circuit breaker."""
         if not self.client:
             return {
                 "text": "",
@@ -69,26 +93,21 @@ class OpenAIClient(LLMClient):
                 "latency_ms": 0,
             }
         
-        start_time = time.time()
-        
-        # Логирование reasoning-трассировки
-        reasoning_trace = {
-            "provider": "openai",
-            "model": self.model,
-            "prompt_length": len(prompt),
-            "system_prompt_length": len(system_prompt) if system_prompt else 0,
-            "temperature": self.temperature,
-            "max_tokens": max_tokens,
-            "timestamp": time.time(),
-        }
-        
-        logger.info(
-            "llm_call_started",
-            **reasoning_trace,
-            event="reasoning_trace"
-        )
-        
-        try:
+        def _call_openai() -> Dict[str, Any]:
+            start_time = time.time()
+            
+            # Логирование reasoning-трассировки (без дублирования event — structlog использует первый аргумент как event)
+            reasoning_trace = {
+                "provider": "openai",
+                "model": self.model,
+                "prompt_length": len(prompt),
+                "system_prompt_length": len(system_prompt) if system_prompt else 0,
+                "temperature": self.temperature,
+                "max_tokens": max_tokens,
+                "timestamp": time.time(),
+            }
+            logger.info("llm_call_started", **reasoning_trace)
+            
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
@@ -116,7 +135,6 @@ class OpenAIClient(LLMClient):
             logger.info(
                 "llm_call_completed",
                 **reasoning_trace,
-                event="reasoning_trace",
                 response_preview=response_text[:200] if response_text else ""
             )
             
@@ -127,27 +145,24 @@ class OpenAIClient(LLMClient):
                 "model": self.model,
                 "reasoning_trace": reasoning_trace,  # Добавляем reasoning trace в ответ
             }
+        
+        try:
+            return _openai_circuit_breaker.call(_call_openai)
+        except CircuitBreakerError as e:
+            logger.error("circuit_breaker_open", provider="openai", error=str(e))
+            return {
+                "text": "",
+                "error": f"Circuit breaker is OPEN: {str(e)}",
+                "tokens_used": 0,
+                "latency_ms": 0,
+            }
         except Exception as e:
-            latency_ms = (time.time() - start_time) * 1000
-            reasoning_trace.update({
-                "status": "error",
-                "error": str(e),
-                "latency_ms": round(latency_ms, 2),
-            })
-            
-            logger.error(
-                "llm_call_failed",
-                **reasoning_trace,
-                event="reasoning_trace",
-                error=str(e)
-            )
-            
+            logger.error("llm_call_failed", provider="openai", error=str(e))
             return {
                 "text": "",
                 "error": str(e),
                 "tokens_used": 0,
-                "latency_ms": round(latency_ms, 2),
-                "reasoning_trace": reasoning_trace,
+                "latency_ms": 0,
             }
 
 
@@ -191,12 +206,8 @@ class AnthropicClient(LLMClient):
             "timestamp": time.time(),
         }
         
-        logger.info(
-            "llm_call_started",
-            **reasoning_trace,
-            event="reasoning_trace"
-        )
-        
+        logger.info("llm_call_started", **reasoning_trace)
+
         try:
             response = self.client.messages.create(
                 model=self.model,
@@ -222,7 +233,6 @@ class AnthropicClient(LLMClient):
             logger.info(
                 "llm_call_completed",
                 **reasoning_trace,
-                event="reasoning_trace",
                 response_preview=text[:200] if text else ""
             )
             
@@ -244,7 +254,6 @@ class AnthropicClient(LLMClient):
             logger.error(
                 "llm_call_failed",
                 **reasoning_trace,
-                event="reasoning_trace",
                 error=str(e)
             )
             

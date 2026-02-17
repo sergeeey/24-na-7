@@ -143,7 +143,7 @@ class BrightDataClient:
                 # Настройка proxy для сессии
                 # Извлекаем credentials из proxy URL
                 from urllib.parse import urlparse
-                parsed = urlparse(self.proxy_http)
+                urlparse(self.proxy_http)  # проверка формата URL
                 
                 # Настраиваем proxies для requests
                 self.session.proxies = {

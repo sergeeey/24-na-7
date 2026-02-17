@@ -1,7 +1,6 @@
 """
 Тесты для LLM провайдеров (Core Domain).
 """
-import pytest
 import os
 from unittest.mock import Mock, patch, MagicMock
 
@@ -45,28 +44,24 @@ class TestOpenAIClient:
     @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"})
     def test_openai_initialization(self):
         """Инициализация OpenAI клиента."""
-        with patch("src.llm.providers.openai") as mock_openai:
-            mock_openai.OpenAI.return_value = Mock()
-            
+        with patch("openai.OpenAI") as mock_openai_class:
+            mock_openai_class.return_value = Mock()
             client = OpenAIClient(model="gpt-4", temperature=0.3)
-            
             assert client.provider == LLMProvider.OPENAI
             assert client.api_key == "sk-test-key"
-    
+
     @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"})
     def test_openai_call(self):
         """Вызов OpenAI API."""
-        with patch("src.llm.providers.openai") as mock_openai:
+        with patch("openai.OpenAI") as mock_openai_class:
             mock_client = Mock()
             mock_client.chat.completions.create.return_value = Mock(
                 choices=[Mock(message=Mock(content="Test response"))],
                 usage=Mock(prompt_tokens=10, completion_tokens=5)
             )
-            mock_openai.OpenAI.return_value = mock_client
-            
+            mock_openai_class.return_value = mock_client
             client = OpenAIClient(model="gpt-4", temperature=0.3)
             result = client.call("Test prompt")
-            
             assert "text" in result
             assert "tokens_used" in result
             assert "latency_ms" in result
@@ -81,36 +76,41 @@ class TestOpenAIClient:
     @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"})
     def test_openai_call_with_system_prompt(self):
         """Вызов с system prompt."""
-        with patch("src.llm.providers.openai") as mock_openai:
+        with patch("openai.OpenAI") as mock_openai_class:
             mock_client = Mock()
             mock_client.chat.completions.create.return_value = Mock(
                 choices=[Mock(message=Mock(content="Response"))],
                 usage=Mock(prompt_tokens=20, completion_tokens=10)
             )
-            mock_openai.OpenAI.return_value = mock_client
-            
+            mock_openai_class.return_value = mock_client
             client = OpenAIClient(model="gpt-4", temperature=0.3)
             result = client.call(
                 prompt="User prompt",
                 system_prompt="You are a helpful assistant"
             )
-            
             assert result["text"] == "Response"
 
 
 class TestAnthropicClient:
     """Тесты Anthropic клиента."""
-    
+
     @patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-test"})
     def test_anthropic_initialization(self):
-        """Инициализация Anthropic клиента."""
-        with patch("src.llm.providers.anthropic") as mock_anthropic:
-            mock_anthropic.Anthropic.return_value = Mock()
-            
+        """Инициализация Anthropic клиента (anthropic может быть не установлен)."""
+        import sys
+        mock_anthropic_mod = MagicMock()
+        mock_anthropic_mod.Anthropic.return_value = Mock()
+        old = sys.modules.get("anthropic")
+        sys.modules["anthropic"] = mock_anthropic_mod
+        try:
             client = AnthropicClient(model="claude-3", temperature=0.3)
-            
             assert client.provider == LLMProvider.ANTHROPIC
             assert client.api_key == "sk-ant-test"
+        finally:
+            if old is None:
+                sys.modules.pop("anthropic", None)
+            else:
+                sys.modules["anthropic"] = old
 
 
 class TestLLMResponse:
