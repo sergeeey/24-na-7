@@ -22,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 
 // Цвета FAB вынесены как константы, а не в theme —
@@ -57,6 +59,10 @@ fun RecordingFab(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // ПОЧЕМУ haptic: тактильный отклик при старте/стопе записи — пользователь
+    // чувствует что нажатие "принято" физически, даже не глядя на экран.
+    val haptic = LocalHapticFeedback.current
+
     // ПОЧЕМУ Box а не просто FAB: нам нужно нарисовать кольцо ПОЗАДИ кнопки.
     // В Compose слои в Box рисуются в порядке объявления — первый снизу, последний сверху.
     // Если поставить Canvas после FAB — кольцо будет поверх кнопки и перекроет иконку.
@@ -71,7 +77,10 @@ fun RecordingFab(
 
         // --- Слой 2: сама кнопка ---
         LargeFloatingActionButton(
-            onClick = onClick,
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            },
             // ПОЧЕМУ containerColor вместо тему: нам нужен точный hex-цвет из брендинга,
             // а не тот что Material3 подберёт автоматически по colorScheme.
             containerColor = if (isRecording) ColorRed else ColorTeal,
