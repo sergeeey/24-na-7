@@ -313,7 +313,7 @@ private fun HomeScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Spacer(modifier = Modifier.height(8.dp))
-            WelcomeBlock()
+            WelcomeBlock(recordingsCount = recordings.size)
             Spacer(modifier = Modifier.height(20.dp))
 
             if (!hasPermission) {
@@ -376,7 +376,7 @@ private fun HomeScreen(
 // ──────────────────────────────────────────────
 
 @Composable
-private fun WelcomeBlock() {
+private fun WelcomeBlock(recordingsCount: Int = 0) {
     val greeting = remember {
         val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
         when {
@@ -398,12 +398,30 @@ private fun WelcomeBlock() {
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
+            // ПОЧЕМУ показываем счётчик: даёт ощущение прогресса и вовлечённости.
+            // Если 0 записей — мотивирующий текст. Если есть — конкретное число.
             Text(
-                text = "Reflexio слушает речь и извлекает смысл. Только важное.",
+                text = if (recordingsCount == 0) {
+                    "Начните свой первый голосовой дневник"
+                } else {
+                    "У вас $recordingsCount ${pluralRecordings(recordingsCount)}"
+                },
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
             )
         }
+    }
+}
+
+// ПОЧЕМУ: русские окончания зависят от числа. 1 запись, 2 записи, 5 записей.
+private fun pluralRecordings(count: Int): String {
+    val mod10 = count % 10
+    val mod100 = count % 100
+    return when {
+        mod100 in 11..19 -> "записей"
+        mod10 == 1 -> "запись"
+        mod10 in 2..4 -> "записи"
+        else -> "записей"
     }
 }
