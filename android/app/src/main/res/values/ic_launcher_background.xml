@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Фоновый цвет для adaptive icon Reflexio 24/7.
+
+    ПОЧЕМУ отдельный файл а не в colors.xml: Android документация рекомендует
+    держать ic_launcher_background отдельно — это упрощает смену темы иконки
+    без затрагивания цветов всего приложения.
+
+    Цвет #0D1117 — это "GitHub dark" оттенок, почти чёрный с синим подтоном.
+    Отлично контрастирует с indigo (#7C6CFF) foreground.
+-->
+<resources>
+    <color name="ic_launcher_background">#0D1117</color>
+</resources>

@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Foreground layer для adaptive icon Reflexio 24/7.
+    Концепция: стилизованный монограмм "R" с звуковой волной —
+    символизирует голосовой дневник и цифровую память.
+
+    ПОЧЕМУ vector drawable а не PNG: масштабируется на любую плотность
+    экрана без потери качества, занимает ~1 КБ вместо 50-200 КБ PNG-набора.
+
+    ПОЧЕМУ viewportWidth/Height=108: стандарт для adaptive icon foreground.
+    Безопасная зона для контента — круг диаметром 66dp в центре (от 21 до 87).
+    Всё за пределами этой зоны может быть обрезано launcher-ом.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!--
+        Внешнее кольцо — "орбита памяти", отсылка к нейронным связям.
+        Центр: 54,54 | R=30 | тонкая линия для лёгкости
+    -->
+    <path
+        android:pathData="M54,24
+                          A30,30 0 1,1 53.99,24 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#7C6CFF"
+        android:strokeWidth="1.5"
+        android:strokeAlpha="0.4" />
+
+    <!--
+        Среднее кольцо — средняя "волна", чуть ярче
+    -->
+    <path
+        android:pathData="M54,32
+                          A22,22 0 1,1 53.99,32 Z"
+        android:fillColor="#00000000"
+        android:strokeColor="#7C6CFF"
+        android:strokeWidth="2.0"
+        android:strokeAlpha="0.65" />
+
+    <!--
+        Внутренний заполненный круг — "ядро" / точка записи.
+        Диаметр 28dp, чуть смещён к верху для баланса с буквой R.
+    -->
+    <path
+        android:pathData="M54,40
+                          A14,14 0 1,1 53.99,40 Z"
+        android:fillColor="#7C6CFF"
+        android:fillAlpha="0.15"
+        android:strokeColor="#7C6CFF"
+        android:strokeWidth="2.5" />
+
+    <!--
+        Монограмм "R" — основной символ приложения Reflexio.
+        Построен из отдельных path-сегментов для чистоты линий.
+
+        ПОЧЕМУ "R" а не сложный мозг/волна: при размере 48px иконки
+        детализированный символ теряет читаемость. Буква остаётся
+        узнаваемой даже в 18px.
+    -->
+
+    <!-- Вертикальный штрих R -->
+    <path
+        android:pathData="M46,44 L46,64"
+        android:fillColor="#00000000"
+        android:strokeColor="#7C6CFF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round" />
+
+    <!-- Верхняя дуга R (полуэллипс) -->
+    <path
+        android:pathData="M46,44 L55,44 A7,8 0 0,1 55,60 L46,60"
+        android:fillColor="#00000000"
+        android:strokeColor="#7C6CFF"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+
+    <!-- Диагональная "нога" R — символизирует движение вперёд -->
+    <path
+        android:pathData="M51,60 L62,70"
+        android:fillColor="#00000000"
+        android:strokeColor="#00E5CC"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round" />
+
+    <!--
+        Три точки снизу — имитация звуковой волны / записи.
+        ПОЧЕМУ path с arc: Android VectorDrawable не поддерживает <circle>.
+        Каждая точка — полный arc (A 1.8,1.8 0 1,1 -0.01,0 закрывает круг).
+    -->
+    <path
+        android:pathData="M45.8,72 A1.8,1.8 0 1,1 45.79,72 Z"
+        android:fillColor="#00E5CC"
+        android:fillAlpha="0.9" />
+    <path
+        android:pathData="M51.8,72 A1.8,1.8 0 1,1 51.79,72 Z"
+        android:fillColor="#00E5CC"
+        android:fillAlpha="0.9" />
+    <path
+        android:pathData="M57.8,72 A1.8,1.8 0 1,1 57.79,72 Z"
+        android:fillColor="#00E5CC"
+        android:fillAlpha="0.9" />
+
+</vector>

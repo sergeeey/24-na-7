@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Adaptive icon для Reflexio 24/7 (API 26+, Android 8.0+).
+
+    ПОЧЕМУ adaptive icon: начиная с Android 8.0 launcher-ы обрезают
+    иконку по собственной маске (круг, squircle, скруглённый квадрат и т.д.).
+    Adaptive icon позволяет системе красиво обрезать фон независимо от маски,
+    а foreground всегда остаётся центрированным и нетронутым.
+
+    Структура двух слоёв:
+      background — однородный тёмный цвет #0D1117
+      foreground — vector с "R" + звуковые круги в indigo/teal
+
+    mipmap-anydpi-v26 перекрывает любые density-специфичные папки
+    (hdpi/xhdpi/xxhdpi/xxxhdpi) на Android 8+.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
