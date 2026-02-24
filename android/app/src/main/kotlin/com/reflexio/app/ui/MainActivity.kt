@@ -9,6 +9,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -57,7 +59,9 @@ import com.reflexio.app.data.db.RecordingDatabase
 import com.reflexio.app.data.model.Recording
 import com.reflexio.app.domain.audio.AudioSpectrumAnalyzer
 import com.reflexio.app.domain.services.AudioRecordingService
+import com.reflexio.app.ui.components.EmptyState
 import com.reflexio.app.ui.components.ParticleFieldVisualizer
+import com.reflexio.app.ui.components.RecordingFab
 import com.reflexio.app.ui.screens.AnalyticsScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
 import com.reflexio.app.ui.screens.RecordingListScreen
@@ -233,35 +237,42 @@ fun RecordingApp(
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
-        // ПОЧЕМУ when вместо NavHost: 3 экрана, нет deep links, состояние хранится выше.
-        // NavHost добавим когда экранов будет > 5 или нужен deep linking.
-        when (selectedTab) {
-            0 -> HomeScreen(
-                hasPermission = hasPermission,
-                recordingActive = recordingActive,
-                recordings = recordings,
-                loadError = loadError,
-                audioLevels = audioLevels,
-                onRequestPermission = onRequestPermission,
-                onToggleRecording = {
-                    if (recordingActive) {
-                        onStopRecording(); recordingActive = false
-                    } else {
-                        onStartRecording(); recordingActive = true
-                    }
-                },
-                modifier = Modifier.padding(padding),
-            )
-            1 -> DailySummaryScreen(
-                onBack = { selectedTab = 0 },
-                baseHttpUrl = baseHttpUrl,
-                modifier = Modifier.padding(padding),
-            )
-            2 -> AnalyticsScreen(
-                onBack = { selectedTab = 0 },
-                onOpenDailySummary = { selectedTab = 1 },
-                modifier = Modifier.padding(padding),
-            )
+        // ПОЧЕМУ Crossfade а не AnimatedContent: Crossfade проще (только fade in/out),
+        // не требует AnimatedContentScope. Для 3 табов без shared element transitions — идеально.
+        // 300ms — быстрый но заметный переход (< 200ms резко, > 500ms тормозно).
+        Crossfade(
+            targetState = selectedTab,
+            animationSpec = tween(300),
+            label = "tabCrossfade",
+        ) { tab ->
+            when (tab) {
+                0 -> HomeScreen(
+                    hasPermission = hasPermission,
+                    recordingActive = recordingActive,
+                    recordings = recordings,
+                    loadError = loadError,
+                    audioLevels = audioLevels,
+                    onRequestPermission = onRequestPermission,
+                    onToggleRecording = {
+                        if (recordingActive) {
+                            onStopRecording(); recordingActive = false
+                        } else {
+                            onStartRecording(); recordingActive = true
+                        }
+                    },
+                    modifier = Modifier.padding(padding),
+                )
+                1 -> DailySummaryScreen(
+                    onBack = { selectedTab = 0 },
+                    baseHttpUrl = baseHttpUrl,
+                    modifier = Modifier.padding(padding),
+                )
+                2 -> AnalyticsScreen(
+                    onBack = { selectedTab = 0 },
+                    onOpenDailySummary = { selectedTab = 1 },
+                    modifier = Modifier.padding(padding),
+                )
+            }
         }
     }
 }
@@ -317,17 +328,21 @@ private fun HomeScreen(
             } else {
                 // Статус записи
                 Text(
-                    text = if (recordingActive) "Слушаю..." else "Запись остановлена",
+                    text = if (recordingActive) "Слушаю..." else "Нажмите для записи",
                     style = MaterialTheme.typography.titleMedium,
                     color = if (recordingActive)
                         MaterialTheme.colorScheme.secondary
                     else
                         MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(modifier = Modifier.height(12.dp))
-                FilledTonalButton(onClick = onToggleRecording) {
-                    Text(if (recordingActive) "Остановить" else "Начать запись")
-                }
+                Spacer(modifier = Modifier.height(16.dp))
+                // ПОЧЕМУ RecordingFab а не FilledTonalButton: FAB — стандартный Material3
+                // паттерн для основного действия. Пульсирующее кольцо даёт визуальный
+                // feedback что запись идёт, без дополнительного текста.
+                RecordingFab(
+                    isRecording = recordingActive,
+                    onClick = onToggleRecording,
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
