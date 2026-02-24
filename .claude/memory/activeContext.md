@@ -1,10 +1,10 @@
 # Active Context — Reflexio 24/7
 
 ## Последнее обновление
-2026-02-24
+2026-02-24 21:20
 
 ## Текущая фаза
-**Настройка рабочего окружения → Проверка запуска core pipeline**
+**Core pipeline работает end-to-end → Улучшение качества (Chain of Density, Structured Events)**
 
 ## Что сделано за сессию 2026-02-24
 
@@ -25,7 +25,7 @@
 - Создана `.claude/memory/` (activeContext, techContext, decisions)
 - Обновлены глобальные goals.md
 
-## Что починено за сессию
+### Что починено
 - **Pipeline разрыв:** ingest и asr не писали в SQLite → добавлена запись в оба endpoint
 - **policies.yaml:** битый YAML (экранирование `'` в regex) → починен
 - **providers.py:** галлюцинированные модели (gpt-5-mini, claude-4-5) → исправлены на актуальные
@@ -34,28 +34,51 @@
 - **metrics таблица:** создана в SQLite (health monitor больше не ругается)
 - **faster-whisper:** установлен (отсутствовал)
 
-## Core Pipeline — РАБОТАЕТ
+### Android — СОБРАН И ПРОТЕСТИРОВАН
+- **Build fix:** Upgrade Assistant сломал сборку (AGP 9.0.1, Kotlin 2.2.10, KSP 2.3.2)
+  - Откатил на AGP 8.13.2, Kotlin 1.9.24, KSP 1.9.24-1.0.20
+  - Room KSP: `C:\Windows\TEMP\` блокирует execution → добавлен `org.sqlite.tmpdir`
+- **Device URL:** `ws://localhost:8000` + `adb reverse tcp:8000 tcp:8000`
+- **Тест на Pixel 9 Pro:** полный pipeline работает!
+  - Микрофон → VAD → WebSocket → Whisper → SQLite → Digest
+  - Распознал русскую речь: "Как круто!", "Раз, два, три...", "вообще просто ништяк"
+- **Эмулятор:** микрофон не пробрасывает реальный звук (известная проблема)
+
+## Core Pipeline — РАБОТАЕТ END-TO-END
 ```
-POST /ingest/audio → файл + SQLite (status=pending)
-POST /asr/transcribe → Whisper → SQLite (transcription + status=processed)
-GET /digest/{date} → читает из SQLite → извлекает факты → markdown
-LLM (Anthropic claude-3-haiku) → работает (860ms, 69 tokens)
+Android (Pixel 9 Pro) → VAD → WebSocket ws://localhost:8000/ws/ingest
+  → файл + SQLite (status=pending)
+  → Whisper ASR (faster-whisper, lang=ru detected)
+  → SQLite (transcription + status=processed)
+  → GET /digest/{date} → извлекает факты → markdown
+  → LLM (Anthropic claude-3-haiku) → работает
 ```
 
+## Дайджест за 2026-02-24
+- 39 транскрипций, 9 фактов, 204 слова, 1.8 мин
+- Информационная плотность: 88/100
+- "Дневное саммари" пустое — Chain of Density не работает (backlog)
+
+## Коммиты сессии
+- `56159c5` — fix: connect core pipeline end-to-end, configure LLM and SQLite
+- `1a7124c` — feat: add audio spectrum visualizer to Android app
+- `f5efc62` — fix: revert Upgrade Assistant breakage, fix Room KSP build on Windows
+
 ## Следующие шаги
-1. Тест с реальной речью (микрофон → listener → API)
-2. Chain of Density summarization — разобраться почему саммари пустое
-3. Structured Events (ADR-010) — обогащение транскрипций через LLM
+1. **Chain of Density summarization** — разобраться почему "Дневное саммари" пустое
+2. **Structured Events (ADR-010)** — обогащение транскрипций через LLM
+3. **Whisper галлюцинации** — фильтр "Thank you" / "You" на тихих сегментах
 4. Чистка 54 .md файлов в корне
-5. Android app — оценить состояние
+5. Android: offline queue, retry logic
 
 ## Ключевые файлы
 - API: `src/api/main.py`
+- WebSocket: `src/api/routers/websocket.py`
 - Edge: `src/edge/listener.py`
 - ASR: `src/asr/transcribe.py`
 - Digest: `src/digest/generator.py`
 - Config: `src/utils/config.py`, `.env`
-- Schema: `schema.sql`
+- Android: `android/app/build.gradle.kts`
 
 ## Для восстановления контекста
-Reflexio 24/7: `D:/24 na 7/`. Цифровая память всей жизни. MVP не запускался. 104 .py, 16K строк, 15 модулей. Ядро: edge→asr→digest. Идея Centaur: structured events + паттерны. Phase: настройка окружения → первый запуск.
+Reflexio 24/7: `D:/24 na 7/`. Цифровая память всей жизни. Pipeline работает end-to-end: Android Pixel 9 Pro → VAD → WebSocket → Whisper → SQLite → Digest. 3 коммита запушены (f5efc62). Следующее: Chain of Density (пустое саммари), Structured Events, фильтр Whisper-галлюцинаций. Устройство подключается через `adb reverse tcp:8000 tcp:8000`.

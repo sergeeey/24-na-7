@@ -88,14 +88,33 @@ def generate_dense_summary(
             break
         
         try:
-            # Парсим JSON ответ
+            # ПОЧЕМУ: LLM может вернуть JSON в разных обёртках:
+            # 1. ```json ... ```  2. ```...```  3. Итерация N:\n{...}  4. Просто {..}
+            # Ищем первый валидный JSON-объект в ответе.
             result_text = response["text"]
             if "```json" in result_text:
                 result_text = result_text.split("```json")[1].split("```")[0].strip()
             elif "```" in result_text:
                 result_text = result_text.split("```")[1].split("```")[0].strip()
-            
-            result = json.loads(result_text)
+
+            # Если не JSON — ищем последний {...} блок (самая плотная итерация)
+            result = None
+            try:
+                result = json.loads(result_text)
+            except json.JSONDecodeError:
+                # Ищем все JSON-объекты в тексте
+                import re
+                json_blocks = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', result_text)
+                for block in reversed(json_blocks):  # берём последний (самый плотный)
+                    try:
+                        result = json.loads(block)
+                        if "summary" in result:
+                            break
+                    except json.JSONDecodeError:
+                        continue
+
+            if not result or "summary" not in result:
+                raise json.JSONDecodeError("No valid JSON with 'summary' key found", result_text, 0)
             current_summary = result.get("summary", current_summary)
             
             iterations_results.append({

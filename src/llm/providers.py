@@ -68,10 +68,15 @@ class LLMClient:
 
 class OpenAIClient(LLMClient):
     """Клиент для OpenAI API."""
-    
+
     def __init__(self, model: str, temperature: float = 0.3):
         super().__init__(LLMProvider.OPENAI, model, temperature)
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        # ПОЧЕМУ: pydantic-settings не экспортирует в os.environ
+        try:
+            from src.utils.config import settings as _s
+            self.api_key = getattr(_s, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY")
+        except Exception:
+            self.api_key = os.getenv("OPENAI_API_KEY")
         
         if not self.api_key:
             logger.warning("OPENAI_API_KEY not set")
@@ -168,10 +173,14 @@ class OpenAIClient(LLMClient):
 
 class AnthropicClient(LLMClient):
     """Клиент для Anthropic API."""
-    
+
     def __init__(self, model: str, temperature: float = 0.3):
         super().__init__(LLMProvider.ANTHROPIC, model, temperature)
-        self.api_key = os.getenv("ANTHROPIC_API_KEY")
+        try:
+            from src.utils.config import settings as _s
+            self.api_key = getattr(_s, "ANTHROPIC_API_KEY", None) or os.getenv("ANTHROPIC_API_KEY")
+        except Exception:
+            self.api_key = os.getenv("ANTHROPIC_API_KEY")
         
         if not self.api_key:
             logger.warning("ANTHROPIC_API_KEY not set")
@@ -264,10 +273,14 @@ class AnthropicClient(LLMClient):
 
 class GoogleGeminiClient(LLMClient):
     """Клиент для Google Gemini API."""
-    
+
     def __init__(self, model: str, temperature: float = 0.3):
         super().__init__(LLMProvider.GOOGLE, model, temperature)
-        self.api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        try:
+            from src.utils.config import settings as _s
+            self.api_key = getattr(_s, "GOOGLE_API_KEY", None) or getattr(_s, "GEMINI_API_KEY", None) or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        except Exception:
+            self.api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         
         if not self.api_key:
             logger.warning("GOOGLE_API_KEY not set")
@@ -329,30 +342,51 @@ class GoogleGeminiClient(LLMClient):
 def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
     """
     Фабричная функция для получения LLM клиента.
-    
+
     Args:
         role: "actor" или "critic"
-        
+
     Returns:
         LLMClient или None
     """
-    provider_name = os.getenv("LLM_PROVIDER", "openai").lower()
-    model_key = f"LLM_MODEL_{role.upper()}"
-    
-    # ПОЧЕМУ: исправлены галлюцинированные имена моделей на актуальные (2026-02)
-    default_models = {
-        "openai": "gpt-4o-mini" if role == "actor" else "gpt-4o",
-        "anthropic": "claude-haiku-4-5-20251001" if role == "actor" else "claude-sonnet-4-6",
-        "google": "gemini-2.0-flash" if role == "actor" else "gemini-2.0-flash",
-    }
-    
-    model = os.getenv(
-        model_key,
-        os.getenv("LLM_MODEL_ACTOR", default_models.get(provider_name, "gpt-4o-mini"))
-    )
-    
-    temp_key = f"LLM_TEMPERATURE_{role.upper()}"
-    temperature = float(os.getenv(temp_key, "0.3" if role == "actor" else "0.0"))
+    # ПОЧЕМУ: pydantic-settings загружает .env в объект settings, но НЕ в os.environ.
+    # os.getenv() не видит значения из .env → дефолтил на openai → пустое саммари.
+    # Теперь читаем из settings (pydantic) с fallback на os.getenv.
+    try:
+        from src.utils.config import settings as _settings
+        provider_name = getattr(_settings, "LLM_PROVIDER", None) or os.getenv("LLM_PROVIDER", "openai")
+        provider_name = provider_name.lower()
+
+        model_attr = f"LLM_MODEL_{role.upper()}"
+        model_env_key = f"LLM_MODEL_{role.upper()}"
+
+        default_models = {
+            "openai": "gpt-4o-mini" if role == "actor" else "gpt-4o",
+            "anthropic": "claude-haiku-4-5-20251001" if role == "actor" else "claude-sonnet-4-6",
+            "google": "gemini-2.0-flash" if role == "actor" else "gemini-2.0-flash",
+        }
+
+        model = (
+            getattr(_settings, model_attr, None)
+            or os.getenv(model_env_key)
+            or getattr(_settings, "LLM_MODEL_ACTOR", None)
+            or os.getenv("LLM_MODEL_ACTOR")
+            or default_models.get(provider_name, "gpt-4o-mini")
+        )
+
+        temp_attr = f"LLM_TEMPERATURE_{role.upper()}"
+        default_temp = 0.3 if role == "actor" else 0.0
+        temperature = float(getattr(_settings, temp_attr, None) or os.getenv(temp_attr, str(default_temp)))
+    except Exception:
+        # Fallback если settings недоступны
+        provider_name = os.getenv("LLM_PROVIDER", "openai").lower()
+        default_models = {
+            "openai": "gpt-4o-mini" if role == "actor" else "gpt-4o",
+            "anthropic": "claude-haiku-4-5-20251001" if role == "actor" else "claude-sonnet-4-6",
+            "google": "gemini-2.0-flash" if role == "actor" else "gemini-2.0-flash",
+        }
+        model = os.getenv(f"LLM_MODEL_{role.upper()}", default_models.get(provider_name, "gpt-4o-mini"))
+        temperature = float(os.getenv(f"LLM_TEMPERATURE_{role.upper()}", "0.3" if role == "actor" else "0.0"))
     
     try:
         if provider_name == "openai":
