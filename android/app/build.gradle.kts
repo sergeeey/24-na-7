@@ -20,7 +20,8 @@ android {
         debug {
             // Эмулятор: 10.0.2.2 → хост-машина. Реальное устройство: подставьте IP ПК в SERVER_WS_URL_DEVICE.
             buildConfigField("String", "SERVER_WS_URL", "\"ws://10.0.2.2:8000\"")
-            buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"ws://192.168.1.100:8000\"")
+            // ПОЧЕМУ: adb reverse tcp:8000 tcp:8000 пробрасывает localhost телефона → localhost ПК
+            buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"ws://localhost:8000\"")
         }
         release {
             isMinifyEnabled = false
