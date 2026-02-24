@@ -245,24 +245,20 @@ class AnthropicClient(LLMClient):
             }
         except Exception as e:
             latency_ms = (time.time() - start_time) * 1000
-            reasoning_trace.update({
-                "status": "error",
-                "error": str(e),
-                "latency_ms": round(latency_ms, 2),
-            })
-            
+            error_msg = str(e)
+
             logger.error(
                 "llm_call_failed",
-                **reasoning_trace,
-                error=str(e)
+                provider="anthropic",
+                error=error_msg,
+                latency_ms=round(latency_ms, 2),
             )
-            
+
             return {
                 "text": "",
-                "error": str(e),
+                "error": error_msg,
                 "tokens_used": 0,
                 "latency_ms": round(latency_ms, 2),
-                "reasoning_trace": reasoning_trace,
             }
 
 
@@ -343,11 +339,11 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
     provider_name = os.getenv("LLM_PROVIDER", "openai").lower()
     model_key = f"LLM_MODEL_{role.upper()}"
     
-    # Поддержка новых моделей
+    # ПОЧЕМУ: исправлены галлюцинированные имена моделей на актуальные (2026-02)
     default_models = {
-        "openai": "gpt-5-mini" if role == "actor" else "gpt-4o",
-        "anthropic": "claude-4-5-sonnet-20241022" if role == "actor" else "claude-4-5-sonnet-20241022",
-        "google": "gemini-3-flash" if role == "actor" else "gemini-3-pro",
+        "openai": "gpt-4o-mini" if role == "actor" else "gpt-4o",
+        "anthropic": "claude-haiku-4-5-20251001" if role == "actor" else "claude-sonnet-4-6",
+        "google": "gemini-2.0-flash" if role == "actor" else "gemini-2.0-flash",
     }
     
     model = os.getenv(

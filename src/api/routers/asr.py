@@ -50,7 +50,41 @@ async def transcribe_endpoint(file_id: str = Query(..., description="ID файл
         
         # Транскрибируем
         result = transcribe_audio(audio_path)
-        
+
+        # ПОЧЕМУ: сохраняем транскрипцию в SQLite чтобы digest мог её найти
+        # Раньше результат только возвращался клиенту, но не сохранялся
+        try:
+            import sqlite3, uuid, json
+            from datetime import datetime
+            db_path = settings.STORAGE_PATH / "reflexio.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS transcriptions (
+                    id TEXT PRIMARY KEY, ingest_id TEXT NOT NULL,
+                    text TEXT NOT NULL, language TEXT,
+                    language_probability REAL, duration REAL,
+                    segments TEXT, created_at TEXT
+                )
+            """)
+            trans_id = str(uuid.uuid4())
+            segments_json = json.dumps(result.get("segments", []))
+            conn.execute(
+                "INSERT OR IGNORE INTO transcriptions (id, ingest_id, text, language, language_probability, duration, segments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (trans_id, file_id, result.get("text", ""), result.get("language"),
+                 result.get("language_probability"), result.get("duration"),
+                 segments_json, datetime.now().isoformat()),
+            )
+            # Обновляем статус ingest_queue
+            conn.execute(
+                "UPDATE ingest_queue SET status='processed', processed_at=? WHERE id=?",
+                (datetime.now().isoformat(), file_id),
+            )
+            conn.commit()
+            conn.close()
+            logger.info("transcription_saved_to_db", file_id=file_id, transcription_id=trans_id)
+        except Exception as db_err:
+            logger.warning("transcription_db_save_failed", error=str(db_err))
+
         return {
             "status": "success",
             "file_id": file_id,

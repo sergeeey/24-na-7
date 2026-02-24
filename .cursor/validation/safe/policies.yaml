@@ -85,7 +85,7 @@ log_security:
   secret_patterns:
     - pattern: 'api[_-]?key["\s:=]+([a-zA-Z0-9_\-]{20,})'
       replacement: '[API_KEY_REDACTED]'
-    - pattern: 'password["\s:=]+([^\s"\']{6,})'
+    - pattern: 'password["\s:=]+([^\s"]{6,})'
       replacement: '[PASSWORD_REDACTED]'
     - pattern: 'token["\s:=]+([a-zA-Z0-9_\-]{20,})'
       replacement: '[TOKEN_REDACTED]'

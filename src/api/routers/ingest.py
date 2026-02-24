@@ -86,7 +86,32 @@ async def ingest_audio(request: Request, response: Response, file: UploadFile = 
         
         # Сохраняем файл
         dest_path.write_bytes(content)
-        
+
+        # ПОЧЕМУ: записываем в SQLite чтобы digest и другие модули видели файл
+        # Раньше этот шаг отсутствовал — pipeline был разорван
+        try:
+            import sqlite3
+            from datetime import datetime as dt_now
+            db_path = settings.STORAGE_PATH / "reflexio.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS ingest_queue (
+                    id TEXT PRIMARY KEY, filename TEXT NOT NULL,
+                    file_path TEXT NOT NULL, file_size INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT, processed_at TEXT, error_message TEXT
+                )
+            """)
+            conn.execute(
+                "INSERT OR IGNORE INTO ingest_queue (id, filename, file_path, file_size, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
+                (file_id, filename, str(dest_path), file_size, datetime.now().isoformat()),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as db_err:
+            logger.warning("ingest_db_save_failed", error=str(db_err))
+
         logger.info(
             "audio_received",
             filename=filename,
@@ -94,7 +119,7 @@ async def ingest_audio(request: Request, response: Response, file: UploadFile = 
             content_type=file.content_type,
             safe_validation="passed" if safe_checker else "disabled",
         )
-        
+
         return {
             "status": "received",
             "id": file_id,
