@@ -42,6 +42,12 @@ import com.reflexio.app.ui.screens.AnalyticsScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
 import com.reflexio.app.ui.screens.RecordingListScreen
 import com.reflexio.app.BuildConfig
+import com.reflexio.app.ui.components.ParticleFieldVisualizer
+import com.reflexio.app.domain.audio.AudioSpectrumAnalyzer
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.zIndex
 
 class MainActivity : ComponentActivity() {
 
@@ -200,6 +206,19 @@ fun RecordingApp(
         val ws = if (BuildConfig.DEBUG) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
         ws.replace("ws://", "http://").replace("wss://", "https://")
     }
+
+    // Audio spectrum analyzer для эквалайзера
+    val spectrumAnalyzer = remember { AudioSpectrumAnalyzer() }
+    val audioLevels by spectrumAnalyzer.frequencyBands.collectAsState()
+
+    DisposableEffect(recordingActive) {
+        if (recordingActive) {
+            spectrumAnalyzer.start()
+        }
+        onDispose {
+            spectrumAnalyzer.stop()
+        }
+    }
     LaunchedEffect(Unit) {
         // #region agent log
         com.reflexio.app.debug.DebugLog.log("B", "RecordingApp.kt:LaunchedEffect:before_collect", "about to collect getAllRecordings", mapOf("thread" to Thread.currentThread().name))
@@ -230,13 +249,29 @@ fun RecordingApp(
             )
             return@MaterialTheme
         }
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
+
+        // Контейнер с эквалайзером на фоне
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Particle Field эквалайзер (фон)
+            if (recordingActive) {
+                ParticleFieldVisualizer(
+                    audioLevels = audioLevels,
+                    isRecording = recordingActive,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .zIndex(0f)
+                )
+            }
+
+            // Основной контент поверх эквалайзера
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState())
+                    .zIndex(1f),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
             WelcomeBlock()
             Spacer(modifier = Modifier.height(16.dp))
             Text(
@@ -299,6 +334,7 @@ fun RecordingApp(
                 recordings = recordings,
                 modifier = Modifier.weight(1f)
             )
+            }
         }
     }
 }

@@ -45,16 +45,7 @@ android {
         buildConfig = true
     }
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
-}
-
-// Запретить подтягивание Kotlin 2.2.0 из кэша — фиксируем 1.9.24
-configurations.all {
-    resolutionStrategy {
-        force("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
-        force("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24")
-        force("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24")
+        kotlinCompilerExtensionVersion = "1.5.14" // Совместимо с Kotlin 1.9.24
     }
 }
 
