@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- ПОЧЕМУ NoActionBar: Compose использует TopAppBar вместо XML ActionBar -->
     <style name="Theme.Reflexio" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Edge-to-edge: прозрачные системные бары -->
         <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@android:color/white</item>
-        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>

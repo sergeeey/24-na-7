@@ -116,14 +116,112 @@ def save_recording_analysis(
         conn.close()
 
 
+def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
+    """Создаёт таблицу structured_events в SQLite при отсутствии.
+
+    ПОЧЕМУ отдельная таблица, а не колонки в transcriptions:
+    enrichment запаздывает (LLM ~1-2с) и может отсутствовать,
+    а транскрипция должна сохраняться мгновенно.
+    """
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS structured_events (
+            id TEXT PRIMARY KEY,
+            transcription_id TEXT NOT NULL,
+            timestamp TEXT,
+            duration_sec REAL DEFAULT 0.0,
+            text TEXT NOT NULL,
+            language TEXT DEFAULT 'unknown',
+            summary TEXT DEFAULT '',
+            emotions TEXT DEFAULT '[]',
+            topics TEXT DEFAULT '[]',
+            tasks TEXT DEFAULT '[]',
+            decisions TEXT DEFAULT '[]',
+            speakers TEXT DEFAULT '[]',
+            urgency TEXT DEFAULT 'medium',
+            sentiment TEXT DEFAULT 'neutral',
+            location TEXT,
+            asr_confidence REAL DEFAULT 0.0,
+            enrichment_confidence REAL DEFAULT 0.0,
+            enrichment_model TEXT DEFAULT '',
+            enrichment_tokens INTEGER DEFAULT 0,
+            enrichment_latency_ms REAL DEFAULT 0.0,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+
+
+def persist_structured_event(db_path: Path, event) -> Optional[str]:
+    """Сохраняет StructuredEvent в SQLite. Возвращает event.id или None."""
+    if not db_path.parent.exists():
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        _ensure_structured_events_table(conn)
+        import json
+        cursor = conn.cursor()
+
+        # ПОЧЕМУ model_dump: tasks — list[TaskExtracted], нужна JSON-сериализация
+        tasks_json = json.dumps([
+            t.model_dump() if hasattr(t, "model_dump") else {"text": str(t)}
+            for t in (event.tasks or [])
+        ])
+
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO structured_events (
+                id, transcription_id, timestamp, duration_sec, text, language,
+                summary, emotions, topics, tasks, decisions, speakers,
+                urgency, sentiment, location,
+                asr_confidence, enrichment_confidence, enrichment_model,
+                enrichment_tokens, enrichment_latency_ms, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.id,
+                event.transcription_id,
+                event.timestamp.isoformat() if event.timestamp else None,
+                event.duration_sec,
+                event.text,
+                event.language,
+                event.summary,
+                json.dumps(event.emotions) if event.emotions else "[]",
+                json.dumps(event.topics) if event.topics else "[]",
+                tasks_json,
+                json.dumps(event.decisions) if event.decisions else "[]",
+                json.dumps(event.speakers) if event.speakers else "[]",
+                event.urgency,
+                event.sentiment,
+                event.location,
+                event.asr_confidence,
+                event.enrichment_confidence,
+                event.enrichment_model,
+                event.enrichment_tokens,
+                event.enrichment_latency_ms,
+                event.created_at.isoformat() if event.created_at else None,
+            ),
+        )
+        conn.commit()
+        logger.info("structured_event_persisted", event_id=event.id, transcription_id=event.transcription_id)
+        return event.id
+    except Exception as e:
+        logger.exception("structured_event_persist_failed", event_id=getattr(event, "id", "?"), error=str(e))
+        conn.rollback()
+        return None
+    finally:
+        conn.close()
+
+
 def ensure_ingest_tables(db_path: Path) -> None:
-    """Создаёт таблицы ingest_queue и transcriptions при отсутствии. Вызывать перед чтением дайджеста."""
+    """Создаёт таблицы ingest_queue, transcriptions, structured_events при отсутствии."""
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     try:
         _ensure_sqlite_ingest_tables(conn)
         _ensure_recording_analyses_table(conn)
+        _ensure_structured_events_table(conn)
     finally:
         conn.close()
 

@@ -27,8 +27,9 @@ fun RecordingListScreen(
 ) {
     if (recordings.isEmpty()) {
         Text(
-            text = "No recordings yet",
+            text = "Записей пока нет",
             style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = modifier.padding(16.dp)
         )
         return
@@ -52,9 +53,9 @@ private fun RecordingItem(
         .format(Date(recording.createdAt))
     val durationStr = "${recording.durationSeconds}s"
     val statusLabel = when (recording.status) {
-        RecordingStatus.PENDING_UPLOAD -> "Sending…"
-        RecordingStatus.PROCESSED -> "Done"
-        RecordingStatus.FAILED -> "Failed"
+        RecordingStatus.PENDING_UPLOAD -> "Отправка..."
+        RecordingStatus.PROCESSED -> "Готово"
+        RecordingStatus.FAILED -> "Ошибка"
         else -> recording.status
     }
 

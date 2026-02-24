@@ -8,10 +8,29 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from src.utils.config import settings
 from src.utils.logging import get_logger
 from src.asr.transcribe import transcribe_audio
-from src.storage.ingest_persist import persist_ws_transcription
+from src.storage.ingest_persist import persist_ws_transcription, persist_structured_event
 
 logger = get_logger("api.websocket")
 router = APIRouter(tags=["websocket"])
+
+
+def _enrich_and_persist(db_path, transcription_id: str, result: dict) -> None:
+    """Enrichment в отдельном try/except — не ломает pipeline при ошибке.
+
+    ПОЧЕМУ lazy import: enricher тянет LLM-клиент, не нужен при старте.
+    """
+    try:
+        from src.enrichment.enricher import enrich_transcription
+        event = enrich_transcription(
+            transcription_id=transcription_id,
+            text=result.get("text", ""),
+            timestamp=datetime.now(),
+            duration_sec=result.get("duration", 0.0) or 0.0,
+            language=result.get("language", "unknown") or "unknown",
+        )
+        persist_structured_event(db_path, event)
+    except Exception as e:
+        logger.debug("enrichment_skipped", transcription_id=transcription_id, error=str(e))
 
 
 @router.websocket("/ws/ingest")
@@ -65,7 +84,7 @@ async def websocket_ingest(websocket: WebSocket):
                 try:
                     result = transcribe_audio(dest_path)
                     db_path = settings.STORAGE_PATH / "reflexio.db"
-                    persist_ws_transcription(
+                    transcription_id = persist_ws_transcription(
                         db_path=db_path,
                         file_id=file_id,
                         filename=filename,
@@ -79,6 +98,10 @@ async def websocket_ingest(websocket: WebSocket):
                         "text": result.get("text", ""),
                         "language": result.get("language", ""),
                     })
+                    # ПОЧЕМУ после send_json: клиент получает ответ сразу,
+                    # enrichment (LLM ~1-2с) не блокирует UX
+                    if transcription_id:
+                        _enrich_and_persist(db_path, transcription_id, result)
                 except Exception as e:
                     logger.warning("websocket_transcribe_failed", file_id=file_id, error=str(e))
                     await websocket.send_json({
@@ -105,7 +128,7 @@ async def websocket_ingest(websocket: WebSocket):
                         try:
                             result = transcribe_audio(dest_path)
                             db_path = settings.STORAGE_PATH / "reflexio.db"
-                            persist_ws_transcription(
+                            transcription_id = persist_ws_transcription(
                                 db_path=db_path,
                                 file_id=file_id,
                                 filename=filename,
@@ -119,6 +142,8 @@ async def websocket_ingest(websocket: WebSocket):
                                 "text": result.get("text", ""),
                                 "language": result.get("language", ""),
                             })
+                            if transcription_id:
+                                _enrich_and_persist(db_path, transcription_id, result)
                         except Exception as e:
                             logger.warning("websocket_transcribe_failed", file_id=file_id, error=str(e))
                             await websocket.send_json({"type": "error", "file_id": file_id, "message": str(e)})
