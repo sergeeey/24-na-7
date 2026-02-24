@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ПОЧЕМУ: windowBackground должен совпадать с ColorBackground в SplashScreen и Theme.kt,
+         иначе при старте будет белый flash до рендера Compose -->
+    <color name="dark_background">#FF0D1117</color>
+</resources>

@@ -2,6 +2,7 @@ package com.reflexio.app.ui.screens
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -90,6 +91,7 @@ private fun statusColor(status: String): Color = when (status) {
 @Composable
 fun RecordingListScreen(
     recordings: List<Recording>,
+    onRecordingClick: (Recording) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (recordings.isEmpty()) {
@@ -101,7 +103,10 @@ fun RecordingListScreen(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         items(recordings) { recording ->
-            RecordingItem(recording = recording)
+            RecordingItem(
+                recording = recording,
+                onClick = { onRecordingClick(recording) },
+            )
         }
     }
 }
@@ -109,6 +114,7 @@ fun RecordingListScreen(
 @Composable
 private fun RecordingItem(
     recording: Recording,
+    onClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val relativeTime = formatRelativeTime(recording.createdAt)
@@ -133,12 +139,19 @@ private fun RecordingItem(
     // ПОЧЕМУ Row + clip вместо Card: Card обрезает 4dp-полоску в скруглённых углах (12dp radius).
     // Row с clip(shape) даёт тот же визуальный эффект (скруглённый прямоугольник + фон),
     // но левая цветная полоса рисуется ДО обрезки — она видна от верха до низа карточки.
+    //
+    // ПОЧЕМУ порядок модификаторов: clip → background → clickable → height.
+    // Modifier-цепочка применяется последовательно: сначала clip задаёт форму обрезки,
+    // затем background заливает именно эту форму, а clickable идёт ПОСЛЕ — тогда
+    // ripple-эффект тоже обрезается по той же форме и не вылезает за скруглённые углы.
+    // Если поставить clickable ДО clip, рябь будет прямоугольной — баг, заметный на тёмной теме.
     Row(
         modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp)
             .clip(cardShape)
             .background(surfaceColor)
+            .clickable(onClick = onClick)
             .height(IntrinsicSize.Min)
     ) {
         // Левая акцентная полоса — 4dp индиго, на всю высоту

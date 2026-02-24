@@ -65,6 +65,7 @@ import com.reflexio.app.ui.components.RecordingFab
 import com.reflexio.app.ui.screens.AnalyticsScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
 import com.reflexio.app.ui.screens.RecordingListScreen
+import com.reflexio.app.ui.screens.SplashScreen
 import com.reflexio.app.ui.theme.ReflexioTheme
 
 // ПОЧЕМУ enum а не sealed class: 3 фиксированных экрана, sealed class — overkill
@@ -175,6 +176,15 @@ fun RecordingApp(
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit
 ) {
+    // ПОЧЕМУ showSplash через remember а не rememberSaveable: при повороте экрана
+    // или process death мы ХОТИМ показать splash заново — это корректно для branding-экрана.
+    var showSplash by remember { mutableStateOf(true) }
+
+    if (showSplash) {
+        SplashScreen(onSplashFinished = { showSplash = false })
+        return
+    }
+
     val hasPermission by hasRecordingPermission
     var recordingActive by remember(hasPermission) { mutableStateOf(hasPermission) }
     var recordings by remember { mutableStateOf<List<Recording>>(emptyList()) }

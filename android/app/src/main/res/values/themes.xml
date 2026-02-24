@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- ПОЧЕМУ NoActionBar: Compose использует TopAppBar вместо XML ActionBar -->
+    <!-- ПОЧЕМУ NoActionBar: Compose использует TopAppBar вместо XML ActionBar.
+         ПОЧЕМУ windowBackground = dark_background: без этого Android показывает белый фон
+         между стартом Activity и первым рендером Compose (~100-300ms). С тёмным фоном
+         переход к splash-экрану бесшовный, нет "white flash". -->
     <style name="Theme.Reflexio" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/dark_background</item>
         <!-- Edge-to-edge: прозрачные системные бары -->
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
