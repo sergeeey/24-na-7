@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
     
+    # Authentication
+    API_KEY: str | None = None  # Set in .env; if None, auth is disabled (dev mode)
+
     # Rate Limiting (P0-2 Security)
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_STORAGE: str = "memory"  # memory | redis

@@ -22,6 +22,8 @@ android {
             buildConfigField("String", "SERVER_WS_URL", "\"ws://10.0.2.2:8000\"")
             // ПОЧЕМУ: adb reverse tcp:8000 tcp:8000 пробрасывает localhost телефона → localhost ПК
             buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"ws://localhost:8000\"")
+            // API key for server auth. Empty = auth disabled (dev mode).
+            buildConfigField("String", "SERVER_API_KEY", "\"\"")
         }
         release {
             isMinifyEnabled = false
@@ -32,6 +34,7 @@ android {
             // Заменить на реальный URL перед production
             buildConfigField("String", "SERVER_WS_URL", "\"wss://api.reflexio.example.com\"")
             buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"wss://api.reflexio.example.com\"")
+            buildConfigField("String", "SERVER_API_KEY", "\"\"")  // Set via CI/CD or local.properties
         }
     }
     compileOptions {

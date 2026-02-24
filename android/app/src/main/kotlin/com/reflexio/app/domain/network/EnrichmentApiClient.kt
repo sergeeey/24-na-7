@@ -15,7 +15,8 @@ import java.util.concurrent.TimeUnit
  * OkHttp уже в зависимостях для WebSocket.
  */
 class EnrichmentApiClient(
-    private val baseUrl: String = "http://10.0.2.2:8000"
+    private val baseUrl: String = "http://10.0.2.2:8000",
+    private val apiKey: String = "",
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -29,7 +30,11 @@ class EnrichmentApiClient(
     suspend fun fetchEnrichment(fileId: String): EnrichmentData? = withContext(Dispatchers.IO) {
         try {
             val url = "${baseUrl.removeSuffix("/")}/enrichment/by-ingest/$fileId"
-            val request = Request.Builder().url(url).get().build()
+            val requestBuilder = Request.Builder().url(url).get()
+            if (apiKey.isNotEmpty()) {
+                requestBuilder.addHeader("Authorization", "Bearer $apiKey")
+            }
+            val request = requestBuilder.build()
             val response = client.newCall(request).execute()
 
             if (!response.isSuccessful) {

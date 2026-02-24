@@ -27,26 +27,37 @@ class AudioEncryption:
     def __init__(self, key: Optional[bytes] = None):
         """
         Инициализация шифрования.
-        
+
         Args:
-            key: Ключ шифрования (если None, генерируется из пароля)
+            key: Ключ шифрования (если None, генерируется из env vars)
+
+        Raises:
+            ImportError: если cryptography не установлен
+            ValueError: если env vars AUDIO_ENCRYPTION_PASSWORD / _SALT не заданы
         """
         if not CRYPTOGRAPHY_AVAILABLE:
             raise ImportError("cryptography package required. Install: pip install cryptography")
-        
+
         if key is None:
-            # Генерируем ключ из пароля (или используем из окружения)
-            password = os.getenv("AUDIO_ENCRYPTION_PASSWORD", "reflexio-default-key").encode()
-            salt = os.getenv("AUDIO_ENCRYPTION_SALT", "reflexio-salt").encode()
-            
+            # SECURITY FIX: никаких default значений — если забыл env vars, крашимся явно.
+            # Аналогия из security: лучше не открыть дверь, чем открыть её всем.
+            password = os.getenv("AUDIO_ENCRYPTION_PASSWORD")
+            salt = os.getenv("AUDIO_ENCRYPTION_SALT")
+
+            if not password or not salt:
+                raise ValueError(
+                    "AUDIO_ENCRYPTION_PASSWORD and AUDIO_ENCRYPTION_SALT must be set "
+                    "in environment variables. Refusing to use hardcoded defaults."
+                )
+
             kdf = PBKDF2HMAC(
                 algorithm=hashes.SHA256(),
                 length=32,
-                salt=salt,
+                salt=salt.encode(),
                 iterations=100000,
             )
-            key = base64.urlsafe_b64encode(kdf.derive(password))
-        
+            key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+
         self.cipher = Fernet(key)
         logger.info("audio_encryption_initialized")
     

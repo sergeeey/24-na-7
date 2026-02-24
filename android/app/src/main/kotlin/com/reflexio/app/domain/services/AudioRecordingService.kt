@@ -302,7 +302,7 @@ class AudioRecordingService : Service() {
 
     private suspend fun sendAudioToServer(file: File, recordingId: Long) {
         val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
-        val wsClient = IngestWebSocketClient(baseUrl = baseUrl)
+        val wsClient = IngestWebSocketClient(baseUrl = baseUrl, apiKey = BuildConfig.SERVER_API_KEY)
         val result = wsClient.sendSegment(file)
         withContext(Dispatchers.IO) {
             val dao = recordingDao ?: return@withContext
@@ -332,7 +332,7 @@ class AudioRecordingService : Service() {
         delay(3000L)
         val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
         val httpUrl = baseUrl.replace("ws://", "http://").replace("wss://", "https://")
-        val apiClient = EnrichmentApiClient(baseUrl = httpUrl)
+        val apiClient = EnrichmentApiClient(baseUrl = httpUrl, apiKey = BuildConfig.SERVER_API_KEY)
         // ПОЧЕМУ 2 попытки: первая через 3с, вторая через 8с.
         // Если LLM медленный — вторая попытка подхватит результат.
         repeat(2) { attempt ->

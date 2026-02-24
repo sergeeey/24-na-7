@@ -9,6 +9,7 @@ from slowapi.util import get_remote_address
 from src.utils.config import settings
 from src.utils.logging import setup_logging, get_logger
 from src.utils.rate_limiter import setup_rate_limiting, RateLimitConfig
+from src.api.middleware.auth_middleware import auth_middleware
 from src.api.middleware.input_guard_middleware import input_guard_middleware
 from src.api.middleware.safe_middleware import safe_middleware
 
@@ -43,8 +44,12 @@ app = FastAPI(
 limiter = setup_rate_limiting(app)
 
 # Подключаем middleware
+# ПОЧЕМУ auth первый: FastAPI выполняет middleware в обратном порядке регистрации.
+# Последний зарегистрированный = первый в цепочке обработки.
+# Порядок обработки запроса: auth → input_guard → safe → handler
 app.middleware("http")(input_guard_middleware)
 app.middleware("http")(safe_middleware)
+app.middleware("http")(auth_middleware)
 
 # Подключаем роутеры
 app.include_router(ingest.router)

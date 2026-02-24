@@ -9,6 +9,7 @@ from src.utils.config import settings
 from src.utils.logging import get_logger
 from src.asr.transcribe import transcribe_audio
 from src.storage.ingest_persist import persist_ws_transcription, persist_structured_event
+from src.api.middleware.auth_middleware import verify_websocket_token
 
 logger = get_logger("api.websocket")
 router = APIRouter(tags=["websocket"])
@@ -58,6 +59,13 @@ async def websocket_ingest(websocket: WebSocket):
             print(json.loads(response))
     ```
     """
+    # ПОЧЕМУ проверяем ДО accept(): если ключ неверный, даже не открываем
+    # соединение — клиент получит HTTP 403 вместо upgrade.
+    if not verify_websocket_token(websocket):
+        logger.warning("websocket_auth_failed", client=websocket.client)
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
     await websocket.accept()
     logger.info("websocket_ingest_connected", client=websocket.client)
     try:

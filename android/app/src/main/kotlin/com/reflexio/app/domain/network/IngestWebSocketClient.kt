@@ -28,7 +28,8 @@ data class IngestResult(
  * See docs/WEBSOCKET_PROTOCOL.md.
  */
 class IngestWebSocketClient(
-    private val baseUrl: String = "ws://10.0.2.2:8000"
+    private val baseUrl: String = "ws://10.0.2.2:8000",
+    private val apiKey: String = "",
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -54,7 +55,14 @@ class IngestWebSocketClient(
             var error: Throwable? = null
             val latch = java.util.concurrent.CountDownLatch(1)
 
-            val request = Request.Builder().url(wsUrl).build()
+            // ПОЧЕМУ header а не query param: OkHttp поддерживает кастомные headers
+            // при WebSocket handshake, это безопаснее чем token в URL (URL логируется).
+            val requestBuilder = Request.Builder().url(wsUrl)
+            if (apiKey.isNotEmpty()) {
+                requestBuilder.addHeader("Authorization", "Bearer $apiKey")
+            }
+            val request = requestBuilder.build()
+
             val listener = object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     webSocket.send(ByteString.of(*bytes))
