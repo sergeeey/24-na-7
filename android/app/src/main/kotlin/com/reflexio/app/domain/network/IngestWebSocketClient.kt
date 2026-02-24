@@ -14,6 +14,15 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
+ * Результат отправки аудио на сервер.
+ * ПОЧЕМУ data class а не Pair: явные имена полей вместо .first/.second
+ */
+data class IngestResult(
+    val transcription: String?,
+    val fileId: String?,
+)
+
+/**
  * WebSocket client for sending audio segments to Reflexio backend.
  * Connects to ws://host/ws/ingest, sends binary WAV, receives "received" then "transcription" or "error".
  * See docs/WEBSOCKET_PROTOCOL.md.
@@ -31,16 +40,17 @@ class IngestWebSocketClient(
         get() = baseUrl.removeSuffix("/") + "/ws/ingest"
 
     /**
-     * Sends one WAV file to the server. Returns transcription text on success, or failure.
+     * Sends one WAV file to the server. Returns IngestResult (transcription + fileId) on success.
      * Connects, sends binary, waits for "received" then "transcription" or "error", then closes.
      */
-    suspend fun sendSegment(file: File): Result<String?> = withContext(Dispatchers.IO) {
+    suspend fun sendSegment(file: File): Result<IngestResult> = withContext(Dispatchers.IO) {
         if (!file.exists()) return@withContext Result.failure(IllegalArgumentException("File not found: ${file.absolutePath}"))
         val bytes = file.readBytes()
         if (bytes.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty file"))
 
         kotlin.runCatching {
             var transcription: String? = null
+            var fileId: String? = null
             var error: Throwable? = null
             val latch = java.util.concurrent.CountDownLatch(1)
 
@@ -54,9 +64,16 @@ class IngestWebSocketClient(
                     try {
                         val json = JSONObject(text)
                         when (json.optString("type")) {
-                            "received" -> { /* wait for transcription or error */ }
+                            "received" -> {
+                                // ПОЧЕМУ сохраняем fileId из "received": это первый ответ
+                                // с file_id, нужен для запроса enrichment позже
+                                fileId = json.optString("file_id", "").ifEmpty { null }
+                            }
                             "transcription" -> {
                                 transcription = json.optString("text", "").ifEmpty { null }
+                                if (fileId == null) {
+                                    fileId = json.optString("file_id", "").ifEmpty { null }
+                                }
                                 webSocket.close(1000, null)
                                 latch.countDown()
                             }
@@ -85,7 +102,7 @@ class IngestWebSocketClient(
             client.newWebSocket(request, listener)
             latch.await(90, TimeUnit.SECONDS)
             error?.let { throw it }
-            transcription
+            IngestResult(transcription = transcription, fileId = fileId)
         }
     }
 

@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -122,12 +123,30 @@ private fun RecordingItem(
     modifier: Modifier = Modifier
 ) {
     val relativeTime = formatRelativeTime(recording.createdAt)
-    val title = extractTitle(recording.transcription)
+    val hasEnrichment = !recording.summary.isNullOrBlank()
+    // ПОЧЕМУ summary вместо extractTitle: если LLM-summary есть — показываем его,
+    // он точнее. Если нет — fallback на первые 6 слов транскрипции.
+    val title = if (hasEnrichment) recording.summary else extractTitle(recording.transcription)
     val statusText = statusLabel(recording.status)
     val statusBgColor = statusColor(recording.status)
-    val accentColor = MaterialTheme.colorScheme.secondary
+    // ПОЧЕМУ акцент по sentiment: позитивные записи — teal, негативные — оранжевый,
+    // нейтральные — стандартный secondary. Даёт визуальную подсказку без чтения.
+    val accentColor = when (recording.sentiment) {
+        "positive" -> StatusColorProcessed
+        "negative" -> StatusColorPending
+        else -> MaterialTheme.colorScheme.secondary
+    }
     val surfaceColor = MaterialTheme.colorScheme.surfaceVariant
     val cardShape = MaterialTheme.shapes.medium
+
+    // Парсим topics и emotions из comma-separated строк
+    val topicsList = recording.topics?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
+    val emotionsList = recording.emotions?.split(",")?.filter { it.isNotBlank() } ?: emptyList()
+    val hasTasks = if (hasEnrichment) {
+        !recording.tasks.isNullOrBlank() && recording.tasks != "[]"
+    } else {
+        recording.transcription?.let { hasTaskMarkers(it) } == true
+    }
 
     Row(
         modifier = modifier
@@ -151,15 +170,12 @@ private fun RecordingItem(
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 10.dp)
         ) {
-            // Строка 1: Заголовок (или "Запись") + время
+            // Строка 1: Заголовок (summary или первые слова) + время
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // ПОЧЕМУ: заголовок из первых слов транскрипции делает карточку
-                // "умной" — пользователь видит о чём запись не открывая её.
-                // Когда подключим LLM-summary — просто заменим extractTitle().
                 Text(
                     text = title ?: "Новая запись",
                     style = MaterialTheme.typography.titleSmall.copy(
@@ -180,7 +196,7 @@ private fun RecordingItem(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Строка 2: Транскрипция (полная, до 2 строк)
+            // Строка 2: Транскрипция (только если есть summary — показываем оригинал тоже)
             recording.transcription?.takeIf { it.isNotBlank() }?.let { text ->
                 Text(
                     text = text,
@@ -192,20 +208,34 @@ private fun RecordingItem(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Строка 3: Статус-бейдж + будущие теги
-            // ПОЧЕМУ Row а не FlowRow: пока у нас только 1 бейдж (статус).
-            // Когда подключим topics/emotions из API — заменим на FlowRow + chips.
-            Row(
+            // Строка 3: Статус + topics + emotions как badges
+            // ПОЧЕМУ FlowRow: теперь у нас может быть 3-5+ бейджей (статус + topics + emotions).
+            // FlowRow переносит на следующую строку если не помещаются.
+            @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+            FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 // Статус-бейдж
                 StatusBadge(text = statusText, color = statusBgColor)
 
-                // Иконка задачи — если в транскрипции есть слова-маркеры
-                // ПОЧЕМУ: простая эвристика пока нет LLM-анализа задач.
-                // Ищем "надо", "нужно", "задача", "сделать" — типичные маркеры задач в речи.
-                if (recording.transcription?.let { hasTaskMarkers(it) } == true) {
+                // Urgency badge (только high)
+                if (recording.urgency == "high") {
+                    StatusBadge(text = "Срочно", color = StatusColorFailed)
+                }
+
+                // Topic badges (из enrichment)
+                topicsList.take(3).forEach { topic ->
+                    StatusBadge(text = topic, color = Color(0xFF64B5F6))
+                }
+
+                // Emotion badges (из enrichment, максимум 2)
+                emotionsList.take(2).forEach { emotion ->
+                    StatusBadge(text = emotion, color = Color(0xFFBA68C8))
+                }
+
+                // Иконка задачи
+                if (hasTasks) {
                     Icon(
                         imageVector = Icons.Outlined.Checklist,
                         contentDescription = "Содержит задачу",

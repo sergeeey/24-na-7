@@ -21,6 +21,7 @@ from src.api.routers import search
 from src.api.routers import voice
 from src.api.routers import websocket
 from src.api.routers import analyze
+from src.api.routers import enrichment
 
 # Настройка логирования
 setup_logging()
@@ -54,6 +55,7 @@ app.include_router(search.router)
 app.include_router(voice.router)
 app.include_router(websocket.router)
 app.include_router(analyze.router)
+app.include_router(enrichment.router)
 
 
 @app.on_event("startup")
@@ -151,5 +153,6 @@ async def root():
             "search_phrases": "/search/phrases",
             "recognize_intent": "/voice/intent",
             "ws_ingest": "/ws/ingest",
+            "enrichment": "/enrichment/by-ingest/{file_id}",
         },
     }

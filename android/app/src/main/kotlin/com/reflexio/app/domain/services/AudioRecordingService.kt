@@ -22,6 +22,7 @@ import com.reflexio.app.data.db.RecordingDatabase
 import com.reflexio.app.data.model.Recording
 import com.reflexio.app.data.model.RecordingStatus
 import com.reflexio.app.BuildConfig
+import com.reflexio.app.domain.network.EnrichmentApiClient
 import com.reflexio.app.domain.network.IngestWebSocketClient
 import com.reflexio.app.debug.DebugLog
 import com.reflexio.app.domain.vad.VadSegmentWriter
@@ -307,16 +308,54 @@ class AudioRecordingService : Service() {
             val dao = recordingDao ?: return@withContext
             val rec = dao.getById(recordingId) ?: return@withContext
             if (result.isSuccess) {
+                val ingestResult = result.getOrNull()
                 dao.update(rec.copy(
-                    transcription = result.getOrNull(),
+                    transcription = ingestResult?.transcription,
+                    serverFileId = ingestResult?.fileId,
                     status = RecordingStatus.PROCESSED
                 ))
-                Log.d(TAG, "Uploaded and transcribed: $recordingId")
+                Log.d(TAG, "Uploaded and transcribed: $recordingId, fileId=${ingestResult?.fileId}")
+                // ПОЧЕМУ delay 3с: enrichment на сервере запускается async после
+                // транскрипции и занимает ~1-5с (LLM вызов). 3с — баланс между
+                // скоростью показа и вероятностью что enrichment уже готов.
+                ingestResult?.fileId?.let { fileId ->
+                    scope.launch { fetchEnrichment(recordingId, fileId) }
+                }
             } else {
                 dao.update(rec.copy(status = RecordingStatus.FAILED))
                 Log.e(TAG, "Upload failed for $recordingId", result.exceptionOrNull())
             }
         }
+    }
+
+    private suspend fun fetchEnrichment(recordingId: Long, fileId: String) {
+        delay(3000L)
+        val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
+        val httpUrl = baseUrl.replace("ws://", "http://").replace("wss://", "https://")
+        val apiClient = EnrichmentApiClient(baseUrl = httpUrl)
+        // ПОЧЕМУ 2 попытки: первая через 3с, вторая через 8с.
+        // Если LLM медленный — вторая попытка подхватит результат.
+        repeat(2) { attempt ->
+            val enrichment = apiClient.fetchEnrichment(fileId)
+            if (enrichment != null) {
+                withContext(Dispatchers.IO) {
+                    val dao = recordingDao ?: return@withContext
+                    val rec = dao.getById(recordingId) ?: return@withContext
+                    dao.update(rec.copy(
+                        summary = enrichment.summary,
+                        emotions = enrichment.emotions.joinToString(","),
+                        topics = enrichment.topics.joinToString(","),
+                        tasks = enrichment.tasks,
+                        urgency = enrichment.urgency,
+                        sentiment = enrichment.sentiment,
+                    ))
+                }
+                Log.d(TAG, "Enrichment saved for $recordingId (attempt ${attempt + 1})")
+                return
+            }
+            if (attempt == 0) delay(5000L)
+        }
+        Log.d(TAG, "Enrichment not available for $recordingId after 2 attempts")
     }
 
     override fun onDestroy() {

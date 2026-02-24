@@ -239,6 +239,52 @@ def transcription_exists(db_path: Path, transcription_id: str) -> bool:
         conn.close()
 
 
+def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[str, Any]]:
+    """Возвращает enrichment данные из structured_events по ingest file_id.
+
+    ПОЧЕМУ JOIN через transcriptions: Android знает только file_id (ingest_queue.id),
+    а enrichment привязан к transcription_id. JOIN связывает оба через промежуточную таблицу.
+    """
+    if not db_path.exists():
+        return None
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT se.summary, se.emotions, se.topics, se.tasks,
+                   se.urgency, se.sentiment, se.decisions, se.speakers,
+                   se.enrichment_confidence, se.created_at
+            FROM structured_events se
+            JOIN transcriptions t ON se.transcription_id = t.id
+            WHERE t.ingest_id = ?
+            ORDER BY se.created_at DESC
+            LIMIT 1
+            """,
+            (file_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        import json
+        return {
+            "summary": row["summary"] or "",
+            "emotions": json.loads(row["emotions"]) if row["emotions"] else [],
+            "topics": json.loads(row["topics"]) if row["topics"] else [],
+            "tasks": json.loads(row["tasks"]) if row["tasks"] else [],
+            "urgency": row["urgency"] or "medium",
+            "sentiment": row["sentiment"] or "neutral",
+            "decisions": json.loads(row["decisions"]) if row["decisions"] else [],
+            "enrichment_confidence": row["enrichment_confidence"] or 0.0,
+        }
+    except Exception as e:
+        logger.warning("get_enrichment_failed", file_id=file_id, error=str(e))
+        return None
+    finally:
+        conn.close()
+
+
 def persist_ws_transcription(
     db_path: Path,
     file_id: str,
