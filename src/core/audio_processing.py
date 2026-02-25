@@ -429,7 +429,7 @@ async def process_audio_bytes(
             dest_path.unlink(missing_ok=True)
 
         if run_enrichment and transcription_id:
-            text_for_enrichment = enrichment_text or f"{(enrichment_prefix or "").strip()} {result.get('text', '').strip()}".strip()
+            text_for_enrichment = enrichment_text or f"{(enrichment_prefix or '').strip()} {result.get('text', '').strip()}".strip()
             await asyncio.to_thread(_run_enrichment_sync, db_path, transcription_id, result, text_for_enrichment)
 
         return {

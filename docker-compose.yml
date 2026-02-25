@@ -52,8 +52,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: reflexio-redis
-    ports:
-      - "6379:6379"
+    # ПОЧЕМУ нет ports: redis нужен только reflexio-api (внутренняя сеть reflexio-net).
+    # Не открываем 6379 наружу — другие проекты могут занять порт, и Redis
+    # без пароля не должен светиться на хосте (security).
     # ПОЧЕМУ --save и --appendonly: сохраняем состояние на диск → rate limit
     # счётчики переживают рестарт контейнера.
     command: redis-server --save 60 1 --loglevel warning --appendonly yes
