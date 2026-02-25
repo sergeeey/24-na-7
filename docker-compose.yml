@@ -18,12 +18,18 @@ services:
       - DB_BACKEND=sqlite
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - SAFE_MODE=${SAFE_MODE:-audit}
-      - RATE_LIMIT_STORAGE=memory
+      # ПОЧЕМУ redis: in-memory счётчики сбрасываются при рестарте контейнера →
+      # злоумышленник может ждать рестарта и обойти rate limit. Redis — persistent.
+      - RATE_LIMIT_STORAGE=redis
+      - REDIS_URL=redis://redis:6379/0
       # P0: фильтрация музыки/шума — отсекает ТВ, радио до транскрипции
       - FILTER_MUSIC=true
       # ASR: medium модель + русский язык — small не тянет русскую речь
       - ASR_MODEL_SIZE=medium
       - ASR_LANGUAGE=ru
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       # ПОЧЕМУ volume mount: SQLite БД и аудио файлы живут на хосте,
       # переживают пересборку контейнера. Без этого — потеря данных.
@@ -43,16 +49,29 @@ services:
     networks:
       - reflexio-net
 
-  # Раскомментируй для production с Redis rate limiting:
-  # redis:
-  #   image: redis:7-alpine
-  #   container_name: reflexio-redis
-  #   ports:
-  #     - "6379:6379"
-  #   restart: unless-stopped
-  #   networks:
-  #     - reflexio-net
+  redis:
+    image: redis:7-alpine
+    container_name: reflexio-redis
+    ports:
+      - "6379:6379"
+    # ПОЧЕМУ --save и --appendonly: сохраняем состояние на диск → rate limit
+    # счётчики переживают рестарт контейнера.
+    command: redis-server --save 60 1 --loglevel warning --appendonly yes
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - reflexio-net
 
 networks:
   reflexio-net:
     driver: bridge
+
+volumes:
+  redis-data:
+    driver: local

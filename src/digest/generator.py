@@ -610,11 +610,14 @@ class DigestGenerator:
                     dense_summary = generate_dense_summary(full_text, iterations=3)
                     
                     # Валидируем через Critic
+                    # ПОЧЕМУ auto_refine=False: с 0.85 порогом и эвристиками
+                    # confidence почти всегда < 0.85 → лишний LLM вызов каждый раз.
+                    # 0.70 соответствует get_daily_digest_json. False = не тратить токены.
                     validated = validate_summary(
                         dense_summary["summary"],
                         original_text=full_text,
-                        confidence_threshold=0.85,
-                        auto_refine=True,
+                        confidence_threshold=0.70,
+                        auto_refine=False,
                     )
                     
                     lines.append("## 📋 Дневное саммари")
@@ -687,31 +690,8 @@ class DigestGenerator:
             "transcriptions": transcriptions if transcriptions else [],
         }
         
-        # CoVe валидация дайджеста
-        try:
-            import importlib.util
-            from pathlib import Path as PathLib
-            cove_path = PathLib(__file__).parent.parent.parent / ".cursor" / "validation" / "cove" / "verify.py"
-            if cove_path.exists():
-                spec = importlib.util.spec_from_file_location("cove_verify", cove_path)
-                cove_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(cove_module)
-                cove = cove_module.CoVeVerifier()
-                
-                # Проверяем схему дайджеста
-                schema_valid, schema_errors = cove.verify_schema(digest_dict, "digest")
-                if not schema_valid:
-                    logger.warning("cove_digest_schema_validation_failed", errors=schema_errors)
-                else:
-                    logger.debug("cove_digest_validation_passed")
-                
-                # Проверяем timestamps
-                ts_valid, ts_errors = cove.verify_timestamps(digest_dict, ["generated_at"])
-                if not ts_valid:
-                    logger.warning("cove_digest_timestamps_validation_failed", errors=ts_errors)
-        except Exception as e:
-            logger.debug("cove_digest_validation_skipped", error=str(e))
-        
+        # ПОЧЕМУ убрали CoVe importlib: аналогично H5 safe_middleware —
+        # exec_module() произвольного .py файла из .cursor/ = RCE вектор.
         return digest_dict
     
     def generate(self, target_date: date, output_format: str = "markdown",

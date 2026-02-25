@@ -19,6 +19,8 @@ RUN useradd -m -u 1000 reflexio && \
 WORKDIR /app
 
 # Копируем requirements
+# ВКЛЮЧАЕТ: resemblyzer>=0.1.1 (speaker verification), redis>=5.0.0 (rate limit)
+# При изменении requirements.txt → пересобери образ: docker compose build --no-cache
 COPY requirements.txt* ./
 RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 

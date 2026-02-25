@@ -1,7 +1,18 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.google.devtools.ksp")
+}
+
+// ПОЧЕМУ local.properties: SERVER_WS_URL_DEVICE зависит от IP вашего ПК в сети.
+// localhost:8000 работает только с adb reverse (USB кабель).
+// WiFi — добавьте в local.properties (gitignored):
+//   SERVER_WS_URL_DEVICE=ws://192.168.1.XXX:8000
+val localProps = Properties().also { props ->
+    val f = rootProject.file("local.properties")
+    if (f.exists()) props.load(f.inputStream())
 }
 
 android {
@@ -18,10 +29,13 @@ android {
 
     buildTypes {
         debug {
-            // Эмулятор: 10.0.2.2 → хост-машина. Реальное устройство: подставьте IP ПК в SERVER_WS_URL_DEVICE.
+            // Эмулятор: 10.0.2.2 → хост-машина
             buildConfigField("String", "SERVER_WS_URL", "\"ws://10.0.2.2:8000\"")
-            // ПОЧЕМУ: adb reverse tcp:8000 tcp:8000 пробрасывает localhost телефона → localhost ПК
-            buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"ws://localhost:8000\"")
+            // Реальное устройство: читаем из local.properties (gitignored)
+            //   USB + adb reverse → ws://localhost:8000 (default)
+            //   WiFi             → ws://192.168.1.XXX:8000 (в local.properties)
+            val deviceUrl = localProps.getProperty("SERVER_WS_URL_DEVICE", "ws://localhost:8000")
+            buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"$deviceUrl\"")
             // API key for server auth. Empty = auth disabled (dev mode).
             buildConfigField("String", "SERVER_API_KEY", "\"\"")
         }

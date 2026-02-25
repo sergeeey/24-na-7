@@ -1,5 +1,5 @@
 """Менеджер промптов с единым интерфейсом."""
-from typing import Dict, Any, Optional
+from typing import Any
 from enum import Enum
 
 from src.summarizer.prompts import (
@@ -7,7 +7,7 @@ from src.summarizer.prompts import (
     get_few_shot_actions_prompt,
     get_critic_prompt,
 )
-from src.osint.contextor import build_rctf_prompt
+# OSINT module archived (_archive/osint/) — scope creep, not used in production pipeline.
 
 
 class PromptType(str, Enum):
@@ -15,7 +15,6 @@ class PromptType(str, Enum):
     CHAIN_OF_DENSITY = "chain_of_density"
     FEW_SHOT_ACTIONS = "few_shot_actions"
     CRITIC = "critic"
-    OSINT_RCTF = "osint_rctf"
     EMOTION_ANALYSIS = "emotion_analysis"
 
 
@@ -60,14 +59,6 @@ class PromptManager:
             summary = kwargs.get("summary", "")
             original_text = kwargs.get("original_text", "")
             return get_critic_prompt(summary, original_text)
-        
-        elif prompt_type == PromptType.OSINT_RCTF:
-            role = kwargs.get("role", "research analyst")
-            context_data = kwargs.get("context_data", {})
-            task = kwargs.get("task", "")
-            format_schema = kwargs.get("format_schema", {})
-            sources = kwargs.get("sources")
-            return build_rctf_prompt(role, context_data, task, format_schema, sources)
         
         elif prompt_type == PromptType.EMOTION_ANALYSIS:
             text = kwargs.get("text", "")

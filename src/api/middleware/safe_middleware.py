@@ -28,7 +28,10 @@ def get_safe_checker():
     if not safe_enabled:
         return None
 
-    # Основной путь: только статический импорт из проекта.
+    # Единственный путь: статический импорт из проекта.
+    # ПОЧЕМУ убрали dynamic importlib fallback: загрузка произвольного .py файла
+    # из .cursor/ = потенциальный RCE если файл подменён. Статический импорт
+    # безопасен и достаточен для production.
     try:
         from src.validation.safe.checks import SAFEChecker  # type: ignore
 
@@ -36,32 +39,6 @@ def get_safe_checker():
         return _safe_checker_cache
     except Exception as e:
         logger.warning("safe_checker_static_import_failed", error=str(e))
-
-    # Legacy fallback по умолчанию выключен.
-    # Включается только явно: SAFE_ALLOW_DYNAMIC_CHECKER=1
-    if os.getenv("SAFE_ALLOW_DYNAMIC_CHECKER", "0") != "1":
-        return None
-
-    try:
-        import importlib.util
-        from pathlib import Path as PathLib
-
-        safe_path = (
-            PathLib(__file__).parent.parent.parent.parent
-            / ".cursor"
-            / "validation"
-            / "safe"
-            / "checks.py"
-        )
-        if safe_path.exists():
-            spec = importlib.util.spec_from_file_location("safe_checks", safe_path)
-            if spec is None or spec.loader is None:
-                return None
-            safe_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(safe_module)
-            return safe_module.SAFEChecker()
-    except Exception as e:
-        logger.warning("safe_checker_dynamic_import_failed", error=str(e))
 
     return None
 
