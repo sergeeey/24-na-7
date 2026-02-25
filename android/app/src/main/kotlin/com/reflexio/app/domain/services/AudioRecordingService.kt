@@ -315,6 +315,16 @@ class AudioRecordingService : Service() {
                     status = RecordingStatus.PROCESSED
                 ))
                 Log.d(TAG, "Uploaded and transcribed: $recordingId, fileId=${ingestResult?.fileId}")
+                // P3: Delete local WAV — сервер уже сохранил текст в БД,
+                // аудиофайл на телефоне больше не нужен (экономия storage)
+                try {
+                    if (file.exists()) {
+                        file.delete()
+                        Log.d(TAG, "Local audio deleted: ${file.name}")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to delete local audio: ${file.name}", e)
+                }
                 // ПОЧЕМУ delay 3с: enrichment на сервере запускается async после
                 // транскрипции и занимает ~1-5с (LLM вызов). 3с — баланс между
                 // скоростью показа и вероятностью что enrichment уже готов.

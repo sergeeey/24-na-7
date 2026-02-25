@@ -85,6 +85,15 @@ class IngestWebSocketClient(
                                 webSocket.close(1000, null)
                                 latch.countDown()
                             }
+                            // P1: сервер отфильтровал шум/музыку — аудио не нужно
+                            "filtered" -> {
+                                transcription = null
+                                if (fileId == null) {
+                                    fileId = json.optString("file_id", "").ifEmpty { null }
+                                }
+                                webSocket.close(1000, null)
+                                latch.countDown()
+                            }
                             "error" -> {
                                 error = RuntimeException(json.optString("message", "Unknown error"))
                                 webSocket.close(1000, null)
