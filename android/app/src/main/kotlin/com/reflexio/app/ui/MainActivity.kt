@@ -191,8 +191,13 @@ fun RecordingApp(
     var loadError by remember { mutableStateOf<String?>(null) }
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
+    // ПОЧЕМУ isEmulator() а не BuildConfig.DEBUG: DEBUG=true и на телефоне и на эмуляторе.
+    // 10.0.2.2 работает ТОЛЬКО в эмуляторе. На телефоне с adb reverse нужен localhost.
     val baseHttpUrl = remember {
-        val ws = if (BuildConfig.DEBUG) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
+        val isEmu = android.os.Build.FINGERPRINT.contains("generic")
+                || android.os.Build.MODEL.contains("sdk")
+                || android.os.Build.MODEL.contains("Android SDK")
+        val ws = if (isEmu) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
         ws.replace("ws://", "http://").replace("wss://", "https://")
     }
 
