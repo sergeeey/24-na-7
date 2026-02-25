@@ -1,0 +1,12 @@
+{
+  "k": "v",
+  "daily_patterns": {
+    "2026-02-24": {
+      "fact_types": {
+        "task": 2,
+        "fact": 16
+      },
+      "density_score": 86.6
+    }
+  }
+}

@@ -1,84 +1,97 @@
 # Active Context — Reflexio 24/7
 
 ## Последнее обновление
-2026-02-24 21:20
+2026-02-25 13:45
 
 ## Текущая фаза
-**Core pipeline работает end-to-end → Улучшение качества (Chain of Density, Structured Events)**
+**Pipeline production-ready: фильтрация шума, русская ASR, auto-cleanup, privacy/integrity**
 
-## Что сделано за сессию 2026-02-24
+## Что сделано за сессию 2026-02-25
 
-### Оценка состояния проекта
-- Проект создан AI-агентами (Cursor + auto-claude), 13 коммитов
-- 104 .py файла, ~16K строк в src/
-- 54 .md файла в корне (bloat)
-- Никогда не тестировался end-to-end
-- Scope creep: 15 модулей, из которых ядро — 5 (edge, asr, digest, summarizer, storage)
+### ASR исправления
+- **OpenAI API ошибка:** `whisper-large-v3-turbo` (HuggingFace имя) → 404, 14 сек retry. Переключили на `provider: local`
+- **Бесконечная рекурсия:** `LocalProvider → transcribe_audio → get_asr_provider → LocalProvider`. Fix: `_asr_provider = None` + `_asr_provider_initialized` flag
+- **Язык:** `language=None` → Whisper угадывал `en`/`nn` для русской речи. Fix: `ASR_LANGUAGE=ru`
+- **Модель:** `small` + `int8` + CPU не тянул русский. Fix: `ASR_MODEL_SIZE=medium`
+- Результат: text_length 24-50, confidence 1.0, язык всегда `ru`
 
-### Переосмысление видения
-- Было: "умный диктофон + дайджест дня"
-- Стало: **"цифровая память всей жизни"**
-- Вдохновение: модель Centaur (structured events, паттерны, предсказания)
+### Фильтрация мусора (10 000+ записей → 0)
+- **P0: SpeechFilter** — FFT анализ спектра в WebSocket handler ДО Whisper. `FILTER_MUSIC=true`
+- **P1: _is_meaningful_transcription()** — min 3 слова, не стоп-фразы, lang_prob > 0.4. Блокирует запись в БД
+- **Digest фильтры** — `_is_meaningful()`, `_has_cyrillic()`, лимит 100 записей/4000 символов для LLM
+- **LLM промпты** — "ВСЕГДА на русском", обрезка текста до 4000 chars
 
-### Настройка окружения
-- Переписан CLAUDE.md (v2.0 — новое видение, архитектура, правила)
-- Создана `.claude/memory/` (activeContext, techContext, decisions)
-- Обновлены глобальные goals.md
+### Auto-cleanup WAV файлов
+- **P2: Сервер** — `dest_path.unlink()` после persist (и при ошибке)
+- **P3: Телефон** — `file.delete()` после успешного upload в `AudioRecordingService`
+- Android WebSocket клиент обрабатывает `"filtered"` ответ
 
-### Что починено
-- **Pipeline разрыв:** ingest и asr не писали в SQLite → добавлена запись в оба endpoint
-- **policies.yaml:** битый YAML (экранирование `'` в regex) → починен
-- **providers.py:** галлюцинированные модели (gpt-5-mini, claude-4-5) → исправлены на актуальные
-- **providers.py:** баг в error handler Anthropic → починен (KeyError)
-- **.env:** переключен на sqlite, LLM=anthropic (claude-3-haiku), SAFE=audit
-- **metrics таблица:** создана в SQLite (health monitor больше не ругается)
-- **faster-whisper:** установлен (отсутствовал)
+### Рефакторинг websocket.py
+- Вынесен `_process_audio_segment()` — убрана 60-строчная дупликация binary/base64 путей
 
-### Android — СОБРАН И ПРОТЕСТИРОВАН
-- **Build fix:** Upgrade Assistant сломал сборку (AGP 9.0.1, Kotlin 2.2.10, KSP 2.3.2)
-  - Откатил на AGP 8.13.2, Kotlin 1.9.24, KSP 1.9.24-1.0.20
-  - Room KSP: `C:\Windows\TEMP\` блокирует execution → добавлен `org.sqlite.tmpdir`
-- **Device URL:** `ws://localhost:8000` + `adb reverse tcp:8000 tcp:8000`
-- **Тест на Pixel 9 Pro:** полный pipeline работает!
-  - Микрофон → VAD → WebSocket → Whisper → SQLite → Digest
-  - Распознал русскую речь: "Как круто!", "Раз, два, три...", "вообще просто ништяк"
-- **Эмулятор:** микрофон не пробрасывает реальный звук (известная проблема)
-
-## Core Pipeline — РАБОТАЕТ END-TO-END
-```
-Android (Pixel 9 Pro) → VAD → WebSocket ws://localhost:8000/ws/ingest
-  → файл + SQLite (status=pending)
-  → Whisper ASR (faster-whisper, lang=ru detected)
-  → SQLite (transcription + status=processed)
-  → GET /digest/{date} → извлекает факты → markdown
-  → LLM (Anthropic claude-3-haiku) → работает
-```
-
-## Дайджест за 2026-02-24
-- 39 транскрипций, 9 фактов, 204 слова, 1.8 мин
-- Информационная плотность: 88/100
-- "Дневное саммари" пустое — Chain of Density не работает (backlog)
+### Codex: Privacy + Integrity + Semantic Memory
+- **Privacy pipeline** (`src/security/privacy_pipeline.py`) — strict/mask/audit PII detection
+- **Integrity chain** (`src/storage/integrity.py`) — SHA-256 hash chain для audit trail
+- **Semantic memory** (`src/memory/semantic_memory.py`) — консолидация транскрипций в memory nodes
+- **API:** `/memory/search`, `/audit/trail`
+- **Feature flags:** PRIVACY_MODE, MEMORY_ENABLED, RETRIEVAL_ENABLED, INTEGRITY_CHAIN_ENABLED
+- **Security hardening:** SAFE checker static import, WAV magic bytes, path leak fix
+- **Migration:** 0008_semantic_memory_integrity.sql
+- **Tests:** 10 passed
 
 ## Коммиты сессии
-- `56159c5` — fix: connect core pipeline end-to-end, configure LLM and SQLite
-- `1a7124c` — feat: add audio spectrum visualizer to Android app
-- `f5efc62` — fix: revert Upgrade Assistant breakage, fix Room KSP build on Windows
+- `2b33f3f` — fix(asr): switch to local Whisper, fix recursion and OpenAI model name
+- `035ab47` — fix(digest): filter noise transcriptions and enforce Russian in LLM output
+- `e07a617` — feat(audio): P0-P3 noise filter, music rejection, auto-delete WAV
+- `324c7b1` — fix(asr): force Russian language and upgrade to medium model
+- `709bb3b` — feat: privacy pipeline, integrity chain, semantic memory (Codex)
+- `fee67d8` — test: fix 3 remaining failures + add balance/persongraph tests (559 pass)
+
+Первые 5 запушены. fee67d8 — локально.
+
+## Pipeline (текущий)
+```
+Pixel 9 Pro → VAD (3-сек сегменты) → WebSocket binary
+  → P0: SpeechFilter (FFT, speech 300-3400Hz vs music >4kHz)
+  → Whisper medium (language=ru, CPU int8)
+  → P1: _is_meaningful_transcription (min 3 words, no noise phrases)
+  → Privacy pipeline (audit mode)
+  → SQLite persist + integrity chain
+  → P2: WAV удалён на сервере
+  → "transcription" + delete_audio:true → P3: WAV удалён на телефоне
+  → Enrichment (Claude Haiku) → topics, emotions, tasks
+  → Semantic memory consolidation
+  → Digest: CoD summarization + Critic validation
+```
+
+## Docker
+- Контейнер `reflexio-api` работает, health OK
+- Volume mounts: `./src:/app/src` (dev mode), `./config:/app/config`
+- Env: `FILTER_MUSIC=true`, `ASR_MODEL_SIZE=medium`, `ASR_LANGUAGE=ru`
+
+## Статус тестов (fee67d8)
+- **559 passed, 26 skipped, 0 failed** (полный suite)
+- Ключевые фиксы: WAV signature bytes, pydantic-settings override, ASR state flags
+- Новые тесты: balance/storage (17) + persongraph/service (18) = 35 тестов
 
 ## Следующие шаги
-1. **Chain of Density summarization** — разобраться почему "Дневное саммари" пустое
-2. **Structured Events (ADR-010)** — обогащение транскрипций через LLM
-3. **Whisper галлюцинации** — фильтр "Thank you" / "You" на тихих сегментах
-4. Чистка 54 .md файлов в корне
-5. Android: offline queue, retry logic
+1. Протестировать дайджест за сегодня (есть реальные русские записи)
+2. Чистка: 54 .md в корне, `android/.gradle/` в .gitignore
+3. Android: offline queue, retry logic
+4. Stage-2 memory: эмбеддинги + rerank для retrieval
+5. SAFE checker: создать `src/validation/` модуль (сейчас warning при каждом запросе)
 
 ## Ключевые файлы
 - API: `src/api/main.py`
-- WebSocket: `src/api/routers/websocket.py`
-- Edge: `src/edge/listener.py`
-- ASR: `src/asr/transcribe.py`
-- Digest: `src/digest/generator.py`
-- Config: `src/utils/config.py`, `.env`
-- Android: `android/app/build.gradle.kts`
+- WebSocket: `src/api/routers/websocket.py` (P0+P1+P2 фильтры)
+- ASR: `src/asr/transcribe.py`, `config/asr.yaml`
+- Digest: `src/digest/generator.py` (noise filter + CoD)
+- Config: `src/utils/config.py` (ASR_LANGUAGE, FILTER_MUSIC, PRIVACY_MODE)
+- Privacy: `src/security/privacy_pipeline.py`
+- Integrity: `src/storage/integrity.py`
+- Memory: `src/memory/semantic_memory.py`
+- Android WS: `android/.../IngestWebSocketClient.kt`
+- Android Service: `android/.../AudioRecordingService.kt`
 
 ## Для восстановления контекста
-Reflexio 24/7: `D:/24 na 7/`. Цифровая память всей жизни. Pipeline работает end-to-end: Android Pixel 9 Pro → VAD → WebSocket → Whisper → SQLite → Digest. 3 коммита запушены (f5efc62). Следующее: Chain of Density (пустое саммари), Structured Events, фильтр Whisper-галлюцинаций. Устройство подключается через `adb reverse tcp:8000 tcp:8000`.
+Reflexio 24/7: `D:/24 na 7/`. Pipeline production-ready: Android → VAD → SpeechFilter → Whisper medium (ru) → noise filter → privacy → SQLite + integrity → auto-delete WAV → enrichment (Claude Haiku) → semantic memory. 5 коммитов запушены (709bb3b). Docker работает с volume mounts. Шум полностью отфильтрован (10K+ мусорных записей → 0). Русская речь распознаётся (confidence 1.0).

@@ -89,3 +89,24 @@ audit_output/
 .worktrees/
 .security-key
 logs/security/
+
+# Local memory artifacts
+src/storage/core_memory.json
+src/storage/session_memory/
+
+# Android build artifacts
+android/.gradle/
+android/build/
+android/app/build/
+android/**/*.hprof
+android/local.properties
+
+# Cursor memory (runtime, not source)
+.cursor/memory/session_memory/
+
+# Claude worktrees (git repos inside git)
+.claude/worktrees/
+
+# Windows reserved filename (Gradle creates this on Windows)
+android/nul
+
