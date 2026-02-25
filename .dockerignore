@@ -58,6 +58,22 @@ Thumbs.db
 docker-compose.yml
 Dockerfile*
 
+# Android app (not needed for API image)
+android/
+
+# Claude / Cursor workspaces
+.claude/
+.cursor/
+
+# Task specs
+tasks/
+
+# Tests (not needed in production image)
+tests/
+
+# Docs (already excluding *.md but explicit)
+docs/
+
 
 
 

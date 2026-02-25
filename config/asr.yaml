@@ -2,7 +2,9 @@
 # Reflexio 24/7 — November 2025 Integration Sprint
 
 # Provider selection
-provider: openai  # openai | whisperx | parakeet | local | distil-whisper
+# ПОЧЕМУ local: для Docker на ноутбуке — бесплатно, работает на CPU.
+# Для production с API — переключи на openai (модель whisper-1).
+provider: local  # openai | whisperx | parakeet | local | distil-whisper
 
 # Model selection
 model: whisper-v3-turbo  # whisper-v3-turbo | whisperx | parakeet-v2 | faster-whisper | distil-small.en | distil-medium.en | distil-large-v2

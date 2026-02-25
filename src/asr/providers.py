@@ -113,8 +113,10 @@ class OpenAIWhisperProvider(ASRProvider):
         while retry_count <= self.max_retries:
             try:
                 with open(audio_path, "rb") as audio_file:
+                    # ПОЧЕМУ whisper-1: это единственная модель Whisper в OpenAI API.
+                    # "whisper-large-v3-turbo" — имя на HuggingFace, не в API.
                     response = self.client.audio.transcriptions.create(
-                        model="whisper-large-v3-turbo",
+                        model="whisper-1",
                         file=audio_file,
                         language=language,
                         response_format="verbose_json" if timestamps else "json",

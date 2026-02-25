@@ -23,6 +23,11 @@ services:
       # ПОЧЕМУ volume mount: SQLite БД и аудио файлы живут на хосте,
       # переживают пересборку контейнера. Без этого — потеря данных.
       - ./src/storage:/app/src/storage
+      # ПОЧЕМУ config mount: можно менять ASR провайдер без пересборки образа
+      - ./config:/app/config
+      # ПОЧЕМУ src mount (dev): изменения Python-кода подхватываются при рестарте
+      # без пересборки образа (~10 мин). Убрать для production.
+      - ./src:/app/src
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

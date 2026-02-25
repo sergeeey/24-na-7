@@ -16,12 +16,13 @@ _model: Optional[Any] = None
 
 # Глобальный провайдер ASR
 _asr_provider: Optional[Any] = None
+_asr_provider_initialized: bool = False
 
 
 def get_model():
     """Возвращает модель Whisper (ленивая загрузка) для backward compatibility."""
     global _model
-    
+
     if _model is None:
         try:
             from faster_whisper import WhisperModel
@@ -39,21 +40,27 @@ def get_model():
             logger.info("model_loaded")
         except ImportError:
             logger.warning("faster_whisper not available, using ASR providers")
-    
+
     return _model
 
 
 def get_asr_provider():
     """Возвращает ASR провайдер на основе конфигурации."""
-    global _asr_provider
-    
+    global _asr_provider, _asr_provider_initialized
+
+    # ПОЧЕМУ отдельный флаг: для local provider _asr_provider = None (нет обёртки).
+    # Без флага каждый вызов заново читал бы yaml и логировал инициализацию.
+    if _asr_provider_initialized:
+        return _asr_provider
+    _asr_provider_initialized = True
+
     if _asr_provider is None:
         # Загружаем конфигурацию
         config_path = Path("config/asr.yaml")
         edge_mode = False
         provider_name = "local"
         model_name = "faster-whisper"
-        
+
         if config_path.exists():
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
@@ -61,7 +68,7 @@ def get_asr_provider():
                 provider_name = config.get("provider", "local")
                 model_name = config.get("model", "faster-whisper")
                 edge_mode = config.get("edge_mode", False)
-                
+
                 # Если включён edge_mode, используем distil-whisper
                 if edge_mode:
                     provider_name = "distil-whisper"
@@ -77,42 +84,52 @@ def get_asr_provider():
             provider_name = os.getenv("ASR_PROVIDER", "local")
             model_name = os.getenv("ASR_MODEL", "faster-whisper")
             edge_mode = os.getenv("ASR_EDGE_MODE", "false").lower() == "true"
-        
-        # Импортируем и создаём провайдер
-        try:
-            from src.asr.providers import get_asr_provider as create_provider
-            
-            provider_kwargs = {}
-            if provider_name == "openai":
-                provider_kwargs["api_key"] = os.getenv("OPENAI_API_KEY")
-            elif provider_name == "whisperx":
-                provider_kwargs["model_size"] = os.getenv("WHISPERX_MODEL_SIZE", "large-v3")
-                provider_kwargs["device"] = os.getenv("ASR_DEVICE", "cuda")
-            elif provider_name == "parakeet":
-                provider_kwargs["model_id"] = os.getenv("PARAKEET_MODEL_ID", "nvidia/parakeet-tdt-v2")
-            elif provider_name == "distil-whisper":
-                # Загружаем настройки distil-whisper из конфига
-                if config_path.exists():
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        config = yaml.safe_load(f)
-                        distil_config = config.get("distil_whisper", {})
-                        provider_kwargs["model_size"] = distil_config.get("model_size", "distil-small.en")
-                        provider_kwargs["device"] = distil_config.get("device", "cpu")
-                else:
-                    provider_kwargs["model_size"] = os.getenv("DISTIL_MODEL_SIZE", "distil-small.en")
-                    provider_kwargs["device"] = os.getenv("ASR_DEVICE", "cpu")
-            
-            _asr_provider = create_provider(provider_name, **provider_kwargs)
+
+        # ПОЧЕМУ provider=="local" → None: LocalProvider обёртка вызывает
+        # transcribe_audio() → get_asr_provider() → LocalProvider → бесконечная рекурсия.
+        # Для local просто пропускаем обёртку, transcribe_audio() сама вызовет faster-whisper.
+        if provider_name == "local":
+            _asr_provider = None
             logger.info(
                 "asr_provider_initialized",
-                provider=provider_name,
+                provider="local",
                 model=model_name,
                 edge_mode=edge_mode,
             )
-        except Exception as e:
-            logger.error("failed_to_create_asr_provider", error=str(e), fallback="local")
-            _asr_provider = None
-    
+        else:
+            try:
+                from src.asr.providers import get_asr_provider as create_provider
+
+                provider_kwargs = {}
+                if provider_name == "openai":
+                    provider_kwargs["api_key"] = os.getenv("OPENAI_API_KEY")
+                elif provider_name == "whisperx":
+                    provider_kwargs["model_size"] = os.getenv("WHISPERX_MODEL_SIZE", "large-v3")
+                    provider_kwargs["device"] = os.getenv("ASR_DEVICE", "cuda")
+                elif provider_name == "parakeet":
+                    provider_kwargs["model_id"] = os.getenv("PARAKEET_MODEL_ID", "nvidia/parakeet-tdt-v2")
+                elif provider_name == "distil-whisper":
+                    if config_path.exists():
+                        with open(config_path, "r", encoding="utf-8") as f:
+                            config = yaml.safe_load(f)
+                            distil_config = config.get("distil_whisper", {})
+                            provider_kwargs["model_size"] = distil_config.get("model_size", "distil-small.en")
+                            provider_kwargs["device"] = distil_config.get("device", "cpu")
+                    else:
+                        provider_kwargs["model_size"] = os.getenv("DISTIL_MODEL_SIZE", "distil-small.en")
+                        provider_kwargs["device"] = os.getenv("ASR_DEVICE", "cpu")
+
+                _asr_provider = create_provider(provider_name, **provider_kwargs)
+                logger.info(
+                    "asr_provider_initialized",
+                    provider=provider_name,
+                    model=model_name,
+                    edge_mode=edge_mode,
+                )
+            except Exception as e:
+                logger.error("failed_to_create_asr_provider", error=str(e), fallback="local")
+                _asr_provider = None
+
     return _asr_provider
 
 
@@ -126,7 +143,7 @@ def transcribe_audio(
 ) -> Dict:
     """
     Транскрибирует аудиофайл с поддержкой multiple providers.
-    
+
     Args:
         audio_path: Путь к аудиофайлу
         language: Язык (None для автоопределения)
@@ -134,18 +151,18 @@ def transcribe_audio(
         timestamps: Включить word-level timestamps
         diarization: Включить диаризацию (требует WhisperX)
         provider: Принудительный выбор провайдера (openai|whisperx|parakeet|local)
-        
+
     Returns:
         Словарь с текстом, языком, сегментами и метаданными
     """
     if not audio_path.exists():
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
-    
+
     logger.info("transcribing", audio_path=str(audio_path), provider=provider)
-    
+
     # Пробуем использовать новый провайдер
     asr_provider = get_asr_provider()
-    
+
     if asr_provider and provider != "local":
         try:
             result = asr_provider.transcribe(
@@ -154,7 +171,7 @@ def transcribe_audio(
                 timestamps=timestamps,
                 diarization=diarization,
             )
-            
+
             # Нормализуем формат результата
             normalized_result = {
                 "text": result.get("text", ""),
@@ -165,7 +182,7 @@ def transcribe_audio(
                 "duration": result.get("duration", 0.0),
                 "provider": provider or "auto",
             }
-            
+
             logger.info(
                 "transcription_complete",
                 audio_path=str(audio_path),
@@ -174,30 +191,30 @@ def transcribe_audio(
                 segments_count=len(normalized_result["segments"]),
                 provider=normalized_result["provider"],
             )
-            
+
             return normalized_result
-            
+
         except Exception as e:
             logger.warning("asr_provider_failed", error=str(e), fallback="local")
             # Fallback на local provider
-    
+
     # Fallback на local faster-whisper
     try:
         model = get_model()
-        
+
         if model is None:
             raise ImportError("faster_whisper not available")
-        
+
         segments, info = model.transcribe(
             str(audio_path),
             language=language,
             beam_size=beam_size,
         )
-        
+
         # Собираем все сегменты в один текст
         text_segments = []
         full_text = ""
-        
+
         for segment in segments:
             segment_text = segment.text.strip()
             text_segments.append({
@@ -207,9 +224,9 @@ def transcribe_audio(
                 "confidence": getattr(segment, "avg_logprob", None),
             })
             full_text += segment_text + " "
-        
+
         full_text = full_text.strip()
-        
+
         result = {
             "text": full_text,
             "language": info.language,
@@ -218,7 +235,7 @@ def transcribe_audio(
             "duration": info.duration,
             "provider": "local",
         }
-        
+
         logger.info(
             "transcription_complete",
             audio_path=str(audio_path),
@@ -227,9 +244,9 @@ def transcribe_audio(
             segments_count=len(text_segments),
             provider="local",
         )
-        
+
         return result
-        
+
     except Exception as e:
         logger.error(
             "transcription_failed",
@@ -242,4 +259,3 @@ def transcribe_audio(
 def transcribe_file(audio_path: str | Path, **kwargs) -> Dict:
     """Удобная обёртка для транскрипции файла."""
     return transcribe_audio(Path(audio_path), **kwargs)
-
