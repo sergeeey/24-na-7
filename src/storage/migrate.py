@@ -90,9 +90,9 @@ def verify_row_counts() -> Dict[str, Any]:
         for table in tables:
             try:
                 # SQLite count
-                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")  # nosec B608 — table from hardcoded list
                 sqlite_count = cursor.fetchone()[0]
-                
+
                 # Supabase count
                 response = supabase.table(table).select("*", count="exact").limit(1).execute()
                 supabase_count = response.count if hasattr(response, 'count') else len(response.data) if response.data else 0
@@ -194,7 +194,7 @@ def migrate_to_supabase(dry_run: bool = False) -> Dict[str, Any]:
         
         for table in tables:
             try:
-                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")  # nosec B608 — table from hardcoded list
                 count = cursor.fetchone()[0]
                 
                 result["tables"][table] = {
@@ -212,7 +212,7 @@ def migrate_to_supabase(dry_run: bool = False) -> Dict[str, Any]:
                     continue
                 
                 # Читаем данные
-                cursor.execute(f"SELECT * FROM {table}")
+                cursor.execute(f"SELECT * FROM {table}")  # nosec B608 — table from hardcoded list
                 rows = cursor.fetchall()
                 
                 # Конвертируем в словари

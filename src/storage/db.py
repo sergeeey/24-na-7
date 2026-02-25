@@ -101,7 +101,7 @@ class SQLiteBackend(DatabaseBackend):
         placeholders = ", ".join(["?" for _ in data])
         values = list(data.values())
         
-        cursor.execute(f"INSERT INTO {table} ({columns_str}) VALUES ({placeholders})", values)
+        cursor.execute(f"INSERT INTO {table} ({columns_str}) VALUES ({placeholders})", values)  # nosec B608 — table/columns validated above
         self.conn.commit()
         
         return {"id": data.get("id"), **data}
@@ -113,7 +113,7 @@ class SQLiteBackend(DatabaseBackend):
         
         cursor = self.conn.cursor()
         
-        query = f"SELECT * FROM {table}"
+        query = f"SELECT * FROM {table}"  # nosec B608 — table validated by validate_table_name()
         params = []
         
         if filters:
@@ -170,7 +170,7 @@ class SQLiteBackend(DatabaseBackend):
         set_clause = ", ".join([f"{col} = ?" for col in columns])
         values = list(data.values()) + [id]
         
-        cursor.execute(f"UPDATE {table} SET {set_clause} WHERE id = ?", values)
+        cursor.execute(f"UPDATE {table} SET {set_clause} WHERE id = ?", values)  # nosec B608 — table/columns validated above
         self.conn.commit()
         
         return data
@@ -181,7 +181,7 @@ class SQLiteBackend(DatabaseBackend):
         validate_table_name(table)
         
         cursor = self.conn.cursor()
-        cursor.execute(f"DELETE FROM {table} WHERE id = ?", (id,))
+        cursor.execute(f"DELETE FROM {table} WHERE id = ?", (id,))  # nosec B608 — table validated by validate_table_name()
         self.conn.commit()
         return cursor.rowcount > 0
 

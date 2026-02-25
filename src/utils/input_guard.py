@@ -106,12 +106,14 @@ class PromptInjectionDetector:
         r"jailbreak.*mode",
     ]
     
-    def __init__(self):
+    compiled_patterns: Dict[str, List[re.Pattern[str]]]
+
+    def __init__(self) -> None:
         self.compiled_patterns = self._compile_patterns()
     
-    def _compile_patterns(self) -> Dict[str, List[re.Pattern]]:
+    def _compile_patterns(self) -> Dict[str, List[re.Pattern[str]]]:
         """Компилирует regex паттерны для производительности."""
-        compiled = {}
+        compiled: Dict[str, List[re.Pattern[str]]] = {}
         for category, patterns in self.INJECTION_PATTERNS.items():
             compiled[category] = [re.compile(p, re.IGNORECASE) for p in patterns]
         return compiled
@@ -133,8 +135,8 @@ class PromptInjectionDetector:
         threats = []
         
         # Проверка критичных паттернов (немедленная блокировка)
-        for pattern in self.CRITICAL_PATTERNS:
-            if re.search(pattern, text, re.IGNORECASE):
+        for crit_pattern in self.CRITICAL_PATTERNS:
+            if re.search(crit_pattern, text, re.IGNORECASE):
                 return True, ThreatLevel.CRITICAL, ["critical_pattern_match"]
         
         # Проверка по категориям

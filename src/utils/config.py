@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     """Настройки приложения."""
 
     # API
-    API_HOST: str = "0.0.0.0"
+    API_HOST: str = "0.0.0.0"  # nosec B104 — intentional: Docker container exposes only mapped ports
     API_PORT: int = 8000
     API_URL: str = "http://localhost:8000"
 
