@@ -142,7 +142,9 @@ async def _process_audio_segment(
                     return
 
         # Транскрибируем
-        result = transcribe_audio(dest_path)
+        # ПОЧЕМУ language из settings: без явного языка модель small гадает
+        # (en/nn/nn) и возвращает "you" вместо русской речи.
+        result = transcribe_audio(dest_path, language=settings.ASR_LANGUAGE)
 
         # P1: Filter noise — отсекаем "you you you" ДО записи в БД
         text = (result.get("text") or "").strip()

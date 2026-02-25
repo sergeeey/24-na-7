@@ -21,6 +21,9 @@ services:
       - RATE_LIMIT_STORAGE=memory
       # P0: фильтрация музыки/шума — отсекает ТВ, радио до транскрипции
       - FILTER_MUSIC=true
+      # ASR: medium модель + русский язык — small не тянет русскую речь
+      - ASR_MODEL_SIZE=medium
+      - ASR_LANGUAGE=ru
     volumes:
       # ПОЧЕМУ volume mount: SQLite БД и аудио файлы живут на хосте,
       # переживают пересборку контейнера. Без этого — потеря данных.
