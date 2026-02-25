@@ -11,15 +11,12 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
@@ -38,10 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -52,20 +46,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import com.reflexio.app.BuildConfig
-import com.reflexio.app.data.db.RecordingDao
 import com.reflexio.app.data.db.RecordingDatabase
-import com.reflexio.app.data.model.Recording
-import com.reflexio.app.domain.audio.AudioSpectrumAnalyzer
 import com.reflexio.app.domain.services.AudioRecordingService
-import com.reflexio.app.ui.components.EmptyState
-import com.reflexio.app.ui.components.ParticleFieldVisualizer
+import com.reflexio.app.ui.components.BalanceWheelVisualizer
 import com.reflexio.app.ui.components.RecordingFab
 import com.reflexio.app.ui.screens.AnalyticsScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
-import com.reflexio.app.ui.screens.RecordingListScreen
 import com.reflexio.app.ui.screens.VoiceEnrollmentScreen
 import com.reflexio.app.ui.screens.SplashScreen
 import com.reflexio.app.ui.theme.ReflexioTheme
@@ -108,8 +96,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onCreateImpl() {
-        val dao = try {
-            RecordingDatabase.getInstance(applicationContext).recordingDao()
+        // Проверяем что Room DB инициализируется без ошибок (AudioRecordingService её использует)
+        try {
+            RecordingDatabase.getInstance(applicationContext)
         } catch (e: Exception) {
             android.util.Log.e("MainActivity", "Database init failed", e)
             setContent {
@@ -126,7 +115,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             ReflexioTheme {
                 RecordingApp(
-                    recordingDao = dao,
                     hasRecordingPermission = hasRecordingPermissionState,
                     onRequestPermission = { permissionLauncher.launch(getRequiredPermissions()) },
                     onStartRecording = { startRecordingService() },
@@ -173,11 +161,10 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordingApp(
-    recordingDao: RecordingDao,
     hasRecordingPermission: State<Boolean>,
     onRequestPermission: () -> Unit,
     onStartRecording: () -> Unit,
-    onStopRecording: () -> Unit
+    onStopRecording: () -> Unit,
 ) {
     // ПОЧЕМУ showSplash через remember а не rememberSaveable: при повороте экрана
     // или process death мы ХОТИМ показать splash заново — это корректно для branding-экрана.
@@ -190,8 +177,6 @@ fun RecordingApp(
 
     val hasPermission by hasRecordingPermission
     var recordingActive by remember(hasPermission) { mutableStateOf(hasPermission) }
-    var recordings by remember { mutableStateOf<List<Recording>>(emptyList()) }
-    var loadError by remember { mutableStateOf<String?>(null) }
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
     // ПОЧЕМУ isEmulator() а не BuildConfig.DEBUG: DEBUG=true и на телефоне и на эмуляторе.
@@ -202,24 +187,6 @@ fun RecordingApp(
                 || android.os.Build.MODEL.contains("Android SDK")
         val ws = if (isEmu) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
         ws.replace("ws://", "http://").replace("wss://", "https://")
-    }
-
-    // Audio spectrum analyzer
-    val spectrumAnalyzer = remember { AudioSpectrumAnalyzer() }
-    val audioLevels by spectrumAnalyzer.frequencyBands.collectAsState()
-
-    DisposableEffect(recordingActive) {
-        if (recordingActive) spectrumAnalyzer.start()
-        onDispose { spectrumAnalyzer.stop() }
-    }
-
-    LaunchedEffect(Unit) {
-        try {
-            recordingDao.getAllRecordings().collect { recordings = it }
-        } catch (e: Exception) {
-            android.util.Log.e("RecordingApp", "getAllRecordings failed", e)
-            loadError = e.message ?: e.javaClass.simpleName
-        }
     }
 
     val screens = Screen.entries
@@ -267,9 +234,7 @@ fun RecordingApp(
                 0 -> HomeScreen(
                     hasPermission = hasPermission,
                     recordingActive = recordingActive,
-                    recordings = recordings,
-                    loadError = loadError,
-                    audioLevels = audioLevels,
+                    baseHttpUrl = baseHttpUrl,
                     onRequestPermission = onRequestPermission,
                     onToggleRecording = {
                         if (recordingActive) {
@@ -300,96 +265,80 @@ fun RecordingApp(
 }
 
 // ──────────────────────────────────────────────
-// Home Screen — запись + список
+// Home Screen — колесо баланса + кнопка записи
 // ──────────────────────────────────────────────
 
+/**
+ * Главный экран переработан: вместо списка записей — Колесо Баланса.
+ *
+ * ПОЧЕМУ убрали RecordingListScreen: пользователь не хотел видеть поток записей
+ * на главном экране. Список — техническая деталь, не ценность. Ценность —
+ * визуализация того, как распределяется внимание по жизненным сферам.
+ *
+ * ПОЧЕМУ убрали AudioSpectrumAnalyzer/ParticleFieldVisualizer: они дублировали
+ * анимацию. BalanceWheelVisualizer сам анимируется при записи (3D tilt + вращение).
+ *
+ * Layout: WelcomeBlock (компактный) → колесо (weight(1f) = занимает всё пространство)
+ * → статус + FAB внизу. Колесо всегда видно, при записи — оживает.
+ */
 @Composable
 private fun HomeScreen(
     hasPermission: Boolean,
     recordingActive: Boolean,
-    recordings: List<Recording>,
-    loadError: String?,
-    audioLevels: List<Float>,
+    baseHttpUrl: String,
     onRequestPermission: () -> Unit,
     onToggleRecording: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(modifier = modifier.fillMaxSize()) {
-        // Particle Field на фоне (только при записи)
-        if (recordingActive) {
-            ParticleFieldVisualizer(
-                audioLevels = audioLevels,
-                isRecording = true,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .zIndex(0f)
-            )
-        }
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(modifier = Modifier.height(8.dp))
+        WelcomeBlock()
+        Spacer(modifier = Modifier.height(12.dp))
 
-        Column(
+        // Колесо баланса — главный визуальный элемент
+        // ПОЧЕМУ weight(1f): занимает всё доступное пространство между
+        // WelcomeBlock сверху и кнопкой снизу. Responsive — работает на любом экране.
+        BalanceWheelVisualizer(
+            baseHttpUrl = baseHttpUrl,
+            isRecording = recordingActive,
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp)
-                .verticalScroll(rememberScrollState())
-                .zIndex(1f),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Spacer(modifier = Modifier.height(8.dp))
-            WelcomeBlock(recordingsCount = recordings.size)
-            Spacer(modifier = Modifier.height(20.dp))
+                .fillMaxWidth()
+                .weight(1f),
+        )
 
-            if (!hasPermission) {
-                Text(
-                    text = "Для записи нужен доступ к микрофону",
-                    style = MaterialTheme.typography.bodyLarge,
-                    modifier = Modifier.padding(vertical = 8.dp)
-                )
-                FilledTonalButton(onClick = onRequestPermission) {
-                    Text("Разрешить")
-                }
-            } else {
-                // Статус записи
-                Text(
-                    text = if (recordingActive) "Слушаю..." else "Нажмите для записи",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = if (recordingActive)
-                        MaterialTheme.colorScheme.secondary
-                    else
-                        MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                // ПОЧЕМУ RecordingFab а не FilledTonalButton: FAB — стандартный Material3
-                // паттерн для основного действия. Пульсирующее кольцо даёт визуальный
-                // feedback что запись идёт, без дополнительного текста.
-                RecordingFab(
-                    isRecording = recordingActive,
-                    onClick = onToggleRecording,
-                )
-            }
+        Spacer(modifier = Modifier.height(8.dp))
 
-            Spacer(modifier = Modifier.height(24.dp))
+        if (!hasPermission) {
             Text(
-                text = "Записи",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp)
+                text = "Для записи нужен доступ к микрофону",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-
-            loadError?.let { err ->
-                Text(
-                    text = "Ошибка: $err",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(8.dp)
-                )
+            Spacer(modifier = Modifier.height(8.dp))
+            FilledTonalButton(onClick = onRequestPermission) {
+                Text("Разрешить доступ к микрофону")
             }
-
-            RecordingListScreen(
-                recordings = recordings,
-                modifier = Modifier.weight(1f)
+        } else {
+            Text(
+                text = if (recordingActive) "Слушаю..." else "Нажмите для записи",
+                style = MaterialTheme.typography.titleMedium,
+                color = if (recordingActive)
+                    MaterialTheme.colorScheme.secondary
+                else
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            RecordingFab(
+                isRecording = recordingActive,
+                onClick = onToggleRecording,
             )
         }
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
@@ -398,7 +347,7 @@ private fun HomeScreen(
 // ──────────────────────────────────────────────
 
 @Composable
-private fun WelcomeBlock(recordingsCount: Int = 0) {
+private fun WelcomeBlock() {
     val greeting = remember {
         val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
         when {
@@ -414,36 +363,18 @@ private fun WelcomeBlock(recordingsCount: Int = 0) {
         ),
         shape = MaterialTheme.shapes.medium,
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
             Text(
                 text = greeting,
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
-            Spacer(modifier = Modifier.height(4.dp))
-            // ПОЧЕМУ показываем счётчик: даёт ощущение прогресса и вовлечённости.
-            // Если 0 записей — мотивирующий текст. Если есть — конкретное число.
+            Spacer(modifier = Modifier.height(2.dp))
             Text(
-                text = if (recordingsCount == 0) {
-                    "Начните свой первый голосовой дневник"
-                } else {
-                    "У вас $recordingsCount ${pluralRecordings(recordingsCount)}"
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                text = "Колесо баланса — как распределяется твой день",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
             )
         }
-    }
-}
-
-// ПОЧЕМУ: русские окончания зависят от числа. 1 запись, 2 записи, 5 записей.
-private fun pluralRecordings(count: Int): String {
-    val mod10 = count % 10
-    val mod100 = count % 100
-    return when {
-        mod100 in 11..19 -> "записей"
-        mod10 == 1 -> "запись"
-        mod10 in 2..4 -> "записи"
-        else -> "записей"
     }
 }
