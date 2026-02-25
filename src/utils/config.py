@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     ASR_MODEL_SIZE: str = "small"
     ASR_DEVICE: str = "cpu"
     ASR_COMPUTE_TYPE: str = "int8"
-    ASR_LANGUAGE: str | None = "ru"  # None = auto-detect, "ru" = форсировать русский
+    ASR_LANGUAGE: str | None = "ru"
 
     # Edge
     EDGE_ENABLED: bool = True
@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     # Extended Metrics
     EXTENDED_METRICS: bool = False
     USE_LLM_METRICS: bool = False
+
+    # Privacy/Memory/Integrity feature flags
+    PRIVACY_MODE: str = "audit"  # strict | mask | audit
+    MEMORY_ENABLED: bool = True
+    RETRIEVAL_ENABLED: bool = True
+    INTEGRITY_CHAIN_ENABLED: bool = True
 
     # MCP Intelligence
     BRAVE_API_KEY: str | None = None
@@ -124,10 +130,8 @@ class Settings(BaseSettings):
         case_sensitive = True
 
 
-# Глобальный экземпляр настроек
 settings = Settings()
 
-# Создаём директории при импорте
 settings.STORAGE_PATH.mkdir(parents=True, exist_ok=True)
 settings.UPLOADS_PATH.mkdir(parents=True, exist_ok=True)
 settings.RECORDINGS_PATH.mkdir(parents=True, exist_ok=True)

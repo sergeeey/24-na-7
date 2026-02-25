@@ -7,8 +7,8 @@ from src.api.main import app
 def test_websocket_ingest_accept_and_receive_binary():
     """WebSocket /ws/ingest accepts connection and responds to binary WAV."""
     client = TestClient(app)
-    with patch("src.api.main.transcribe_audio") as mock_transcribe:
-        mock_transcribe.return_value = {"text": "hello", "language": "en"}
+    with patch("src.api.routers.websocket.transcribe_audio") as mock_transcribe:
+        mock_transcribe.return_value = {"text": "hello team meeting", "language": "en"}
         with client.websocket_connect("/ws/ingest") as websocket:
             websocket.send_bytes(b"fake-wav-bytes")
             msg = websocket.receive_json()
@@ -17,15 +17,15 @@ def test_websocket_ingest_accept_and_receive_binary():
             assert msg["status"] == "queued"
             msg2 = websocket.receive_json()
             assert msg2["type"] == "transcription"
-            assert msg2.get("text") == "hello"
+            assert msg2.get("text") == "hello team meeting"
 
 
 def test_websocket_ingest_json_audio():
     """WebSocket /ws/ingest accepts JSON with type audio and base64 data."""
     import base64
     client = TestClient(app)
-    with patch("src.api.main.transcribe_audio") as mock_transcribe:
-        mock_transcribe.return_value = {"text": "test", "language": "en"}
+    with patch("src.api.routers.websocket.transcribe_audio") as mock_transcribe:
+        mock_transcribe.return_value = {"text": "test project update", "language": "en"}
         with client.websocket_connect("/ws/ingest") as websocket:
             websocket.send_text('{"type": "audio", "data": "' + base64.b64encode(b"wav").decode() + '"}')
             msg = websocket.receive_json()
@@ -33,7 +33,7 @@ def test_websocket_ingest_json_audio():
             assert "file_id" in msg
             msg2 = websocket.receive_json()
             assert msg2["type"] == "transcription"
-            assert msg2.get("text") == "test"
+            assert msg2.get("text") == "test project update"
 
 
 def test_websocket_ingest_unknown_type():
@@ -60,7 +60,7 @@ def test_websocket_ingest_empty_binary():
 def test_websocket_ingest_invalid_audio_binary():
     """WebSocket /ws/ingest accepts invalid/non-WAV binary, returns received then error from transcribe."""
     client = TestClient(app)
-    with patch("src.api.main.transcribe_audio") as mock_transcribe:
+    with patch("src.api.routers.websocket.transcribe_audio") as mock_transcribe:
         mock_transcribe.side_effect = ValueError("Invalid WAV or unsupported format")
         with client.websocket_connect("/ws/ingest") as websocket:
             websocket.send_bytes(b"not-wav-content")
@@ -70,3 +70,5 @@ def test_websocket_ingest_invalid_audio_binary():
             msg2 = websocket.receive_json()
             assert msg2["type"] == "error"
             assert "file_id" in msg2 or "message" in msg2
+
+

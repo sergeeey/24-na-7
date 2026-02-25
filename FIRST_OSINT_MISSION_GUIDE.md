@@ -26,7 +26,7 @@ python scripts/check_osint_readiness.py
 
 ```bash
 # .env
-BRAVE_API_KEY=BSAUyRp7HWX4-kGYYO6rnukUrNyLojU
+BRAVE_API_KEY=your_brave_api_key_here
 
 # Bright Data Proxy (рекомендуется)
 BRIGHTDATA_PROXY_HTTP=https://brd-customer-hl_16abad82-zone-tttt:46ju8s7m4bcz@brd.superproxy.io:9515
@@ -271,4 +271,5 @@ pip install -r requirements.txt
 ---
 
 **Готово! Reflexio 24/7 теперь собирает и проверяет знания!** 🎯✨
+
 

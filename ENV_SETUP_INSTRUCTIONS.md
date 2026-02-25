@@ -18,7 +18,7 @@
 # ============================================================
 
 # Brave Search API Key
-BRAVE_API_KEY=BSAUyRp7HWX4-kGYYO6rnukUrNyLojU
+BRAVE_API_KEY=your_brave_api_key_here
 
 # Bright Data Proxy (рекомендуется)
 # Используется для скрапинга через proxy
@@ -102,6 +102,7 @@ python scripts/check_osint_readiness.py
 ---
 
 **Система готова к работе!** 🎯✨
+
 
 
 
