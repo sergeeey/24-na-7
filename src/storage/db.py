@@ -30,7 +30,12 @@ ALLOWED_TABLES = {
     "facts",
     "digests",
     "recording_analyses",
-    "_health",  # Служебная таблица Supabase
+    "_health",          # Служебная таблица Supabase
+    # Social graph (migration 0009)
+    "persons",
+    "person_voice_samples",
+    "person_voice_profiles",   # профили окружения (voice_profiles = профиль пользователя)
+    "person_interactions",
 }
 
 
