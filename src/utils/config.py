@@ -26,9 +26,9 @@ class Settings(BaseSettings):
 
     # ASR
     ASR_MODEL_SIZE: str = "small"
-    ASR_DEVICE: str = "cpu"
-    ASR_COMPUTE_TYPE: str = "int8"
-    ASR_LANGUAGE: str | None = "ru"
+    ASR_DEVICE: str = "auto"
+    ASR_COMPUTE_TYPE: str = "auto"
+    ASR_LANGUAGE: str | None = None
 
     # Edge
     EDGE_ENABLED: bool = True
@@ -87,6 +87,9 @@ class Settings(BaseSettings):
 
     # Authentication
     API_KEY: str | None = None
+
+    # CORS — comma-separated list of allowed origins
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8080"
 
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
@@ -149,3 +152,5 @@ def _get_secret_from_vault(cfg: Settings, key: str, env_fallback: str | None) ->
         except Exception:
             pass
     return env_fallback
+
+

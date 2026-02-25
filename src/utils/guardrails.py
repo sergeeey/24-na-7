@@ -94,6 +94,13 @@ class PIIDetector:
         "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
         "phone": re.compile(r"\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b"),
         "api_key": re.compile(r"\b(?:sk-|pk-)[a-zA-Z0-9]{20,}\b"),
+        # ПОЧЕМУ KZ форматы: приложение работает в Казахстане, стандартные паттерны
+        # не покрывают ИИН/БИН (12 цифр), KZ телефон (+7 7xx/6xx), IBAN KZ.
+        "kz_iin": re.compile(r"\b\d{12}\b"),  # ИИН/БИН: ровно 12 цифр
+        "kz_phone": re.compile(
+            r"\b(?:\+?7[-.\s]?)?[67]\d{2}[-.\s]?\d{3}[-.\s]?\d{2}[-.\s]?\d{2}\b"
+        ),  # +7 700..799 и 600..699 (KZ мобильные)
+        "kz_iban": re.compile(r"\bKZ\d{2}[A-Z0-9]{3}\d{10}\b", re.IGNORECASE),  # IBAN KZ
     }
     
     MASK = "[REDACTED]"

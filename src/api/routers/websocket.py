@@ -53,7 +53,8 @@ async def _process_audio_segment(websocket: WebSocket, audio_bytes: bytes, file_
         )
     except Exception as e:
         logger.warning("audio_processing_failed", file_id=file_id, error=str(e))
-        await websocket.send_json({"type": "error", "file_id": file_id, "message": str(e)})
+        # ПОЧЕМУ: str(e) не отдаём клиенту — может содержать пути, модели, внутренние детали.
+        await websocket.send_json({"type": "error", "file_id": file_id, "message": "Audio processing error"})
         return
 
     await websocket.send_json(
@@ -151,7 +152,7 @@ async def websocket_ingest(websocket: WebSocket):
     except Exception as e:
         logger.error("websocket_ingest_error", error=str(e))
         try:
-            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.send_json({"type": "error", "message": "Internal server error"})
         except Exception:
             pass
     finally:
