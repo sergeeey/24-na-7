@@ -1,58 +1,50 @@
 # Active Context — Reflexio 24/7
 
 ## Последнее обновление
-2026-02-25 13:45
+2026-02-25 15:00
 
 ## Текущая фаза
-**Pipeline production-ready: фильтрация шума, русская ASR, auto-cleanup, privacy/integrity**
+**Pipeline production-ready + repo clean + security hardened**
 
-## Что сделано за сессию 2026-02-25
+## Сессия 2026-02-25 (вторая половина дня)
 
-### ASR исправления
-- **OpenAI API ошибка:** `whisper-large-v3-turbo` (HuggingFace имя) → 404, 14 сек retry. Переключили на `provider: local`
-- **Бесконечная рекурсия:** `LocalProvider → transcribe_audio → get_asr_provider → LocalProvider`. Fix: `_asr_provider = None` + `_asr_provider_initialized` flag
-- **Язык:** `language=None` → Whisper угадывал `en`/`nn` для русской речи. Fix: `ASR_LANGUAGE=ru`
-- **Модель:** `small` + `int8` + CPU не тянул русский. Fix: `ASR_MODEL_SIZE=medium`
-- Результат: text_length 24-50, confidence 1.0, язык всегда `ru`
+### Task B: Чистка репо ✅ (коммит `01365cb`)
+- Удалено 50+ AI-bloat .md файлов из корня (OSINT_, W1D1_, SERP_, LEVEL5_, etc.)
+- Удалено 40+ .md файлов из docs/ (INTEGRATION_SPRINT_*, AUDIT_*, etc.)
+- Оставлено 11 полезных docs/: DEPLOYMENT, QUICKSTART, SECURITY, RUNBOOKS, spec, risks, steps, QUICK_COMMANDS, ENV_SETUP_INSTRUCTIONS, FILTERS, DIGEST
+- risks.md, spec.md, steps.md → перенесены в docs/
+- .gitignore обновлён: android/.gradle/, android/nul, .claude/worktrees/
+- core_memory.json скопирован из .cursor/memory → .claude/memory/
 
-### Фильтрация мусора (10 000+ записей → 0)
-- **P0: SpeechFilter** — FFT анализ спектра в WebSocket handler ДО Whisper. `FILTER_MUSIC=true`
-- **P1: _is_meaningful_transcription()** — min 3 слова, не стоп-фразы, lang_prob > 0.4. Блокирует запись в БД
-- **Digest фильтры** — `_is_meaningful()`, `_has_cyrillic()`, лимит 100 записей/4000 символов для LLM
-- **LLM промпты** — "ВСЕГДА на русском", обрезка текста до 4000 chars
+### Task C: Боевой digest ✅
+- Проверен через Docker API: digest за 2026-02-24 генерирует правильный русский саммари
+- CoD работает: "Марат обсудили бюджет Q2, сократить расходы 15%, позвонить в банк"
+- Tasks извлечены: "Подготовить таблицу к пятнице", "Позвонить в банк"
+- ⚠️ Confidence: 0.00 — известный баг (critic оценивает против зашумлённого текста)
+- Локально без API key: саммари пустое (expected) → Docker работает корректно
 
-### Auto-cleanup WAV файлов
-- **P2: Сервер** — `dest_path.unlink()` после persist (и при ошибке)
-- **P3: Телефон** — `file.delete()` после успешного upload в `AudioRecordingService`
-- Android WebSocket клиент обрабатывает `"filtered"` ответ
+### Task A: Unify dual pipeline ✅ (коммит `9f3dee1`)
+- Explorer подтвердил: core pipeline УЖЕ унифицирован в `process_audio_bytes()`
+- Нет дублирования бизнес-логики между ingest.py и websocket.py
+- SAFEChecker → singleton (было: новый экземпляр per request) в `safe_middleware.py`
+- WebSocket: добавлен SAFE size check (25MB limit) для binary и base64 путей
+- Ошибка при добавлении: `check_file_size(Path)` не принимает int → фикс через `.MAX_FILE_SIZE_BYTES`
 
-### Рефакторинг websocket.py
-- Вынесен `_process_audio_segment()` — убрана 60-строчная дупликация binary/base64 путей
-
-### Codex: Privacy + Integrity + Semantic Memory
-- **Privacy pipeline** (`src/security/privacy_pipeline.py`) — strict/mask/audit PII detection
-- **Integrity chain** (`src/storage/integrity.py`) — SHA-256 hash chain для audit trail
-- **Semantic memory** (`src/memory/semantic_memory.py`) — консолидация транскрипций в memory nodes
-- **API:** `/memory/search`, `/audit/trail`
-- **Feature flags:** PRIVACY_MODE, MEMORY_ENABLED, RETRIEVAL_ENABLED, INTEGRITY_CHAIN_ENABLED
-- **Security hardening:** SAFE checker static import, WAV magic bytes, path leak fix
-- **Migration:** 0008_semantic_memory_integrity.sql
-- **Tests:** 10 passed
-
-## Коммиты сессии
+## Все коммиты сессии (хронологически)
 - `2b33f3f` — fix(asr): switch to local Whisper, fix recursion and OpenAI model name
 - `035ab47` — fix(digest): filter noise transcriptions and enforce Russian in LLM output
 - `e07a617` — feat(audio): P0-P3 noise filter, music rejection, auto-delete WAV
 - `324c7b1` — fix(asr): force Russian language and upgrade to medium model
 - `709bb3b` — feat: privacy pipeline, integrity chain, semantic memory (Codex)
 - `fee67d8` — test: fix 3 remaining failures + add balance/persongraph tests (559 pass)
-
-Первые 5 запушены. fee67d8 — локально.
+- `01365cb` — chore: remove 90+ AI-bloat .md files, organize docs/ structure
+- `9f3dee1` — feat(pipeline): unify security - SAFE singleton + WebSocket size check
 
 ## Pipeline (текущий)
 ```
 Pixel 9 Pro → VAD (3-сек сегменты) → WebSocket binary
   → P0: SpeechFilter (FFT, speech 300-3400Hz vs music >4kHz)
+  → SAFE size check (25MB) ← NEW в WebSocket
   → Whisper medium (language=ru, CPU int8)
   → P1: _is_meaningful_transcription (min 3 words, no noise phrases)
   → Privacy pipeline (audit mode)
@@ -69,29 +61,27 @@ Pixel 9 Pro → VAD (3-сек сегменты) → WebSocket binary
 - Volume mounts: `./src:/app/src` (dev mode), `./config:/app/config`
 - Env: `FILTER_MUSIC=true`, `ASR_MODEL_SIZE=medium`, `ASR_LANGUAGE=ru`
 
-## Статус тестов (fee67d8)
+## Статус тестов (9f3dee1)
 - **559 passed, 26 skipped, 0 failed** (полный suite)
-- Ключевые фиксы: WAV signature bytes, pydantic-settings override, ASR state flags
-- Новые тесты: balance/storage (17) + persongraph/service (18) = 35 тестов
 
 ## Следующие шаги
-1. Протестировать дайджест за сегодня (есть реальные русские записи)
-2. Чистка: 54 .md в корне, `android/.gradle/` в .gitignore
-3. Android: offline queue, retry logic
-4. Stage-2 memory: эмбеддинги + rerank для retrieval
-5. SAFE checker: создать `src/validation/` модуль (сейчас warning при каждом запросе)
+1. Android: offline queue + retry logic (WorkManager)
+2. Stage-2 memory: эмбеддинги + rerank для semantic retrieval
+3. Confidence bug: critic должен оценивать против filtered text, не raw text
+4. Push последних 2 коммитов (01365cb, 9f3dee1)
 
 ## Ключевые файлы
 - API: `src/api/main.py`
-- WebSocket: `src/api/routers/websocket.py` (P0+P1+P2 фильтры)
+- WebSocket: `src/api/routers/websocket.py` (P0+SAFE+P1+P2 фильтры)
+- Ingest: `src/api/routers/ingest.py`
+- Core pipeline: `src/core/audio_processing.py` (process_audio_bytes)
 - ASR: `src/asr/transcribe.py`, `config/asr.yaml`
 - Digest: `src/digest/generator.py` (noise filter + CoD)
+- SAFE: `src/validation/safe/checks.py`, `src/api/middleware/safe_middleware.py`
 - Config: `src/utils/config.py` (ASR_LANGUAGE, FILTER_MUSIC, PRIVACY_MODE)
 - Privacy: `src/security/privacy_pipeline.py`
 - Integrity: `src/storage/integrity.py`
 - Memory: `src/memory/semantic_memory.py`
-- Android WS: `android/.../IngestWebSocketClient.kt`
-- Android Service: `android/.../AudioRecordingService.kt`
 
 ## Для восстановления контекста
-Reflexio 24/7: `D:/24 na 7/`. Pipeline production-ready: Android → VAD → SpeechFilter → Whisper medium (ru) → noise filter → privacy → SQLite + integrity → auto-delete WAV → enrichment (Claude Haiku) → semantic memory. 5 коммитов запушены (709bb3b). Docker работает с volume mounts. Шум полностью отфильтрован (10K+ мусорных записей → 0). Русская речь распознаётся (confidence 1.0).
+Reflexio 24/7: `D:/24 na 7/`. Pipeline production-ready: Android → VAD → SpeechFilter → SAFE size check → Whisper medium (ru) → noise filter → privacy → SQLite + integrity → auto-delete WAV → enrichment (Claude Haiku) → semantic memory → CoD digest. Docker работает. 559 тестов зелёных. Репо очищен от 90+ AI-bloat файлов. Dual pipeline уже был унифицирован в process_audio_bytes() — добавили только SAFE singleton + WS size check.
