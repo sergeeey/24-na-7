@@ -9,9 +9,21 @@ from src.utils.logging import get_logger
 
 logger = get_logger("api.middleware")
 
+# ПОЧЕМУ: Singleton кэш — SAFEChecker создаётся один раз при первом вызове,
+# а не на каждый HTTP-запрос. Это экономит ~1ms per request и избегает
+# повторной инициализации при каждом /ingest/audio.
+_safe_checker_cache = None
+_safe_checker_initialized = False
+
 
 def get_safe_checker():
-    """Получает SAFE checker если доступен."""
+    """Получает SAFE checker если доступен (singleton, lazy init)."""
+    global _safe_checker_cache, _safe_checker_initialized
+    if _safe_checker_initialized:
+        return _safe_checker_cache
+
+    _safe_checker_initialized = True  # Помечаем до создания, чтобы не было рекурсии
+
     safe_enabled = os.getenv("SAFE_MODE", "audit") in ("strict", "audit")
     if not safe_enabled:
         return None
@@ -20,7 +32,8 @@ def get_safe_checker():
     try:
         from src.validation.safe.checks import SAFEChecker  # type: ignore
 
-        return SAFEChecker()
+        _safe_checker_cache = SAFEChecker()
+        return _safe_checker_cache
     except Exception as e:
         logger.warning("safe_checker_static_import_failed", error=str(e))
 

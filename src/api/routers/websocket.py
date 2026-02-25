@@ -2,258 +2,106 @@
 import base64
 import json
 import uuid
-import wave
-from datetime import datetime
-from pathlib import Path
-from typing import Optional
+from datetime import datetime, timezone
 
-import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from src.api.middleware.auth_middleware import verify_websocket_token
+from src.api.middleware.safe_middleware import get_safe_checker
 from src.asr.transcribe import transcribe_audio
-from src.edge.filters import SpeechFilter
-from src.memory.semantic_memory import consolidate_to_memory_node, ensure_semantic_memory_tables
-from src.security.privacy_pipeline import apply_privacy_mode
-from src.storage.ingest_persist import (
-    ensure_ingest_tables,
-    persist_structured_event,
-    persist_ws_transcription,
-)
-from src.storage.integrity import append_integrity_event, ensure_integrity_tables
-from src.utils.config import settings
+from src.core.audio_processing import process_audio_bytes
 from src.utils.logging import get_logger
 
 logger = get_logger("api.websocket")
 router = APIRouter(tags=["websocket"])
 
-_speech_filter: Optional[SpeechFilter] = None
+_last_transcription_by_connection: dict[str, dict] = {}
+MERGE_WINDOW_SECONDS = 5
 
 
-def _get_speech_filter() -> SpeechFilter:
-    global _speech_filter
-    if _speech_filter is None:
-        _speech_filter = SpeechFilter(
-            enabled=settings.FILTER_MUSIC,
-            method=settings.FILTER_METHOD,
-            sample_rate=settings.AUDIO_SAMPLE_RATE,
-        )
-    return _speech_filter
+def _recent_text(connection_id: str) -> str:
+    now = datetime.now(timezone.utc)
+    prev = _last_transcription_by_connection.get(connection_id)
+    if not prev:
+        return ""
+    dt = (now - prev["ts"]).total_seconds()
+    if dt <= MERGE_WINDOW_SECONDS and prev.get("text"):
+        return str(prev["text"])
+    return ""
 
 
-def _read_wav_as_numpy(wav_path: Path) -> Optional[np.ndarray]:
-    """Read WAV file as numpy array for speech filter."""
-    try:
-        with wave.open(str(wav_path), "rb") as wf:
-            frames = wf.readframes(wf.getnframes())
-            audio = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
-            return audio
-    except Exception as e:
-        logger.warning("wav_read_failed", path=str(wav_path), error=str(e))
-        return None
-
-
-_NOISE_PHRASES = frozenset(
-    {
-        "you",
-        "the",
-        "a",
-        "an",
-        "i",
-        "he",
-        "she",
-        "it",
-        "we",
-        "they",
-        "yes",
-        "no",
-        "oh",
-        "ah",
-        "um",
-        "uh",
-        "hmm",
-        "huh",
-        "that's it",
-        "thank you",
-        "thanks",
-        "okay",
-        "ok",
+def _remember_text(connection_id: str, text: str) -> None:
+    _last_transcription_by_connection[connection_id] = {
+        "ts": datetime.now(timezone.utc),
+        "text": text,
     }
-)
-_MIN_WORDS = 3
-_MIN_LANG_PROBABILITY = 0.4
 
 
-def _is_meaningful_transcription(text: str, lang_prob: float = 1.0) -> bool:
-    """Check if transcription contains meaningful speech (not noise)."""
-    text = text.strip()
-    if not text:
-        return False
-    words = text.split()
-    if len(words) < _MIN_WORDS:
-        return False
-    if text.lower() in _NOISE_PHRASES:
-        return False
-    if lang_prob < _MIN_LANG_PROBABILITY:
-        return False
-    return True
-
-
-def _enrich_and_persist(db_path, transcription_id: str, result: dict) -> None:
-    """Enrichment в отдельном try/except — не ломает pipeline при ошибке."""
+async def _process_audio_segment(websocket: WebSocket, audio_bytes: bytes, file_id: str, connection_id: str) -> None:
+    """Process one audio segment via shared unified pipeline."""
     try:
-        from src.enrichment.enricher import enrich_transcription
-
-        event = enrich_transcription(
-            transcription_id=transcription_id,
-            text=result.get("text", ""),
-            timestamp=datetime.now(),
-            duration_sec=result.get("duration", 0.0) or 0.0,
-            language=result.get("language", "unknown") or "unknown",
+        result = await process_audio_bytes(
+            content=audio_bytes,
+            content_type="audio/wav",
+            original_filename=f"{file_id}.wav",
+            file_id=file_id,
+            ingest_stage="ws_audio_received",
+            transcription_stage="ws_transcription_saved",
+            run_enrichment=True,
+            enrichment_prefix=_recent_text(connection_id),
+            transcribe_fn=transcribe_audio,
         )
-        persist_structured_event(db_path, event)
-        if settings.MEMORY_ENABLED:
-            consolidate_to_memory_node(
-                db_path=db_path,
-                ingest_id=result.get("ingest_id", ""),
-                transcription_id=transcription_id,
-                text=result.get("text", ""),
-                summary=getattr(event, "summary", "") or "",
-                topics=getattr(event, "topics", []) or [],
-            )
     except Exception as e:
-        logger.debug("enrichment_skipped", transcription_id=transcription_id, error=str(e))
-
-
-async def _process_audio_segment(websocket: WebSocket, audio_bytes: bytes, file_id: str) -> None:
-    """Process one audio segment: filter -> transcribe -> persist -> cleanup."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{file_id}.wav"
-    dest_path = settings.UPLOADS_PATH / filename
-    settings.UPLOADS_PATH.mkdir(parents=True, exist_ok=True)
-    dest_path.write_bytes(audio_bytes)
-
-    db_path = settings.STORAGE_PATH / "reflexio.db"
-    ensure_ingest_tables(db_path)
-    ensure_integrity_tables(db_path)
-    ensure_semantic_memory_tables(db_path)
-
-    if settings.INTEGRITY_CHAIN_ENABLED:
-        append_integrity_event(
-            db_path=db_path,
-            ingest_id=file_id,
-            stage="ws_audio_received",
-            payload_bytes=audio_bytes,
-            metadata={"filename": filename, "size": len(audio_bytes)},
-        )
+        logger.warning("audio_processing_failed", file_id=file_id, error=str(e))
+        await websocket.send_json({"type": "error", "file_id": file_id, "message": str(e)})
+        return
 
     await websocket.send_json(
         {
             "type": "received",
             "file_id": file_id,
             "status": "queued",
-            "filename": filename,
         }
     )
 
-    try:
-        if settings.FILTER_MUSIC:
-            audio_data = _read_wav_as_numpy(dest_path)
-            if audio_data is not None:
-                sf = _get_speech_filter()
-                is_speech_result, metrics = sf.check(audio_data)
-                if not is_speech_result:
-                    logger.info(
-                        "audio_filtered_not_speech",
-                        file_id=file_id,
-                        speech_ratio=metrics.get("speech_ratio"),
-                        high_freq_ratio=metrics.get("high_freq_ratio"),
-                    )
-                    dest_path.unlink(missing_ok=True)
-                    await websocket.send_json(
-                        {
-                            "type": "filtered",
-                            "file_id": file_id,
-                            "reason": "not_speech",
-                            "delete_audio": True,
-                        }
-                    )
-                    return
-
-        result = transcribe_audio(dest_path, language=settings.ASR_LANGUAGE)
-
-        text = (result.get("text") or "").strip()
-        lang_prob = result.get("language_probability", 1.0) or 1.0
-        if not _is_meaningful_transcription(text, lang_prob):
-            logger.info("transcription_filtered_noise", file_id=file_id, text=text[:50], lang_prob=lang_prob)
-            dest_path.unlink(missing_ok=True)
-            await websocket.send_json(
-                {
-                    "type": "filtered",
-                    "file_id": file_id,
-                    "reason": "noise",
-                    "delete_audio": True,
-                }
-            )
-            return
-
-        privacy = apply_privacy_mode(text, mode=settings.PRIVACY_MODE)
-        if not privacy.allowed:
-            dest_path.unlink(missing_ok=True)
-            await websocket.send_json(
-                {
-                    "type": "filtered",
-                    "file_id": file_id,
-                    "reason": "pii_blocked",
-                    "delete_audio": True,
-                }
-            )
-            return
-
-        result["text"] = privacy.text
-        result["privacy_mode"] = privacy.mode
-        result["pii_count"] = privacy.pii_count
-        result["ingest_id"] = file_id
-
-        transcription_id = persist_ws_transcription(
-            db_path=db_path,
-            file_id=file_id,
-            filename=filename,
-            file_path=str(dest_path),
-            file_size=len(audio_bytes),
-            result=result,
-        )
-
-        if settings.INTEGRITY_CHAIN_ENABLED:
-            append_integrity_event(
-                db_path=db_path,
-                ingest_id=file_id,
-                stage="ws_transcription_saved",
-                payload_text=result.get("text", ""),
-                metadata={"language": result.get("language", ""), "privacy_mode": privacy.mode},
-            )
-
-        dest_path.unlink(missing_ok=True)
-        logger.debug("wav_deleted_after_transcription", file_id=file_id, filename=filename)
-
+    status = result.get("status")
+    if status == "filtered":
         await websocket.send_json(
             {
-                "type": "transcription",
+                "type": "filtered",
                 "file_id": file_id,
-                "text": result.get("text", ""),
-                "language": result.get("language", ""),
+                "reason": result.get("reason", "filtered"),
+                "language": result.get("language"),
                 "delete_audio": True,
-                "privacy_mode": privacy.mode,
             }
         )
+        return
 
-        if transcription_id:
-            _enrich_and_persist(db_path, transcription_id, result)
+    if status != "transcribed":
+        await websocket.send_json(
+            {
+                "type": "error",
+                "file_id": file_id,
+                "message": result.get("reason", "processing_failed"),
+            }
+        )
+        return
 
-    except Exception as e:
-        logger.warning("audio_processing_failed", file_id=file_id, error=str(e))
-        dest_path.unlink(missing_ok=True)
-        await websocket.send_json({"type": "error", "file_id": file_id, "message": str(e)})
+    payload = result.get("result", {})
+    text = payload.get("text", "")
+    if text:
+        _remember_text(connection_id, text)
+
+    await websocket.send_json(
+        {
+            "type": "transcription",
+            "file_id": file_id,
+            "text": text,
+            "language": payload.get("language", ""),
+            "delete_audio": True,
+            "privacy_mode": payload.get("privacy_mode", "audit"),
+        }
+    )
 
 
 @router.websocket("/ws/ingest")
@@ -265,6 +113,7 @@ async def websocket_ingest(websocket: WebSocket):
         return
 
     await websocket.accept()
+    connection_id = str(id(websocket))
     logger.info("websocket_ingest_connected", client=websocket.client)
     try:
         while True:
@@ -273,14 +122,26 @@ async def websocket_ingest(websocket: WebSocket):
                 if not data["bytes"]:
                     await websocket.send_json({"type": "error", "message": "Empty audio"})
                     continue
+                # ПОЧЕМУ: SAFE size check против DoS через большие payload.
+                # check_file_size() принимает Path, поэтому сравниваем с
+                # MAX_FILE_SIZE_BYTES напрямую — быстро и без temp file.
+                safe = get_safe_checker()
+                if safe and len(data["bytes"]) > safe.MAX_FILE_SIZE_BYTES:
+                    await websocket.send_json({"type": "error", "message": "File too large"})
+                    continue
                 file_id = str(uuid.uuid4())
-                await _process_audio_segment(websocket, data["bytes"], file_id)
+                await _process_audio_segment(websocket, data["bytes"], file_id, connection_id)
             elif "text" in data and data["text"]:
                 try:
                     msg = json.loads(data["text"])
                     if msg.get("type") == "audio" and msg.get("data"):
+                        audio_bytes = base64.b64decode(msg["data"])
+                        safe = get_safe_checker()
+                        if safe and len(audio_bytes) > safe.MAX_FILE_SIZE_BYTES:
+                            await websocket.send_json({"type": "error", "message": "File too large"})
+                            continue
                         file_id = str(uuid.uuid4())
-                        await _process_audio_segment(websocket, base64.b64decode(msg["data"]), file_id)
+                        await _process_audio_segment(websocket, audio_bytes, file_id, connection_id)
                     else:
                         await websocket.send_json({"type": "error", "message": "Unknown message type"})
                 except (json.JSONDecodeError, KeyError) as e:
@@ -293,3 +154,5 @@ async def websocket_ingest(websocket: WebSocket):
             await websocket.send_json({"type": "error", "message": str(e)})
         except Exception:
             pass
+    finally:
+        _last_transcription_by_connection.pop(connection_id, None)
