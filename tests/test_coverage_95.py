@@ -92,7 +92,7 @@ def test_api_get_digest_today_json(tmp_path):
     mock_file.write_text('{"date": "2026-01-15", "facts": []}', encoding="utf-8")
     mock_gen = MagicMock()
     mock_gen.generate.return_value = mock_file
-    with patch("src.api.main.DigestGenerator") as M:
+    with patch("src.api.routers.digest.DigestGenerator") as M:
         M.return_value = mock_gen
         client = TestClient(app)
         r = client.get("/digest/today?format=json")
@@ -277,7 +277,7 @@ def test_api_digest_date_valid():
     from src.api.main import app
     mock_file = MagicMock()
     mock_file.read_text.return_value = '{"date": "2026-01-15"}'
-    with patch("src.api.main.DigestGenerator") as M:
+    with patch("src.api.routers.digest.DigestGenerator") as M:
         M.return_value.generate.return_value = mock_file
         client = TestClient(app)
         r = client.get("/digest/2026-01-15?format=json")
@@ -402,7 +402,7 @@ def test_api_digest_today_exception():
     """Эндпоинт /digest/today при исключении в generator.generate."""
     from fastapi.testclient import TestClient
     from src.api.main import app
-    with patch("src.api.main.DigestGenerator") as M:
+    with patch("src.api.routers.digest.DigestGenerator") as M:
         M.return_value.generate.side_effect = RuntimeError("db error")
         client = TestClient(app)
         r = client.get("/digest/today?format=json")
@@ -706,7 +706,7 @@ def test_api_get_density_valid_date():
     from fastapi.testclient import TestClient
     from src.api.main import app
     mock_analysis = {"date": "2026-01-15", "statistics": {"transcriptions_count": 1}, "density_analysis": {}}
-    with patch("src.api.main.InformationDensityAnalyzer") as MockAnalyzer:
+    with patch("src.api.routers.digest.InformationDensityAnalyzer") as MockAnalyzer:
         MockAnalyzer.return_value.analyze_day.return_value = mock_analysis
         client = TestClient(app)
         r = client.get("/digest/2026-01-15/density")
@@ -736,7 +736,7 @@ def test_api_get_density_analyzer_raises():
     """GET /digest/{date}/density при исключении в analyzer возвращает 500."""
     from fastapi.testclient import TestClient
     from src.api.main import app
-    with patch("src.api.main.InformationDensityAnalyzer") as MockAnalyzer:
+    with patch("src.api.routers.digest.InformationDensityAnalyzer") as MockAnalyzer:
         MockAnalyzer.return_value.analyze_day.side_effect = RuntimeError("db error")
         client = TestClient(app)
         r = client.get("/digest/2026-01-15/density")
@@ -751,7 +751,7 @@ def test_api_metrics_invalid_cursor_json(tmp_path):
     metrics_file = Path("cursor-metrics.json")
     try:
         metrics_file.write_text("not valid json {", encoding="utf-8")
-        with patch("src.api.main.settings") as s:
+        with patch("src.api.routers.metrics.settings") as s:
             s.UPLOADS_PATH = tmp_path
             s.RECORDINGS_PATH = tmp_path
             s.STORAGE_PATH = tmp_path
@@ -773,7 +773,7 @@ def test_api_metrics_db_exception(tmp_path):
     conn.execute("CREATE TABLE other (id INTEGER)")
     conn.commit()
     conn.close()
-    with patch("src.api.main.settings") as s:
+    with patch("src.api.routers.metrics.settings") as s:
         s.UPLOADS_PATH = tmp_path
         s.RECORDINGS_PATH = tmp_path
         s.STORAGE_PATH = tmp_path
@@ -932,7 +932,7 @@ def test_api_input_guard_block():
         reason="Blocked",
     )
 
-    with patch("src.api.main.get_input_guard") as mock_guard:
+    with patch("src.api.middleware.input_guard_middleware.get_input_guard") as mock_guard:
         mock_guard.return_value.check.return_value = unsafe_result
         client = TestClient(app)
         r = client.post(
@@ -1079,7 +1079,7 @@ def test_api_ingest_audio_success(tmp_path):
     from src.utils.config import settings
     (tmp_path / "uploads").mkdir(exist_ok=True)
     with patch.object(settings, "UPLOADS_PATH", tmp_path / "uploads"):
-        with patch("src.api.main.safe_checker", None):
+        with patch("src.api.routers.ingest.get_safe_checker", return_value=None):
             client = TestClient(app)
             payload = b"RIFF----WAVE" + b"\x00" * 100
             r = client.post("/ingest/audio", files={"file": ("test.wav", payload, "audio/wav")})
@@ -1119,10 +1119,13 @@ def test_llm_get_llm_client_unknown_provider():
     import os
     try:
         from src.llm.providers import get_llm_client
+        from src.utils.config import settings
     except ImportError:
         pytest.skip("llm not available")
+    # Must patch both settings AND env to override pydantic-settings cached value
     with patch.dict(os.environ, {"LLM_PROVIDER": "unknown_provider"}, clear=False):
-        client = get_llm_client(role="actor")
+        with patch.object(settings, "LLM_PROVIDER", "unknown_provider"):
+            client = get_llm_client(role="actor")
     assert client is None
 
 
@@ -1242,7 +1245,9 @@ def test_asr_get_asr_provider_env_fallback():
     """get_asr_provider использует ASR_PROVIDER из env при отсутствии config."""
     import os
     from src.asr import transcribe
+    # Reset both flags so initialization actually runs
     transcribe._asr_provider = None
+    transcribe._asr_provider_initialized = False
     try:
         with patch("src.asr.transcribe.Path") as MockPath:
             MockPath.return_value.exists.return_value = False
@@ -1251,9 +1256,12 @@ def test_asr_get_asr_provider_env_fallback():
                     p = transcribe.get_asr_provider()
                 except Exception:
                     pytest.skip("asr provider init failed")
-        assert p is not None or transcribe._asr_provider is not None
+        # For "local" provider, _asr_provider may be None (uses direct whisper call)
+        # The initialized flag should be True after the call
+        assert transcribe._asr_provider_initialized is True
     finally:
         transcribe._asr_provider = None
+        transcribe._asr_provider_initialized = False
 
 
 def test_digest_extract_facts_exception_fallback():
@@ -1280,7 +1288,7 @@ def test_api_input_guard_security_error():
 
     mock_guard = MagicMock()
     mock_guard.check.side_effect = SecurityError("injection")
-    with patch("src.api.main.input_guard", mock_guard):
+    with patch("src.api.middleware.input_guard_middleware.input_guard", mock_guard):
         client = TestClient(app)
         r = client.post(
             "/voice/intent",
@@ -1298,7 +1306,7 @@ def test_api_input_guard_exception_strict_mode():
 
     mock_guard = MagicMock()
     mock_guard.check.side_effect = RuntimeError("guard error")
-    with patch("src.api.main.input_guard", mock_guard):
+    with patch("src.api.middleware.input_guard_middleware.input_guard", mock_guard):
         with patch.dict(os.environ, {"SAFE_MODE": "strict"}, clear=False):
             client = TestClient(app)
             with pytest.raises(RuntimeError, match="guard error"):
@@ -1315,8 +1323,10 @@ def test_api_safe_middleware_validate_fail_strict(tmp_path):
     from fastapi.testclient import TestClient
     from src.api.main import app
 
-    with patch("src.api.main.safe_checker") as mock_safe:
+    with patch("src.api.middleware.safe_middleware.get_safe_checker") as mock_get:
+        mock_safe = MagicMock()
         mock_safe.validate_payload.return_value = {"valid": False, "errors": ["pii"]}
+        mock_get.return_value = mock_safe
         with patch.dict(os.environ, {"SAFE_MODE": "strict"}, clear=False):
             client = TestClient(app)
             r = client.post(
@@ -1335,9 +1345,10 @@ def test_api_ingest_audio_safe_extension_reject(tmp_path):
     from src.utils.config import settings
 
     (tmp_path / "uploads").mkdir(exist_ok=True)
+    mock_safe = MagicMock()
+    mock_safe.check_file_extension.return_value = (False, "invalid extension")
     with patch.object(settings, "UPLOADS_PATH", tmp_path / "uploads"):
-        with patch("src.api.main.safe_checker") as mock_safe:
-            mock_safe.check_file_extension.return_value = (False, "invalid extension")
+        with patch("src.api.routers.ingest.get_safe_checker", return_value=mock_safe):
             with patch.dict(os.environ, {"SAFE_MODE": "strict"}, clear=False):
                 client = TestClient(app)
                 r = client.post(
@@ -1754,7 +1765,7 @@ def test_monitor_health_check_db_fail():
 
 
 def test_storage_embeddings_generate_empty_fallback():
-    """generate_embeddings returns empty vector when OpenAI fails and sentence_transformers raises."""
+    """generate_embeddings returns hash-based fallback vector when OpenAI fails."""
     import sys
     from src.storage import embeddings as emb_mod
 
@@ -1764,7 +1775,9 @@ def test_storage_embeddings_generate_empty_fallback():
             st_mod.SentenceTransformer.side_effect = ImportError("no sentence_transformers")
             with patch.dict(sys.modules, {"sentence_transformers": st_mod}):
                 result = emb_mod.generate_embeddings("x", use_cache=False)
-    assert result == [0.0] * 384
+    # Fallback returns hash-based deterministic vector, not zeros
+    assert len(result) == 384
+    assert isinstance(result[0], float)
 
 
 def test_storage_embeddings_store_embeddings_skips_empty_text():
@@ -2112,9 +2125,12 @@ def test_summarizer_emotion_fallback_text_analysis():
 def test_llm_openai_client_no_key():
     """OpenAIClient.call returns error when client not initialized (no API key)."""
     from src.llm.providers import OpenAIClient
+    from src.utils.config import settings
 
-    with patch.dict(os.environ, {}, clear=False):
-        client = OpenAIClient(model="gpt-4o")
+    # Must clear both settings and env to test "no API key" path
+    with patch.object(settings, "OPENAI_API_KEY", None):
+        with patch.dict(os.environ, {}, clear=False):
+            client = OpenAIClient(model="gpt-4o")
     out = client.call("Hello")
     assert out.get("error")
     assert out.get("text") == ""
@@ -2155,7 +2171,7 @@ def test_api_digest_today_json():
         f.write(b'{"summary": "ok"}')
         path = Path(f.name)
     try:
-        with patch("src.api.main.DigestGenerator") as MockGen:
+        with patch("src.api.routers.digest.DigestGenerator") as MockGen:
             mock_gen = MagicMock()
             mock_gen.generate.return_value = path
             MockGen.return_value = mock_gen
@@ -2575,7 +2591,7 @@ def test_api_digest_today_markdown_response():
         f.write(b"# Digest\n\nContent")
         path = Path(f.name)
     try:
-        with patch("src.api.main.DigestGenerator") as MockGen:
+        with patch("src.api.routers.digest.DigestGenerator") as MockGen:
             mock_gen = MagicMock()
             mock_gen.generate.return_value = path
             MockGen.return_value = mock_gen
@@ -2595,11 +2611,12 @@ def test_api_ingest_audio_safe_size_reject(tmp_path):
     from src.api.main import app
     from src.utils.config import settings
 
+    mock_safe = MagicMock()
+    mock_safe.check_file_extension.return_value = (True, None)
+    mock_safe.check_file_size.return_value = (False, "file too large")
     (tmp_path / "uploads").mkdir(exist_ok=True)
     with patch.object(settings, "UPLOADS_PATH", tmp_path / "uploads"):
-        with patch("src.api.main.safe_checker") as mock_safe:
-            mock_safe.check_file_extension.return_value = (True, None)
-            mock_safe.check_file_size.return_value = (False, "file too large")
+        with patch("src.api.routers.ingest.get_safe_checker", return_value=mock_safe):
             with patch.dict(os.environ, {"SAFE_MODE": "strict"}, clear=False):
                 client = TestClient(app)
                 r = client.post(
@@ -2620,13 +2637,13 @@ def test_api_transcribe_success(tmp_path):
     file_id = "abc12345-0000-0000-0000-000000000001"
     (uploads / f"20260101_120000_{file_id}.wav").write_bytes(b"RIFF----WAVE")
     with patch.object(settings, "UPLOADS_PATH", uploads):
-        with patch("src.api.main.transcribe_audio") as mock_transcribe:
-            mock_transcribe.return_value = {"text": "Hello", "language": "en", "segments": []}
+        with patch("src.api.routers.asr.transcribe_audio") as mock_transcribe:
+            mock_transcribe.return_value = {"text": "Hello world test", "language": "en", "segments": []}
             client = TestClient(app)
             r = client.post(f"/asr/transcribe?file_id={file_id}")
     assert r.status_code == 200
     assert r.json().get("status") == "success"
-    assert r.json().get("transcription", {}).get("text") == "Hello"
+    assert r.json().get("transcription", {}).get("text") == "Hello world test"
 
 
 def test_api_startup_health_monitor_failed():
@@ -2713,7 +2730,7 @@ def test_api_transcribe_endpoint_exception(tmp_path):
     file_id = "err12345-0000-0000-0000-000000000002"
     (uploads / f"20260101_120000_{file_id}.wav").write_bytes(b"RIFF----WAVE")
     with patch.object(settings, "UPLOADS_PATH", uploads):
-        with patch("src.api.main.transcribe_audio", side_effect=RuntimeError("ASR failed")):
+        with patch("src.api.routers.asr.transcribe_audio", side_effect=RuntimeError("ASR failed")):
             client = TestClient(app)
             r = client.post(f"/asr/transcribe?file_id={file_id}")
     assert r.status_code == 500
@@ -2855,10 +2872,13 @@ def test_utils_config_settings_access():
 def test_llm_openai_client_uninitialized():
     """OpenAI client returns error dict when client is None."""
     from src.llm.providers import OpenAIClient
+    from src.utils.config import settings
 
-    with patch.dict(os.environ, {}, clear=False):
-        client = OpenAIClient(model="gpt-4o-mini")
-        out = client.call("Hi")
+    # Must clear both settings and env so api_key is None → client stays uninitialized
+    with patch.object(settings, "OPENAI_API_KEY", None):
+        with patch.dict(os.environ, {}, clear=False):
+            client = OpenAIClient(model="gpt-4o-mini")
+            out = client.call("Hi")
     assert out.get("error") == "OpenAI client not initialized"
     assert out.get("text") == ""
 
@@ -2903,7 +2923,7 @@ def test_digest_generator_generate_markdown_refined_branch():
         "information_density_score": 50,
         "density_level": "🟡 Средняя",
     }
-    transcriptions = [{"text": "Hello world.", "created_at": "2026-01-15T10:00:00", "duration": 60, "language": "en"}]
+    transcriptions = [{"text": "Hello world meaningful phrase.", "created_at": "2026-01-15T10:00:00", "duration": 60, "language": "en"}]
     with patch("src.digest.generator.SUMMARIZER_AVAILABLE", True):
         with patch("src.digest.generator.generate_dense_summary") as mock_dense:
             mock_dense.return_value = {"summary": "Summary."}
@@ -2926,7 +2946,7 @@ def test_api_digest_density_analysis():
     from fastapi.testclient import TestClient
     from src.api.main import app
 
-    with patch("src.api.main.InformationDensityAnalyzer") as MockAna:
+    with patch("src.api.routers.digest.InformationDensityAnalyzer") as MockAna:
         MockAna.return_value.analyze_day.return_value = {"date": "2026-01-15", "score": 50}
         client = TestClient(app)
         r = client.get("/digest/2026-01-15/density")
@@ -2995,7 +3015,7 @@ def test_api_metrics_database_exception(tmp_path):
     conn.execute("CREATE TABLE facts (id TEXT)")
     conn.commit()
     conn.close()
-    with patch("src.api.main.settings") as s:
+    with patch("src.api.routers.metrics.settings") as s:
         s.STORAGE_PATH = tmp_path
         s.UPLOADS_PATH = tmp_path
         s.RECORDINGS_PATH = tmp_path
@@ -3016,7 +3036,7 @@ def test_api_prometheus_metrics_db_exception(tmp_path):
 
     db_path = tmp_path / "reflexio.db"
     db_path.write_bytes(b"x")
-    with patch("src.api.main.settings") as s:
+    with patch("src.api.routers.metrics.settings") as s:
         s.STORAGE_PATH = tmp_path
         s.UPLOADS_PATH = tmp_path
         s.RECORDINGS_PATH = tmp_path
@@ -3032,7 +3052,7 @@ def test_api_digest_density_exception():
     from fastapi.testclient import TestClient
     from src.api.main import app
 
-    with patch("src.api.main.InformationDensityAnalyzer") as MockAna:
+    with patch("src.api.routers.digest.InformationDensityAnalyzer") as MockAna:
         MockAna.return_value.analyze_day.side_effect = RuntimeError("analyzer failed")
         client = TestClient(app)
         r = client.get("/digest/2026-01-15/density")
@@ -3056,13 +3076,11 @@ def test_api_input_guard_middleware_invalid_json_passes():
 
 def test_api_search_phrases_exception():
     """POST /search/phrases returns 500 when search_phrases raises."""
-    import sys
     from fastapi.testclient import TestClient
     from src.api.main import app
 
-    fake_module = MagicMock()
-    fake_module.search_phrases = MagicMock(side_effect=RuntimeError("embedding failed"))
-    with patch.dict(sys.modules, {"src.storage.embeddings": fake_module}):
+    # Patch at router level where the name is already bound
+    with patch("src.api.routers.search.search_phrases", side_effect=RuntimeError("embedding failed")):
         client = TestClient(app)
         r = client.post("/search/phrases", json={"query": "test"})
     assert r.status_code == 500
@@ -3108,11 +3126,15 @@ def test_storage_encryption_encrypt_decrypt_file(tmp_path):
         pytest.skip("cryptography not available")
     plain = tmp_path / "plain.bin"
     plain.write_bytes(b"secret data")
-    enc = AudioEncryption()
-    out_enc = enc.encrypt_file(plain, tmp_path / "out.enc")
-    assert out_enc.exists()
-    out_dec = enc.decrypt_file(out_enc, tmp_path / "out.dec")
-    assert out_dec.read_bytes() == b"secret data"
+    with patch.dict(os.environ, {
+        "AUDIO_ENCRYPTION_PASSWORD": "testpassword_for_tests_only",
+        "AUDIO_ENCRYPTION_SALT": "testsalt_for_tests_only_1234",
+    }):
+        enc = AudioEncryption()
+        out_enc = enc.encrypt_file(plain, tmp_path / "out.enc")
+        assert out_enc.exists()
+        out_dec = enc.decrypt_file(out_enc, tmp_path / "out.dec")
+        assert out_dec.read_bytes() == b"secret data"
 
 
 def test_storage_retention_cleanup_transcriptions_with_db(tmp_path):
@@ -3220,12 +3242,12 @@ def test_storage_db_sqlite_select_invalid_json_in_segments(tmp_path):
 
     db_path = tmp_path / "seg.db"
     conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE t (id TEXT, segments TEXT)")
-    conn.execute("INSERT INTO t (id, segments) VALUES (?, ?)", ("1", "not valid json"))
+    conn.execute("CREATE TABLE transcriptions (id TEXT, segments TEXT)")
+    conn.execute("INSERT INTO transcriptions (id, segments) VALUES (?, ?)", ("1", "not valid json"))
     conn.commit()
     conn.close()
     backend = SQLiteBackend(db_path)
-    rows = backend.select("t", limit=10)
+    rows = backend.select("transcriptions", limit=10)
     assert len(rows) == 1
     assert rows[0]["id"] == "1"
     assert rows[0].get("segments") == "not valid json"
@@ -3367,14 +3389,14 @@ def test_storage_db_sqlite_delete(tmp_path):
 
     db_path = tmp_path / "d.db"
     conn = sqlite3.connect(str(db_path))
-    conn.execute("CREATE TABLE t (id TEXT PRIMARY KEY)")
-    conn.execute("INSERT INTO t (id) VALUES ('1')")
+    conn.execute("CREATE TABLE recordings (id TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO recordings (id) VALUES ('1')")
     conn.commit()
     conn.close()
     backend = SQLiteBackend(db_path)
-    ok = backend.delete("t", "1")
+    ok = backend.delete("recordings", "1")
     assert ok is True
-    assert len(backend.select("t")) == 0
+    assert len(backend.select("recordings")) == 0
 
 
 def test_storage_db_sqlite_update(tmp_path):

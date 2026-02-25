@@ -49,13 +49,16 @@ def test_get_asr_provider_config_with_edge_mode_and_distil(tmp_path, monkeypatch
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
+    # Reset BOTH flags so get_asr_provider() doesn't early-return due to previous test state
     tmod._asr_provider = None
+    tmod._asr_provider_initialized = False
     try:
         with patch("src.asr.providers.get_asr_provider", return_value=MagicMock()):
             r = tmod.get_asr_provider()
         assert r is not None
     finally:
         tmod._asr_provider = None
+        tmod._asr_provider_initialized = False
 
 
 def test_get_asr_provider_creation_raises_returns_none():

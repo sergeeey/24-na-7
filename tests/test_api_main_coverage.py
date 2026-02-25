@@ -66,7 +66,7 @@ def test_digest_date_generation_exception():
     from fastapi.testclient import TestClient
     from src.api.main import app
 
-    with patch("src.api.main.DigestGenerator") as mock_cls:
+    with patch("src.api.routers.digest.DigestGenerator") as mock_cls:
         mock_cls.return_value.generate.side_effect = RuntimeError("generate failed")
         client = TestClient(app)
         r = client.get("/digest/2025-01-15?format=markdown")
@@ -79,7 +79,7 @@ def test_digest_today_generation_exception():
     from fastapi.testclient import TestClient
     from src.api.main import app
 
-    with patch("src.api.main.DigestGenerator") as mock_cls:
+    with patch("src.api.routers.digest.DigestGenerator") as mock_cls:
         mock_cls.return_value.generate.side_effect = RuntimeError("today failed")
         client = TestClient(app)
         r = client.get("/digest/today?format=markdown")
@@ -91,7 +91,7 @@ def test_density_analysis_exception():
     from fastapi.testclient import TestClient
     from src.api.main import app
 
-    with patch("src.api.main.InformationDensityAnalyzer") as mock_cls:
+    with patch("src.api.routers.digest.InformationDensityAnalyzer") as mock_cls:
         mock_cls.return_value.analyze_day.side_effect = RuntimeError("analyze failed")
         client = TestClient(app)
         r = client.get("/digest/2025-01-01/density")
@@ -109,8 +109,13 @@ def test_audio_upload_save_exception():
     child.write_bytes.side_effect = OSError("disk full")
     fake_path = MagicMock()
     fake_path.__truediv__.return_value = child
-    with patch.object(settings, "UPLOADS_PATH", fake_path):
-        client = TestClient(app)
-        r = client.post("/ingest/audio", files={"file": ("x.wav", b"fake", "audio/wav")})
+    # Disable safe_checker so request reaches the file-save logic (not blocked at ext check)
+    # Valid WAV magic bytes (RIFF....WAVE) so validate_upload_payload passes;
+    # then dest_path.write_bytes raises OSError → 500 "Failed to process audio"
+    valid_wav_header = b"RIFF\x00\x00\x00\x00WAVE\x00"
+    with patch("src.api.routers.ingest.get_safe_checker", return_value=None):
+        with patch.object(settings, "UPLOADS_PATH", fake_path):
+            client = TestClient(app)
+            r = client.post("/ingest/audio", files={"file": ("x.wav", valid_wav_header, "audio/wav")})
     assert r.status_code == 500
-    assert "Failed to save" in r.json().get("detail", "")
+    assert "Failed to process audio" in r.json().get("detail", "")
