@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -65,14 +66,16 @@ import com.reflexio.app.ui.components.RecordingFab
 import com.reflexio.app.ui.screens.AnalyticsScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
 import com.reflexio.app.ui.screens.RecordingListScreen
+import com.reflexio.app.ui.screens.VoiceEnrollmentScreen
 import com.reflexio.app.ui.screens.SplashScreen
 import com.reflexio.app.ui.theme.ReflexioTheme
 
-// ПОЧЕМУ enum а не sealed class: 3 фиксированных экрана, sealed class — overkill
+// ПОЧЕМУ enum а не sealed class: фиксированный набор экранов, sealed class — overkill
 private enum class Screen(val title: String, val icon: ImageVector) {
     HOME("Запись", Icons.Default.Home),
     DIGEST("Итог дня", Icons.Default.DateRange),
     ANALYTICS("Аналитика", Icons.Default.Insights),
+    VOICE("Голос", Icons.Default.RecordVoiceOver),
 }
 
 class MainActivity : ComponentActivity() {
@@ -285,6 +288,10 @@ fun RecordingApp(
                 2 -> AnalyticsScreen(
                     onBack = { selectedTab = 0 },
                     onOpenDailySummary = { selectedTab = 1 },
+                    modifier = Modifier.padding(padding),
+                )
+                3 -> VoiceEnrollmentScreen(
+                    baseHttpUrl = baseHttpUrl,
                     modifier = Modifier.padding(padding),
                 )
             }
