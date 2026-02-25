@@ -1,10 +1,14 @@
 # Dockerfile для Reflexio 24/7 API (FastAPI)
 FROM python:3.11-slim
 
-# Установка системных зависимостей
-RUN apt-get update && apt-get install -y \
+# ПОЧЕМУ эти пакеты: ffmpeg — конвертация аудио (Whisper), libsndfile1 — чтение WAV (librosa),
+# libportaudio2 — sounddevice, curl — healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ffmpeg \
+    libsndfile1 \
+    libportaudio2 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Создаём non-root пользователя
