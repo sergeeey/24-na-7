@@ -29,7 +29,20 @@ logger = get_logger("digest")
 
 class DigestGenerator:
     """Генерирует дайджест дня из транскриптов."""
-    
+
+    # ПОЧЕМУ фильтрация: Whisper транскрибирует фоновый шум как "you", "the", пустые строки.
+    # 10 000+ мусорных записей → LLM галлюцинирует на корейском/грузинском.
+    # Фильтруем до отправки в LLM: минимум 3 слова, не стоп-фразы, language_probability > 0.4.
+    NOISE_PHRASES = frozenset({
+        "you", "the", "a", "an", "i", "he", "she", "it", "we", "they",
+        "yes", "no", "oh", "ah", "um", "uh", "hmm", "huh",
+        "that's it", "thank you", "thanks", "okay", "ok",
+    })
+    MIN_WORDS = 3
+    MIN_LANG_PROBABILITY = 0.4
+    MAX_TRANSCRIPTIONS_FOR_LLM = 100  # Лимит записей для LLM (токен-бюджет)
+    MAX_TEXT_LENGTH_FOR_LLM = 4000  # ~1000 токенов, безопасно для любой модели
+
     def __init__(self, db_path: Optional[Path] = None):
         """Инициализация генератора."""
         if db_path is None:
@@ -37,6 +50,42 @@ class DigestGenerator:
         self.db_path = db_path
         self.digests_dir = Path("digests")
         self.digests_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _is_meaningful(text: str, lang_prob: float = 1.0) -> bool:
+        """Проверяет, содержит ли транскрипция осмысленный текст."""
+        text = text.strip()
+        if not text:
+            return False
+        words = text.split()
+        if len(words) < DigestGenerator.MIN_WORDS:
+            return False
+        if text.lower() in DigestGenerator.NOISE_PHRASES:
+            return False
+        if lang_prob < DigestGenerator.MIN_LANG_PROBABILITY:
+            return False
+        return True
+
+    @staticmethod
+    def _has_cyrillic(text: str) -> bool:
+        """Проверяет, содержит ли текст кириллицу (русский)."""
+        return any('\u0400' <= c <= '\u04ff' for c in text)
+
+    def _get_meaningful_text(self, transcriptions: List[Dict]) -> str:
+        """Собирает осмысленный текст из транскрипций с лимитом длины для LLM."""
+        meaningful = []
+        for t in transcriptions:
+            text = (t.get("text") or "").strip()
+            lang_prob = t.get("language_probability") or 1.0
+            if self._is_meaningful(text, lang_prob):
+                meaningful.append(text)
+        # ПОЧЕМУ лимит: 10 000 записей → сотни тысяч токенов → LLM не вытянет.
+        # Берём последние (самые свежие), обрезаем по символам.
+        meaningful = meaningful[-self.MAX_TRANSCRIPTIONS_FOR_LLM:]
+        joined = " ".join(meaningful)
+        if len(joined) > self.MAX_TEXT_LENGTH_FOR_LLM:
+            joined = joined[-self.MAX_TEXT_LENGTH_FOR_LLM:]
+        return joined
     
     def get_transcriptions(self, target_date: date) -> List[Dict]:
         """
@@ -103,8 +152,8 @@ class DigestGenerator:
         """
         facts = []
         
-        # Объединяем весь текст для анализа
-        full_text = " ".join([t.get("text", "").strip() for t in transcriptions if t.get("text", "").strip()])
+        # Объединяем осмысленный текст (фильтрация шума Whisper)
+        full_text = self._get_meaningful_text(transcriptions)
         
         if not full_text:
             return facts
@@ -136,23 +185,24 @@ class DigestGenerator:
             except Exception as e:
                 logger.warning("llm_fact_extraction_failed", error=str(e), fallback="basic")
         
-        # Базовое извлечение (fallback или дополнение)
+        # Базовое извлечение (fallback или дополнение) — только осмысленные записи
         for trans in transcriptions:
-            text = trans.get("text", "").strip()
-            if not text:
+            text = (trans.get("text") or "").strip()
+            lang_prob = trans.get("language_probability") or 1.0
+            if not self._is_meaningful(text, lang_prob):
                 continue
-            
+
             # Простое извлечение: разбиваем на предложения
             sentences = [s.strip() for s in text.split(". ") if s.strip()]
-            
+
             for i, sentence in enumerate(sentences):
-                if len(sentence) > 20:  # Минимальная длина факта
+                if len(sentence) > 20 and self._has_cyrillic(sentence):
                     facts.append({
                         "text": sentence,
                         "type": "fact",
                         "timestamp": trans.get("created_at"),
                         "source_id": trans.get("id"),
-                        "confidence": trans.get("language_probability", 0.0),
+                        "confidence": lang_prob,
                     })
         
         return facts
@@ -243,17 +293,21 @@ class DigestGenerator:
 
         if analyses:
             for a in analyses:
-                summary_parts.append((a.get("summary") or "").strip())
+                part = (a.get("summary") or "").strip()
+                # ПОЧЕМУ фильтр кириллицы: старые analyses содержат галлюцинации
+                # на корейском/грузинском из-за мусорных транскрипций.
+                if part and self._has_cyrillic(part):
+                    summary_parts.append(part)
                 for t in (a.get("topics") or []):
-                    if t and t not in key_themes:
+                    if t and t not in key_themes and self._has_cyrillic(t):
                         key_themes.append(t)
                 for e in (a.get("emotions") or []):
                     if e and e not in emotions:
                         emotions.append(e)
                 for act in (a.get("actions") or []):
-                    if isinstance(act, str) and act:
+                    if isinstance(act, str) and act and self._has_cyrillic(act):
                         actions.append({"text": act, "done": False})
-                    elif isinstance(act, dict) and act.get("text"):
+                    elif isinstance(act, dict) and act.get("text") and self._has_cyrillic(act["text"]):
                         actions.append({"text": act["text"], "done": act.get("done", False)})
             summary_text = " ".join(p for p in summary_parts if p).strip() or "Нет итога за день."
         else:
@@ -267,9 +321,44 @@ class DigestGenerator:
                         e = e.strip()
                         if e and e not in emotions:
                             emotions.append(e)
-            key_themes = list(dict.fromkeys(f.get("text", "").split(":")[-1].strip() for f in facts if f.get("type") == "fact" and len((f.get("text") or "")) > 15))[:15]
-            full_text = " ".join(t.get("text", "").strip() for t in transcriptions if t.get("text", "").strip())
-            summary_text = full_text[:500] + "…" if len(full_text) > 500 else full_text or "Нет записей за день."
+            # ПОЧЕМУ _has_cyrillic: без этого key_themes содержит галлюцинации Whisper на всех языках
+            key_themes = list(dict.fromkeys(
+                f.get("text", "").split(":")[-1].strip()
+                for f in facts
+                if f.get("type") == "fact" and len((f.get("text") or "")) > 15
+                and self._has_cyrillic(f.get("text", ""))
+            ))[:15]
+            full_text = self._get_meaningful_text(transcriptions)
+            # ПОЧЕМУ CoD здесь: без LLM-суммаризации summary_text = сырой текст
+            # транскрипций ("Я поеду куплю..."), а не осмысленный итог дня.
+            if full_text and SUMMARIZER_AVAILABLE:
+                try:
+                    dense = generate_dense_summary(full_text, iterations=2)
+                    validated = validate_summary(
+                        dense["summary"],
+                        original_text=full_text,
+                        confidence_threshold=0.7,
+                        auto_refine=False,
+                    )
+                    summary_text = validated["summary"] or full_text[:500]
+                    # Извлекаем эмоции и задачи из LLM
+                    try:
+                        tasks = extract_tasks(full_text)
+                        for task in tasks:
+                            t = task.get("task", "")
+                            if t and self._has_cyrillic(t):
+                                actions.append({"text": t, "done": False})
+                        emo = analyze_emotions(full_text)
+                        for e in (emo.get("emotions") or []):
+                            if e and e not in emotions:
+                                emotions.append(e)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning("cod_digest_failed", error=str(e))
+                    summary_text = full_text[:500] + "…" if len(full_text) > 500 else full_text or "Нет записей за день."
+            else:
+                summary_text = full_text[:500] + "…" if len(full_text) > 500 else full_text or "Нет записей за день."
 
         return {
             "date": target_date.isoformat(),
@@ -372,7 +461,7 @@ class DigestGenerator:
         # Улучшенное саммари (если доступно)
         if SUMMARIZER_AVAILABLE and transcriptions:
             try:
-                full_text = " ".join([t.get("text", "").strip() for t in transcriptions if t.get("text", "").strip()])
+                full_text = self._get_meaningful_text(transcriptions)
                 if full_text:
                     # Генерируем плотное саммари через Chain of Density
                     dense_summary = generate_dense_summary(full_text, iterations=3)
