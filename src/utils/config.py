@@ -91,6 +91,14 @@ class Settings(BaseSettings):
     # CORS — comma-separated list of allowed origins
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8080"
 
+    # Speaker Verification
+    # ПОЧЕМУ disabled по умолчанию: backward compatible — не ломает существующих пользователей.
+    # Включить после создания голосового профиля (POST /voice/enroll).
+    SPEAKER_VERIFICATION_ENABLED: bool = False
+    SPEAKER_AMPLITUDE_THRESHOLD: float = 0.01  # RMS gate: ~-40dBFS
+    SPEAKER_SIMILARITY_THRESHOLD: float = 0.75  # Cosine similarity cutoff
+    SPEAKER_MIN_ENROLLMENT_SAMPLES: int = 3      # Минимум образцов для профиля
+
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_STORAGE: str = "memory"

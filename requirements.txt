@@ -55,6 +55,11 @@ cryptography>=41.0.0
 # Embeddings
 sentence-transformers>=2.2.0
 
+# Speaker Verification (voice diarization)
+# ПОЧЕМУ resemblyzer: GE2E LSTM 18MB, pip install без HuggingFace gating,
+# ~50ms на сегмент CPU. Достаточно для binary "is_user?" verification.
+resemblyzer>=0.1.1
+
 # Stripe (опционально)
 stripe>=7.0.0
 

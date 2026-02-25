@@ -37,11 +37,13 @@ class DigestGenerator:
         "you", "the", "a", "an", "i", "he", "she", "it", "we", "they",
         "yes", "no", "oh", "ah", "um", "uh", "hmm", "huh",
         "that's it", "thank you", "thanks", "okay", "ok",
+        "угу", "ага", "ну", "мм", "хм", "это", "ладно", "понял", "окей",
     })
     MIN_WORDS = 3
     MIN_LANG_PROBABILITY = 0.4
-    MAX_TRANSCRIPTIONS_FOR_LLM = 100  # Лимит записей для LLM (токен-бюджет)
-    MAX_TEXT_LENGTH_FOR_LLM = 4000  # ~1000 токенов, безопасно для любой модели
+    MAX_TRANSCRIPTIONS_FOR_LLM = 100  # Лимит записей для LLM-задач (extract_facts)
+    MAX_TEXT_LENGTH_FOR_LLM = 16000  # Tiered CoD вход для дневного дайджеста
+    MAX_HOURLY_CHUNK_CHARS = 6000
 
     def __init__(self, db_path: Optional[Path] = None):
         """Инициализация генератора."""
@@ -71,22 +73,100 @@ class DigestGenerator:
         """Проверяет, содержит ли текст кириллицу (русский)."""
         return any('\u0400' <= c <= '\u04ff' for c in text)
 
-    def _get_meaningful_text(self, transcriptions: List[Dict]) -> str:
-        """Собирает осмысленный текст из транскрипций с лимитом длины для LLM."""
-        meaningful = []
+    @staticmethod
+    def _hour_bucket(iso_ts: str | None) -> str:
+        """Нормализует timestamp в бакет YYYY-MM-DD HH:00."""
+        if not iso_ts:
+            return "unknown"
+        try:
+            dt = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+            return dt.strftime("%Y-%m-%d %H:00")
+        except Exception:
+            return "unknown"
+
+    def _iter_meaningful_texts(self, transcriptions: List[Dict]) -> List[str]:
+        """Фильтрует осмысленные тексты без обрезки по длине."""
+        meaningful: List[str] = []
         for t in transcriptions:
             text = (t.get("text") or "").strip()
             lang_prob = t.get("language_probability") or 1.0
             if self._is_meaningful(text, lang_prob):
                 meaningful.append(text)
-        # ПОЧЕМУ лимит: 10 000 записей → сотни тысяч токенов → LLM не вытянет.
-        # Берём последние (самые свежие), обрезаем по символам.
-        meaningful = meaningful[-self.MAX_TRANSCRIPTIONS_FOR_LLM:]
+        return meaningful
+
+    def _join_meaningful_text(
+        self,
+        transcriptions: List[Dict],
+        max_transcriptions: Optional[int],
+        max_chars: Optional[int],
+    ) -> str:
+        """Собирает осмысленный текст с опциональными лимитами."""
+        meaningful = self._iter_meaningful_texts(transcriptions)
+        if max_transcriptions:
+            meaningful = meaningful[-max_transcriptions:]
         joined = " ".join(meaningful)
-        if len(joined) > self.MAX_TEXT_LENGTH_FOR_LLM:
-            joined = joined[-self.MAX_TEXT_LENGTH_FOR_LLM:]
+        if max_chars and len(joined) > max_chars:
+            joined = joined[-max_chars:]
         return joined
-    
+
+    def _get_meaningful_text(self, transcriptions: List[Dict]) -> str:
+        """Собирает осмысленный текст для LLM-задач с ограничением бюджета."""
+        return self._join_meaningful_text(
+            transcriptions,
+            max_transcriptions=self.MAX_TRANSCRIPTIONS_FOR_LLM,
+            max_chars=self.MAX_TEXT_LENGTH_FOR_LLM,
+        )
+
+    def _build_tiered_digest_input(self, transcriptions: List[Dict]) -> str:
+        """Строит вход для дневного CoD: либо полный текст, либо summary-of-summaries по часам."""
+        full_text = self._join_meaningful_text(
+            transcriptions,
+            max_transcriptions=None,
+            max_chars=None,
+        )
+        if not full_text:
+            return ""
+
+        if len(full_text) <= self.MAX_TEXT_LENGTH_FOR_LLM:
+            return full_text
+
+        # Fallback без summarizer: ограничиваемся хвостом дня.
+        if not SUMMARIZER_AVAILABLE:
+            return full_text[-self.MAX_TEXT_LENGTH_FOR_LLM:]
+
+        grouped: Dict[str, List[Dict]] = {}
+        for t in transcriptions:
+            bucket = self._hour_bucket(t.get("created_at"))
+            grouped.setdefault(bucket, []).append(t)
+
+        hourly_summaries: List[str] = []
+        for hour in sorted(grouped.keys()):
+            chunk_text = self._join_meaningful_text(
+                grouped[hour],
+                max_transcriptions=None,
+                max_chars=self.MAX_HOURLY_CHUNK_CHARS,
+            )
+            if not chunk_text:
+                continue
+            try:
+                dense = generate_dense_summary(chunk_text, iterations=1)
+                summary = (dense.get("summary") or "").strip()
+            except Exception as e:
+                logger.warning("hourly_cod_failed", hour=hour, error=str(e))
+                summary = ""
+
+            if not summary:
+                summary = chunk_text[:1000]
+            hourly_summaries.append(f"[{hour}] {summary}")
+
+        if not hourly_summaries:
+            return full_text[-self.MAX_TEXT_LENGTH_FOR_LLM:]
+
+        tiered = "\n".join(hourly_summaries)
+        if len(tiered) > self.MAX_TEXT_LENGTH_FOR_LLM:
+            tiered = tiered[-self.MAX_TEXT_LENGTH_FOR_LLM:]
+        return tiered
+
     def get_transcriptions(self, target_date: date) -> List[Dict]:
         """
         Получает все транскрипции за день.
@@ -108,10 +188,20 @@ class DigestGenerator:
         
         try:
             cursor = conn.cursor()
-            
+
+            # ПОЧЕМУ is_user фильтр: после включения Speaker Verification дайджест
+            # должен содержать только речь пользователя, не фоновый TV/радио.
+            # DEFAULT 1 в схеме гарантирует backward-compatibility (старые записи = user).
+            # Когда SPEAKER_VERIFICATION_ENABLED=False — всё is_user=1, фильтр без эффекта.
+            speaker_filter = (
+                "AND (t.is_user = 1 OR t.is_user IS NULL)"
+                if settings.SPEAKER_VERIFICATION_ENABLED
+                else ""
+            )
+
             # Получаем транскрипции за день
-            cursor.execute("""
-                SELECT 
+            cursor.execute(f"""
+                SELECT
                     t.id,
                     t.ingest_id,
                     t.text,
@@ -124,7 +214,7 @@ class DigestGenerator:
                     i.file_size
                 FROM transcriptions t
                 LEFT JOIN ingest_queue i ON t.ingest_id = i.id
-                WHERE DATE(t.created_at) = ?
+                WHERE DATE(t.created_at) = ? {speaker_filter}
                 ORDER BY t.created_at ASC
             """, (target_date.isoformat(),))
             
@@ -328,7 +418,7 @@ class DigestGenerator:
                 if f.get("type") == "fact" and len((f.get("text") or "")) > 15
                 and self._has_cyrillic(f.get("text", ""))
             ))[:15]
-            full_text = self._get_meaningful_text(transcriptions)
+            full_text = self._build_tiered_digest_input(transcriptions)
             # ПОЧЕМУ CoD здесь: без LLM-суммаризации summary_text = сырой текст
             # транскрипций ("Я поеду куплю..."), а не осмысленный итог дня.
             if full_text and SUMMARIZER_AVAILABLE:
@@ -360,6 +450,23 @@ class DigestGenerator:
             else:
                 summary_text = full_text[:500] + "…" if len(full_text) > 500 else full_text or "Нет записей за день."
 
+        balance_payload = {}
+        insights = []
+        try:
+            from src.balance.storage import get_balance_wheel
+            balance_payload = get_balance_wheel(self.db_path, target_date, target_date)
+        except Exception:
+            balance_payload = {}
+
+        try:
+            from src.persongraph.service import save_day_psychology_snapshot, get_day_insights
+            day_text = self._build_tiered_digest_input(transcriptions)
+            if day_text:
+                save_day_psychology_snapshot(self.db_path, target_date.isoformat(), day_text)
+            insights = get_day_insights(self.db_path, target_date.isoformat())
+        except Exception:
+            insights = []
+
         return {
             "date": target_date.isoformat(),
             "summary_text": summary_text,
@@ -369,6 +476,8 @@ class DigestGenerator:
             "total_recordings": total_recordings,
             "total_duration": total_duration_str,
             "repetitions": [],
+            "balance": balance_payload,
+            "insights": insights,
         }
 
     def _get_density_level(self, score: float) -> str:
@@ -457,11 +566,45 @@ class DigestGenerator:
         lines.append("")
         lines.append(density_desc.get(level, "Не определён"))
         lines.append("")
-        
+
+        daily_payload = {}
+        try:
+            daily_payload = self.get_daily_digest_json(target_date)
+        except Exception:
+            daily_payload = {}
+
+        balance = daily_payload.get("balance", {}) if isinstance(daily_payload, dict) else {}
+        insights = daily_payload.get("insights", []) if isinstance(daily_payload, dict) else []
+
+        if balance.get("domains"):
+            lines.append("## ⚖️ Колесо Баланса")
+            lines.append("")
+            for domain in balance.get("domains", []):
+                lines.append(
+                    f"- **{domain.get('domain', 'domain')}**: {domain.get('score', 0)}/10, "
+                    f"упоминаний {domain.get('mentions', 0)}, sentiment {domain.get('sentiment', 0)}"
+                )
+            if balance.get("alert"):
+                lines.append("")
+                lines.append(f"⚠️ {balance.get('alert')}")
+            if balance.get("recommendation"):
+                lines.append(f"💡 {balance.get('recommendation')}")
+            lines.append("")
+
+        if insights:
+            lines.append("## 🧭 Инсайты")
+            lines.append("")
+            for insight in insights:
+                role = insight.get("role", "analyst")
+                text = insight.get("insight", "")
+                if text:
+                    lines.append(f"- **{role}:** {text}")
+            lines.append("")
+
         # Улучшенное саммари (если доступно)
         if SUMMARIZER_AVAILABLE and transcriptions:
             try:
-                full_text = self._get_meaningful_text(transcriptions)
+                full_text = self._build_tiered_digest_input(transcriptions)
                 if full_text:
                     # Генерируем плотное саммари через Chain of Density
                     dense_summary = generate_dense_summary(full_text, iterations=3)
@@ -722,4 +865,19 @@ class DigestGenerator:
             logger.warning("memory_sync_failed", error=str(e), continue_without_sync=True)
         
         return output_file
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
