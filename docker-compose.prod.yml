@@ -1,0 +1,77 @@
+# Reflexio 24/7 — Production Docker Compose (VPS)
+#
+# ПОЧЕМУ отдельный файл от docker-compose.yml:
+#   Dev: ./src монтируется для горячей перезагрузки
+#   Prod: код запечён в образ → нет mount ./src (безопаснее, быстрее)
+#
+# Запуск:
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Обновление (после git pull):
+#   docker compose -f docker-compose.prod.yml build --no-cache
+#   docker compose -f docker-compose.prod.yml up -d
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: reflexio-api
+    # ПОЧЕМУ только localhost: Caddy стоит снаружи и проксирует HTTPS→HTTP.
+    # Открывать 8000 наружу не нужно — только Caddy должен видеть API.
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - DB_BACKEND=sqlite
+      - LOG_LEVEL=INFO
+      - SAFE_MODE=audit
+      - RATE_LIMIT_STORAGE=redis
+      - REDIS_URL=redis://redis:6379/0
+      - FILTER_MUSIC=true
+      - ASR_MODEL_SIZE=medium
+      - ASR_LANGUAGE=ru
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      # ПОЧЕМУ только storage и config (НЕ ./src):
+      #   Production → код уже внутри образа (COPY в Dockerfile).
+      #   Монтируем только данные (SQLite, аудио) и конфиги (изменяются без rebuild).
+      - ./src/storage:/app/src/storage
+      - ./config:/app/config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - reflexio-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: reflexio-redis
+    command: redis-server --save 60 1 --loglevel warning --appendonly yes
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - reflexio-net
+
+networks:
+  reflexio-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local

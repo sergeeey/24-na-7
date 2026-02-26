@@ -1,0 +1,34 @@
+# Caddyfile — Reflexio 24/7 Production Reverse Proxy
+#
+# ПОЧЕМУ Caddy вместо Nginx:
+#   Caddy автоматически получает и обновляет SSL сертификаты (Let's Encrypt).
+#   Nginx требует certbot + cron + ручная настройка. Caddy — 3 строки конфига.
+#
+# ПОЧЕМУ reverse_proxy а не прямой доступ:
+#   Caddy терминирует HTTPS/WSS снаружи → пробрасывает HTTP внутрь контейнера.
+#   Android подключается по wss:// (зашифровано), внутри идёт ws:// (localhost).
+#
+# Установка на Ubuntu:
+#   apt install -y caddy
+#   cp Caddyfile /etc/caddy/Caddyfile
+#   systemctl reload caddy
+#
+# ЗАМЕНИ: reflexio.duckdns.org → твой реальный домен (DuckDNS или купленный)
+
+reflexio.duckdns.org {
+    # Автоматический SSL от Let's Encrypt — Caddy сам получает и обновляет
+    # WebSocket проксирование работает автоматически (Upgrade header передаётся)
+    reverse_proxy localhost:8000 {
+        # ПОЧЕМУ health_uri: Caddy проверяет что API жив перед отправкой запроса
+        health_uri /health
+        health_interval 30s
+    }
+
+    # Логи запросов (опционально, для отладки)
+    log {
+        output file /var/log/caddy/reflexio.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}
