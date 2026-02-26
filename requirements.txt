@@ -69,7 +69,18 @@ stripe>=7.0.0
 # pyAudioAnalysis (опционально, для эмоционального анализа)
 # pyAudioAnalysis>=0.3.0  # Раскомментировать если используется
 
+# Task Scheduling — APScheduler для ежедневного compliance cleanup
+# ПОЧЕМУ: FastAPI lifespan запускает BackgroundScheduler в 03:00 для TTL-очистки
+# биометрических данных (KZ GDPR). Без этого cleanup только ручной.
+apscheduler>=3.10.0
 
+# Social Graph (опционально — требует принять лицензию на huggingface.co/pyannote)
+# ПОЧЕМУ pyannote: DER ~5% на CPU, де-факто стандарт speaker diarization 2024.
+# Нужен HF_TOKEN в .env. Установка: pip install pyannote.audio
+# pyannote.audio>=3.1.0  # Раскомментировать после принятия лицензии
 
-
+# Embedded Graph DB для multi-hop запросов (Sprint 3)
+# ПОЧЕМУ kuzu: embedded как SQLite, Cypher, 15-188x быстрее NetworkX на graph traversal.
+# Нет отдельного сервера. pip install kuzu
+# kuzu>=0.7.0  # Раскомментировать для активации Social Graph multi-hop
 

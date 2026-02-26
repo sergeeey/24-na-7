@@ -12,7 +12,7 @@ def test_health():
     data = resp.json()
     assert data["status"] == "ok"
     assert "timestamp" in data
-    assert data["version"] == "0.1.0"
+    assert data["version"] == "0.2.0"
 
 
 def test_root():
