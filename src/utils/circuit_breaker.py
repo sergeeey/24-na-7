@@ -99,7 +99,7 @@ class CircuitBreaker:
             self._on_success()
             return result
             
-        except self.expected_exception as e:
+        except self.expected_exception:
             # Ошибка отслеживаемого типа
             self._on_failure()
             raise

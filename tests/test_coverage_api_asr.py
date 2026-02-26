@@ -41,7 +41,7 @@ def test_api_metrics_with_db(tmp_path):
     conn.execute("INSERT INTO facts (id) VALUES ('1')")
     conn.commit()
     conn.close()
-    with patch("src.api.main.settings") as s:
+    with patch("src.api.routers.metrics.settings") as s:
         s.STORAGE_PATH = tmp_path
         s.UPLOADS_PATH = tmp_path
         s.RECORDINGS_PATH = tmp_path

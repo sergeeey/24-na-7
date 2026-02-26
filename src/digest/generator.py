@@ -216,7 +216,7 @@ class DigestGenerator:
                 LEFT JOIN ingest_queue i ON t.ingest_id = i.id
                 WHERE DATE(t.created_at) = ? {speaker_filter}
                 ORDER BY t.created_at ASC
-            """, (target_date.isoformat(),))
+            """, (target_date.isoformat(),))  # nosec B608 — speaker_filter is a hardcoded literal string, date is parameterized
             
             rows = cursor.fetchall()
             transcriptions = [dict(row) for row in rows]

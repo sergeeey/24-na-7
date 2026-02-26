@@ -3,6 +3,7 @@ from datetime import date, datetime
 from fastapi import APIRouter, HTTPException, Query, Path as PathParam
 from fastapi.responses import Response
 
+from src.utils.config import settings  # noqa: F401
 from src.utils.logging import get_logger
 from src.digest.generator import DigestGenerator
 from src.digest.analyzer import InformationDensityAnalyzer
@@ -147,3 +148,5 @@ async def get_density_analysis(
     except Exception as e:
         logger.error("density_analysis_failed", date=target_date, error=str(e))
         raise HTTPException(status_code=500, detail=f"Failed to analyze density: {str(e)}")
+
+

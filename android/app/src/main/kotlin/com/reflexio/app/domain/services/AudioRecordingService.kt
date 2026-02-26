@@ -16,16 +16,19 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.reflexio.app.BuildConfig
 import com.reflexio.app.R
+import com.reflexio.app.data.db.PendingUploadDao
 import com.reflexio.app.data.db.RecordingDao
 import com.reflexio.app.data.db.RecordingDatabase
+import com.reflexio.app.data.model.PendingUpload
 import com.reflexio.app.data.model.Recording
 import com.reflexio.app.data.model.RecordingStatus
-import com.reflexio.app.BuildConfig
+import com.reflexio.app.debug.DebugLog
 import com.reflexio.app.domain.network.EnrichmentApiClient
 import com.reflexio.app.domain.network.IngestWebSocketClient
-import com.reflexio.app.debug.DebugLog
 import com.reflexio.app.domain.vad.VadSegmentWriter
+import com.reflexio.app.domain.workers.UploadWorker
 import com.reflexio.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +51,7 @@ class AudioRecordingService : Service() {
     private var isRecording = false
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private var recordingDao: RecordingDao? = null
+    private var pendingUploadDao: PendingUploadDao? = null
 
     companion object {
         private const val SAMPLE_RATE = 16000
@@ -57,29 +61,23 @@ class AudioRecordingService : Service() {
         private const val CHANNEL_ID = "reflexio_recording"
         private const val NOTIFICATION_ID = 1001
 
-        /** Эмулятор: 10.0.2.2 → хост. Реальное устройство: BuildConfig.SERVER_WS_URL_DEVICE (IP ПК). */
+        /** Эмулятор: 10.0.2.2 -> хост. Реальное устройство: BuildConfig.SERVER_WS_URL_DEVICE (IP ПК). */
         private fun isEmulator(): Boolean =
             Build.FINGERPRINT.contains("generic") || Build.MODEL.contains("sdk") || Build.MODEL.contains("Android SDK")
     }
 
     override fun onCreate() {
-        // #region agent log
         DebugLog.log("C", "AudioRecordingService.kt:onCreate:entry", "Service onCreate", mapOf("thread" to Thread.currentThread().name))
-        // #endregion
         super.onCreate()
         createNotificationChannel()
         try {
-            // #region agent log
             DebugLog.log("C", "AudioRecordingService.kt:onCreate:before_getInstance", "calling getInstance", emptyMap())
-            // #endregion
-            recordingDao = RecordingDatabase.getInstance(this).recordingDao()
-            // #region agent log
+            val db = RecordingDatabase.getInstance(this)
+            recordingDao = db.recordingDao()
+            pendingUploadDao = db.pendingUploadDao()
             DebugLog.log("C", "AudioRecordingService.kt:onCreate:dao_ok", "recordingDao assigned", emptyMap())
-            // #endregion
         } catch (e: Exception) {
-            // #region agent log
             DebugLog.log("C", "AudioRecordingService.kt:onCreate:catch", "Database init failed", mapOf("message" to (e.message ?: ""), "type" to (e.javaClass.simpleName)))
-            // #endregion
             Log.e(TAG, "Database init failed", e)
             stopSelf()
             return
@@ -87,12 +85,9 @@ class AudioRecordingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // #region agent log
         DebugLog.log("C", "AudioRecordingService.kt:onStartCommand", "onStartCommand", mapOf("daoNull" to (recordingDao == null)))
-        // #endregion
         Log.d(TAG, "Service started")
         if (recordingDao == null) return START_STICKY
-        // Android 14+: FGS type "microphone" требует RECORD_AUDIO до вызова startForeground (логи: SecurityException)
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             Log.w(TAG, "RECORD_AUDIO not granted, stopping service")
             stopSelf()
@@ -100,6 +95,7 @@ class AudioRecordingService : Service() {
         }
         startForeground(NOTIFICATION_ID, createForegroundNotification())
         startRecording()
+        UploadWorker.enqueue(this)
         return START_STICKY
     }
 
@@ -124,7 +120,7 @@ class AudioRecordingService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText("Recording audio in background…")
+            .setContentText("Reflexio: запись и очередь синхронизации активны")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -138,7 +134,7 @@ class AudioRecordingService : Service() {
             try {
                 val minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
                 if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE || minBufferSize <= 0) {
-                    Log.e(TAG, "AudioRecord.getMinBufferSize failed or unsupported (microphone absent/busy): $minBufferSize")
+                    Log.e(TAG, "AudioRecord.getMinBufferSize failed or unsupported: $minBufferSize")
                     stopSelf()
                     return@launch
                 }
@@ -153,7 +149,7 @@ class AudioRecordingService : Service() {
                 )
 
                 if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                    Log.e(TAG, "AudioRecord failed to initialize (microphone absent or busy)")
+                    Log.e(TAG, "AudioRecord failed to initialize")
                     audioRecord?.release()
                     audioRecord = null
                     stopSelf()
@@ -181,38 +177,24 @@ class AudioRecordingService : Service() {
         var pendingOffset = 0
 
         VadSegmentWriter().use { vadWriter ->
-            var frameCount = 0
-            var speechFrameCount = 0
-            Log.d(TAG, "Starting VAD recording loop")
             while (isRecording) {
                 val toRead = frameSize - pendingOffset
                 val read = record.read(frameBuffer, pendingOffset, toRead)
-                if (read < 0) {
-                    Log.e(TAG, "AudioRecord.read returned error: $read")
-                    break
-                }
+                if (read < 0) break
                 if (read > 0) pendingOffset += read
                 if (pendingOffset >= frameSize) {
-                    frameCount++
                     vadWriter.processFrame(frameBuffer)?.let { segments ->
-                        speechFrameCount++
-                        Log.d(TAG, "VAD detected speech segment #$speechFrameCount (frame $frameCount)")
                         for (segmentSamples in segments) {
                             segmentIndex++
                             val file = File(audioDir, "segment_${baseTimestamp}_${segmentIndex.toString().padStart(3, '0')}.wav")
                             writeSegmentToWav(segmentSamples, file)
-                            Log.d(TAG, "Writing segment $segmentIndex to ${file.name} (${segmentSamples.size} samples)")
                             insertSegmentRecording(file, segmentSamples.size)
                         }
-                    }
-                    if (frameCount % 100 == 0) {
-                        Log.d(TAG, "Recording: $frameCount frames processed, $speechFrameCount speech frames")
                     }
                     pendingOffset = 0
                 }
                 delay(5)
             }
-            Log.d(TAG, "Recording loop ended. Total frames: $frameCount, speech frames: $speechFrameCount")
             vadWriter.flush()?.let { segmentSamples ->
                 segmentIndex++
                 val file = File(audioDir, "segment_${baseTimestamp}_${segmentIndex.toString().padStart(3, '0')}.wav")
@@ -242,13 +224,14 @@ class AudioRecordingService : Service() {
             status = RecordingStatus.PENDING_UPLOAD
         )
         try {
-            val id = withContext(Dispatchers.IO) { 
-                recordingDao!!.insert(recording) 
+            val id = withContext(Dispatchers.IO) { recordingDao!!.insert(recording) }
+            withContext(Dispatchers.IO) {
+                pendingUploadDao?.upsert(PendingUpload(recordingId = id, filePath = file.absolutePath))
             }
-            Log.d(TAG, "Segment saved to DB: id=$id, file=${file.name}, duration=${durationSeconds}s")
+            UploadWorker.enqueue(this)
             scope.launch { sendAudioToServer(file, id) }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to insert recording to DB", e)
+            Log.e(TAG, "Failed to insert recording", e)
         }
     }
 
@@ -309,31 +292,41 @@ class AudioRecordingService : Service() {
             val rec = dao.getById(recordingId) ?: return@withContext
             if (result.isSuccess) {
                 val ingestResult = result.getOrNull()
-                dao.update(rec.copy(
-                    transcription = ingestResult?.transcription,
-                    serverFileId = ingestResult?.fileId,
-                    status = RecordingStatus.PROCESSED
-                ))
-                Log.d(TAG, "Uploaded and transcribed: $recordingId, fileId=${ingestResult?.fileId}")
-                // P3: Delete local WAV — сервер уже сохранил текст в БД,
-                // аудиофайл на телефоне больше не нужен (экономия storage)
-                try {
-                    if (file.exists()) {
-                        file.delete()
-                        Log.d(TAG, "Local audio deleted: ${file.name}")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to delete local audio: ${file.name}", e)
-                }
-                // ПОЧЕМУ delay 3с: enrichment на сервере запускается async после
-                // транскрипции и занимает ~1-5с (LLM вызов). 3с — баланс между
-                // скоростью показа и вероятностью что enrichment уже готов.
+                dao.update(
+                    rec.copy(
+                        transcription = ingestResult?.transcription,
+                        serverFileId = ingestResult?.fileId,
+                        status = RecordingStatus.PROCESSED
+                    )
+                )
+                pendingUploadDao?.deleteByRecordingId(recordingId)
+                runCatching { if (file.exists()) file.delete() }
+
                 ingestResult?.fileId?.let { fileId ->
                     scope.launch { fetchEnrichment(recordingId, fileId) }
                 }
             } else {
-                dao.update(rec.copy(status = RecordingStatus.FAILED))
-                Log.e(TAG, "Upload failed for $recordingId", result.exceptionOrNull())
+                val pending = pendingUploadDao?.findByRecordingId(recordingId)
+                val next = if (pending == null) {
+                    PendingUpload(
+                        recordingId = recordingId,
+                        filePath = file.absolutePath,
+                        retryCount = 1,
+                        lastError = result.exceptionOrNull()?.message,
+                        status = "pending"
+                    )
+                } else {
+                    pending.copy(
+                        retryCount = pending.retryCount + 1,
+                        lastError = result.exceptionOrNull()?.message,
+                        status = if (pending.retryCount + 1 >= 3) "failed" else "pending"
+                    )
+                }
+                pendingUploadDao?.upsert(next)
+                if (next.status == "failed") {
+                    dao.update(rec.copy(status = RecordingStatus.FAILED))
+                }
+                UploadWorker.enqueue(this@AudioRecordingService)
             }
         }
     }
@@ -343,29 +336,28 @@ class AudioRecordingService : Service() {
         val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
         val httpUrl = baseUrl.replace("ws://", "http://").replace("wss://", "https://")
         val apiClient = EnrichmentApiClient(baseUrl = httpUrl, apiKey = BuildConfig.SERVER_API_KEY)
-        // ПОЧЕМУ 2 попытки: первая через 3с, вторая через 8с.
-        // Если LLM медленный — вторая попытка подхватит результат.
-        repeat(2) { attempt ->
+
+        repeat(3) { attempt ->
             val enrichment = apiClient.fetchEnrichment(fileId)
             if (enrichment != null) {
                 withContext(Dispatchers.IO) {
                     val dao = recordingDao ?: return@withContext
                     val rec = dao.getById(recordingId) ?: return@withContext
-                    dao.update(rec.copy(
-                        summary = enrichment.summary,
-                        emotions = enrichment.emotions.joinToString(","),
-                        topics = enrichment.topics.joinToString(","),
-                        tasks = enrichment.tasks,
-                        urgency = enrichment.urgency,
-                        sentiment = enrichment.sentiment,
-                    ))
+                    dao.update(
+                        rec.copy(
+                            summary = enrichment.summary,
+                            emotions = enrichment.emotions.joinToString(","),
+                            topics = enrichment.topics.joinToString(","),
+                            tasks = enrichment.tasks,
+                            urgency = enrichment.urgency,
+                            sentiment = enrichment.sentiment,
+                        )
+                    )
                 }
-                Log.d(TAG, "Enrichment saved for $recordingId (attempt ${attempt + 1})")
                 return
             }
-            if (attempt == 0) delay(5000L)
+            if (attempt < 2) delay(5000L)
         }
-        Log.d(TAG, "Enrichment not available for $recordingId after 2 attempts")
     }
 
     override fun onDestroy() {

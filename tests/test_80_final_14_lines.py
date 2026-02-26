@@ -3,9 +3,8 @@
 WebSocket /ws/ingest, migrate main(), API metrics.
 """
 import sys
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from fastapi.testclient import TestClient
-import pytest
 
 
 def test_websocket_ingest_connect():

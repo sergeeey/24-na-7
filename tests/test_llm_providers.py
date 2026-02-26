@@ -44,9 +44,11 @@ class TestOpenAIClient:
     @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"})
     def test_openai_initialization(self):
         """Инициализация OpenAI клиента."""
+        from src.utils.config import settings
         with patch("openai.OpenAI") as mock_openai_class:
             mock_openai_class.return_value = Mock()
-            client = OpenAIClient(model="gpt-4", temperature=0.3)
+            with patch.object(settings, "OPENAI_API_KEY", "sk-test-key"):
+                client = OpenAIClient(model="gpt-4", temperature=0.3)
             assert client.provider == LLMProvider.OPENAI
             assert client.api_key == "sk-test-key"
 
@@ -68,10 +70,12 @@ class TestOpenAIClient:
     
     def test_openai_no_api_key(self):
         """OpenAI без API ключа."""
-        with patch.dict(os.environ, {}, clear=True):
-            with patch("src.llm.providers.logger"):
-                client = OpenAIClient(model="gpt-4", temperature=0.3)
-                assert client.api_key is None
+        from src.utils.config import settings
+        with patch.object(settings, "OPENAI_API_KEY", None):
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("src.llm.providers.logger"):
+                    client = OpenAIClient(model="gpt-4", temperature=0.3)
+                    assert client.api_key is None
     
     @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"})
     def test_openai_call_with_system_prompt(self):

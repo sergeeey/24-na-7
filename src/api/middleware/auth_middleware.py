@@ -3,7 +3,6 @@
 ПОЧЕМУ middleware а не Depends(): middleware покрывает ВСЕ endpoints разом,
 включая будущие. Depends() легко забыть добавить на новый роутер.
 """
-import os
 import secrets
 
 from fastapi import Request, WebSocket

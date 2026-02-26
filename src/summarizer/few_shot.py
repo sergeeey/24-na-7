@@ -8,7 +8,7 @@ import json
 from src.utils.logging import get_logger
 from src.llm.providers import get_llm_client
 from src.summarizer.prompts import get_few_shot_actions_prompt
-from src.llm.schemas.digest import DigestAnalysis, DigestOutput
+from src.llm.schemas.digest import DigestAnalysis
 
 logger = get_logger("summarizer.few_shot")
 

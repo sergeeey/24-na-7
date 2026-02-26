@@ -1,31 +1,25 @@
-"""
-StructuredEvent — единица цифровой памяти.
-Каждый аудио-сегмент → один StructuredEvent.
+"""StructuredEvent — единица цифровой памяти.
+Каждый аудио-сегмент -> один StructuredEvent.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
 class TaskExtracted(BaseModel):
     """Задача, извлечённая из речи."""
+
     text: str
     priority: str = "medium"  # low | medium | high
     deadline: Optional[str] = None
 
 
 class StructuredEvent(BaseModel):
-    """
-    Единица цифровой памяти.
+    """Единица цифровой памяти."""
 
-    ПОЧЕМУ именно эти поля:
-    - text + summary: поиск + дайджест
-    - emotions/topics/tasks: автоматический анализ из LLM
-    - speakers: "О чём я говорил с Маратом?" (будущее)
-    - enrichment_*: аудит стоимости API-вызовов
-    """
     id: str
     transcription_id: str
 
@@ -41,13 +35,14 @@ class StructuredEvent(BaseModel):
     summary: str = ""
     emotions: list[str] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)
+    domains: list[str] = Field(default_factory=list)
     tasks: list[TaskExtracted] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)
     speakers: list[str] = Field(default_factory=list)
     urgency: str = "medium"  # low | medium | high
     sentiment: str = "neutral"  # positive | neutral | negative
 
-    # Где (null для MVP — будущее: Android GPS)
+    # Где (null для MVP)
     location: Optional[str] = None
 
     # Качество

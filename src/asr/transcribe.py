@@ -259,3 +259,5 @@ def transcribe_audio(
 def transcribe_file(audio_path: str | Path, **kwargs) -> Dict:
     """Удобная обёртка для транскрипции файла."""
     return transcribe_audio(Path(audio_path), **kwargs)
+
+

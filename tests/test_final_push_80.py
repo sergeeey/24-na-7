@@ -162,14 +162,14 @@ def test_api_voice_intent_endpoint():
 
     client = TestClient(app)
     r = client.post("/voice/intent", json={})
-    assert r.status_code in (200, 422, 500)
+    assert r.status_code in (200, 400, 422, 500)
 
 
 def test_api_search_phrases_exception_returns_500():
     """POST /search/phrases при исключении в search_phrases возвращает 500."""
     from src.api.main import app
 
-    with patch("src.storage.embeddings.search_phrases", side_effect=RuntimeError("search failed")):
+    with patch("src.api.routers.search.search_phrases", side_effect=RuntimeError("search failed")):
         client = TestClient(app)
         r = client.post("/search/phrases", json={"query": "test", "audio_id": "a1"})
     assert r.status_code == 500

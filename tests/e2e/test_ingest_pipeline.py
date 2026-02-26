@@ -1,8 +1,7 @@
 """E2E тесты для полного цикла ingest → transcribe → digest."""
-import pytest
 from pathlib import Path
 from datetime import date
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 def test_full_ingest_pipeline(client, test_db):
@@ -99,7 +98,7 @@ def test_digest_generation_e2e(client, test_db):
     with patch("src.api.routers.digest.settings") as mock_settings:
         mock_settings.STORAGE_PATH = Path(test_db).parent
         
-        response = client.get(f"/digest/today?format=json")
+        response = client.get("/digest/today?format=json")
         assert response.status_code == 200
         data = response.json()
         assert isinstance(data, dict)

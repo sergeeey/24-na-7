@@ -104,7 +104,7 @@ def test_api_digest_today_markdown(tmp_path):
     mock_file.write_text("# Digest\n\nEmpty.", encoding="utf-8")
     mock_gen = MagicMock()
     mock_gen.generate.return_value = mock_file
-    with patch("src.api.main.DigestGenerator") as M:
+    with patch("src.api.routers.digest.DigestGenerator") as M:
         M.return_value = mock_gen
         client = TestClient(app)
         r = client.get("/digest/today?format=markdown")
@@ -141,7 +141,7 @@ def test_api_digest_date_ok(tmp_path):
     mock_file.write_text("# Digest 2026-01-15", encoding="utf-8")
     mock_gen = MagicMock()
     mock_gen.generate.return_value = mock_file
-    with patch("src.api.main.DigestGenerator") as M:
+    with patch("src.api.routers.digest.DigestGenerator") as M:
         M.return_value = mock_gen
         client = TestClient(app)
         r = client.get("/digest/2026-01-15?format=markdown")
@@ -195,7 +195,7 @@ def test_api_density_analysis(tmp_path):
     from src.api.main import app
     mock_analyzer = MagicMock()
     mock_analyzer.analyze_day.return_value = {"density_score": 0.5, "transcriptions_count": 0}
-    with patch("src.api.main.InformationDensityAnalyzer") as M:
+    with patch("src.api.routers.digest.InformationDensityAnalyzer") as M:
         M.return_value = mock_analyzer
         client = TestClient(app)
         r = client.get("/digest/2026-01-15/density")

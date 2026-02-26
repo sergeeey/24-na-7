@@ -1,7 +1,6 @@
 """Схемы для валидации OSINT ответов."""
-from typing import List, Optional, Dict, Any, Literal
+from typing import List, Optional, Literal
 from pydantic import BaseModel, Field, validator
-from datetime import datetime
 
 
 class Claim(BaseModel):

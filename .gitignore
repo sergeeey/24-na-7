@@ -110,3 +110,19 @@ android/local.properties
 # Windows reserved filename (Gradle creates this on Windows)
 android/nul
 
+
+# Runtime database (not source control)
+src/storage/reflexio.db
+
+# Windows null device artifact
+nul
+
+# Test audio files (binary, not source)
+*.wav
+test_realvoice.py
+
+# Test reports
+tests/.report.json
+
+# Temp editor files
+src/utils/input_guard_tmp.py

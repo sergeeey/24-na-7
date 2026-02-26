@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.storage.embeddings import generate_embeddings
 from src.utils.logging import get_logger
 
 logger = get_logger("memory.semantic")
@@ -32,16 +34,18 @@ def ensure_semantic_memory_tables(db_path: Path) -> None:
                 summary TEXT,
                 topics_json TEXT,
                 entities_json TEXT,
+                embedding_json TEXT,
                 created_at TEXT NOT NULL
             )
             """
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_memory_nodes_created ON memory_nodes(created_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_memory_nodes_ingest ON memory_nodes(source_ingest_id)"
-        )
+        # Backward compatible upgrade.
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(memory_nodes)").fetchall()]
+        if "embedding_json" not in cols:
+            conn.execute("ALTER TABLE memory_nodes ADD COLUMN embedding_json TEXT")
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_nodes_created ON memory_nodes(created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_nodes_ingest ON memory_nodes(source_ingest_id)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS retrieval_traces (
@@ -79,6 +83,20 @@ def _extract_entities(text: str, limit: int = 20) -> list[str]:
     return uniq
 
 
+def _cosine(a: list[float], b: list[float]) -> float:
+    if not a or not b:
+        return 0.0
+    n = min(len(a), len(b))
+    if n == 0:
+        return 0.0
+    dot = sum(a[i] * b[i] for i in range(n))
+    na = math.sqrt(sum(a[i] * a[i] for i in range(n)))
+    nb = math.sqrt(sum(b[i] * b[i] for i in range(n)))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
 def consolidate_to_memory_node(
     db_path: Path,
     ingest_id: str,
@@ -94,14 +112,21 @@ def consolidate_to_memory_node(
     topics_json = json.dumps(topics or [], ensure_ascii=False)
     entities_json = json.dumps(_extract_entities(text), ensure_ascii=False)
 
+    embedding = []
+    try:
+        embedding = generate_embeddings((summary or text)[:3000])
+    except Exception:
+        embedding = []
+    embedding_json = json.dumps(embedding) if embedding else None
+
     conn = sqlite3.connect(str(db_path))
     try:
         conn.execute(
             """
             INSERT INTO memory_nodes (
                 id, source_ingest_id, source_transcription_id,
-                content, summary, topics_json, entities_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                content, summary, topics_json, entities_json, embedding_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 node_id,
@@ -111,6 +136,7 @@ def consolidate_to_memory_node(
                 summary or "",
                 topics_json,
                 entities_json,
+                embedding_json,
                 created_at,
             ),
         )
@@ -121,27 +147,33 @@ def consolidate_to_memory_node(
 
 
 def retrieve_memory(db_path: Path, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    """Simple retrieval from semantic memory with transparent evidence."""
+    """Hybrid retrieval from semantic memory with transparent evidence."""
     ensure_semantic_memory_tables(db_path)
     if not query.strip():
         return []
 
     q = f"%{query.strip().lower()}%"
+    query_emb = []
+    try:
+        query_emb = generate_embeddings(query[:3000])
+    except Exception:
+        query_emb = []
+
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
             """
-            SELECT id, source_ingest_id, source_transcription_id, content, summary, topics_json, entities_json, created_at
+            SELECT id, source_ingest_id, source_transcription_id, content, summary, topics_json, entities_json, embedding_json, created_at
             FROM memory_nodes
             WHERE lower(content) LIKE ? OR lower(summary) LIKE ? OR lower(entities_json) LIKE ?
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (q, q, q, top_k),
+            (q, q, q, max(top_k * 5, 20)),
         ).fetchall()
 
-        results: list[dict[str, Any]] = []
+        scored: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
             try:
                 topics = json.loads(row["topics_json"] or "[]")
@@ -151,21 +183,31 @@ def retrieve_memory(db_path: Path, query: str, top_k: int = 5) -> list[dict[str,
                 entities = json.loads(row["entities_json"] or "[]")
             except Exception:
                 entities = []
+            try:
+                emb = json.loads(row["embedding_json"] or "[]")
+            except Exception:
+                emb = []
 
-            results.append(
-                {
-                    "node_id": row["id"],
-                    "source_ingest_id": row["source_ingest_id"],
-                    "source_transcription_id": row["source_transcription_id"],
-                    "summary": row["summary"],
-                    "content": row["content"],
-                    "topics": topics,
-                    "entities": entities,
-                    "created_at": row["created_at"],
-                }
-            )
+            lexical_hit = 1.0 if query.lower() in (row["content"] or "").lower() else 0.0
+            semantic = _cosine(query_emb, emb) if query_emb and emb else 0.0
+            score = semantic * 0.75 + lexical_hit * 0.25
 
-        return results
+            item = {
+                "node_id": row["id"],
+                "source_ingest_id": row["source_ingest_id"],
+                "source_transcription_id": row["source_transcription_id"],
+                "summary": row["summary"],
+                "content": row["content"],
+                "topics": topics,
+                "entities": entities,
+                "created_at": row["created_at"],
+                "score": round(score, 4),
+                "match_type": "hybrid",
+            }
+            scored.append((score, item))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in scored[:top_k]]
     finally:
         conn.close()
 

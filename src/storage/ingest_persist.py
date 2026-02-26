@@ -24,8 +24,8 @@ logger = get_logger("storage.ingest_persist")
 def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
     """Создаёт таблицы ingest_queue и transcriptions в SQLite при отсутствии."""
     cursor = conn.cursor()
-    # SQLite-совместимые типы (без JSONB, без TIMESTAMP WITH TIME ZONE)
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS ingest_queue (
             id TEXT PRIMARY KEY,
             filename TEXT NOT NULL,
@@ -36,8 +36,10 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
             processed_at TEXT,
             error_message TEXT
         )
-    """)
-    cursor.execute("""
+        """
+    )
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS transcriptions (
             id TEXT PRIMARY KEY,
             ingest_id TEXT NOT NULL,
@@ -48,14 +50,16 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
             segments TEXT,
             created_at TEXT
         )
-    """)
+        """
+    )
     conn.commit()
 
 
 def _ensure_recording_analyses_table(conn: sqlite3.Connection) -> None:
     """Создаёт таблицу recording_analyses в SQLite при отсутствии."""
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS recording_analyses (
             id TEXT PRIMARY KEY,
             transcription_id TEXT NOT NULL,
@@ -66,7 +70,8 @@ def _ensure_recording_analyses_table(conn: sqlite3.Connection) -> None:
             urgency TEXT,
             created_at TEXT
         )
-    """)
+        """
+    )
     conn.commit()
 
 
@@ -89,6 +94,7 @@ def save_recording_analysis(
         analysis_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         import json
+
         cursor.execute(
             """
             INSERT INTO recording_analyses (id, transcription_id, summary, emotions, actions, topics, urgency, created_at)
@@ -117,14 +123,10 @@ def save_recording_analysis(
 
 
 def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
-    """Создаёт таблицу structured_events в SQLite при отсутствии.
-
-    ПОЧЕМУ отдельная таблица, а не колонки в transcriptions:
-    enrichment запаздывает (LLM ~1-2с) и может отсутствовать,
-    а транскрипция должна сохраняться мгновенно.
-    """
+    """Создаёт таблицу structured_events в SQLite при отсутствии."""
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS structured_events (
             id TEXT PRIMARY KEY,
             transcription_id TEXT NOT NULL,
@@ -135,6 +137,7 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
             summary TEXT DEFAULT '',
             emotions TEXT DEFAULT '[]',
             topics TEXT DEFAULT '[]',
+            domains TEXT DEFAULT '[]',
             tasks TEXT DEFAULT '[]',
             decisions TEXT DEFAULT '[]',
             speakers TEXT DEFAULT '[]',
@@ -148,7 +151,8 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
             enrichment_latency_ms REAL DEFAULT 0.0,
             created_at TEXT
         )
-    """)
+        """
+    )
     conn.commit()
 
 
@@ -160,23 +164,21 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
     try:
         _ensure_structured_events_table(conn)
         import json
-        cursor = conn.cursor()
 
-        # ПОЧЕМУ model_dump: tasks — list[TaskExtracted], нужна JSON-сериализация
-        tasks_json = json.dumps([
-            t.model_dump() if hasattr(t, "model_dump") else {"text": str(t)}
-            for t in (event.tasks or [])
-        ])
+        cursor = conn.cursor()
+        tasks_json = json.dumps(
+            [t.model_dump() if hasattr(t, "model_dump") else {"text": str(t)} for t in (event.tasks or [])]
+        )
 
         cursor.execute(
             """
             INSERT OR REPLACE INTO structured_events (
                 id, transcription_id, timestamp, duration_sec, text, language,
-                summary, emotions, topics, tasks, decisions, speakers,
+                summary, emotions, topics, domains, tasks, decisions, speakers,
                 urgency, sentiment, location,
                 asr_confidence, enrichment_confidence, enrichment_model,
                 enrichment_tokens, enrichment_latency_ms, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 event.id,
@@ -188,6 +190,7 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                 event.summary,
                 json.dumps(event.emotions) if event.emotions else "[]",
                 json.dumps(event.topics) if event.topics else "[]",
+                json.dumps(getattr(event, "domains", [])) if getattr(event, "domains", None) else "[]",
                 tasks_json,
                 json.dumps(event.decisions) if event.decisions else "[]",
                 json.dumps(event.speakers) if event.speakers else "[]",
@@ -240,11 +243,7 @@ def transcription_exists(db_path: Path, transcription_id: str) -> bool:
 
 
 def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[str, Any]]:
-    """Возвращает enrichment данные из structured_events по ingest file_id.
-
-    ПОЧЕМУ JOIN через transcriptions: Android знает только file_id (ingest_queue.id),
-    а enrichment привязан к transcription_id. JOIN связывает оба через промежуточную таблицу.
-    """
+    """Возвращает enrichment данные из structured_events по ingest file_id."""
     if not db_path.exists():
         return None
     conn = sqlite3.connect(str(db_path))
@@ -253,7 +252,7 @@ def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[st
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT se.summary, se.emotions, se.topics, se.tasks,
+            SELECT se.summary, se.emotions, se.topics, se.domains, se.tasks,
                    se.urgency, se.sentiment, se.decisions, se.speakers,
                    se.enrichment_confidence, se.created_at
             FROM structured_events se
@@ -268,10 +267,12 @@ def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[st
         if not row:
             return None
         import json
+
         return {
             "summary": row["summary"] or "",
             "emotions": json.loads(row["emotions"]) if row["emotions"] else [],
             "topics": json.loads(row["topics"]) if row["topics"] else [],
+            "domains": json.loads(row["domains"]) if row["domains"] else [],
             "tasks": json.loads(row["tasks"]) if row["tasks"] else [],
             "urgency": row["urgency"] or "medium",
             "sentiment": row["sentiment"] or "neutral",
@@ -293,52 +294,68 @@ def persist_ws_transcription(
     file_size: int,
     result: dict[str, Any],
 ) -> Optional[str]:
-    """
-    Сохраняет результат транскрипции WebSocket в ingest_queue и transcriptions.
-    Идемпотентность: если ingest_id уже есть в ingest_queue, вставка пропускается.
-
-    Returns:
-        transcription_id (uuid) при успехе, None при ошибке или дубликате.
-    """
+    """Сохраняет результат транскрипции WebSocket в ingest_queue и transcriptions."""
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     try:
         _ensure_sqlite_ingest_tables(conn)
         cursor = conn.cursor()
-        # Проверка дубликата по file_id (ingest_queue.id)
+
         cursor.execute("SELECT 1 FROM ingest_queue WHERE id = ?", (file_id,))
-        if cursor.fetchone():
-            logger.debug("ingest_already_persisted", file_id=file_id)
-            cursor.execute("SELECT id FROM transcriptions WHERE ingest_id = ? LIMIT 1", (file_id,))
-            row = cursor.fetchone()
-            return row[0] if row else None
-        now = datetime.now(timezone.utc).isoformat()
-        cursor.execute(
-            """
-            INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at, processed_at)
-            VALUES (?, ?, ?, ?, 'processed', ?, ?)
-            """,
-            (file_id, filename, file_path, file_size, now, now),
-        )
+        if not cursor.fetchone():
+            now = datetime.now(timezone.utc).isoformat()
+            cursor.execute(
+                """
+                INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at, processed_at)
+                VALUES (?, ?, ?, ?, 'processed', ?, ?)
+                """,
+                (file_id, filename, file_path, file_size, now, now),
+            )
+        else:
+            cursor.execute(
+                "UPDATE ingest_queue SET status='processed', processed_at=? WHERE id=?",
+                (datetime.now(timezone.utc).isoformat(), file_id),
+            )
+
+        cursor.execute("SELECT id FROM transcriptions WHERE ingest_id = ? LIMIT 1", (file_id,))
+        existing = cursor.fetchone()
+        if existing:
+            conn.commit()
+            logger.debug("transcription_already_persisted", file_id=file_id, transcription_id=existing[0])
+            return existing[0]
+
         transcription_id = str(uuid.uuid4())
         text = result.get("text") or ""
         language = result.get("language")
+        language_probability = result.get("language_probability")
         duration = result.get("duration")
         segments = result.get("segments")
+
         segments_str = None
         if segments is not None:
             import json
+
             try:
                 segments_str = json.dumps(segments) if not isinstance(segments, str) else segments
             except (TypeError, ValueError):
-                pass
+                segments_str = None
+
         cursor.execute(
             """
-            INSERT INTO transcriptions (id, ingest_id, text, language, duration, segments, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO transcriptions (id, ingest_id, text, language, language_probability, duration, segments, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (transcription_id, file_id, text, language, duration, segments_str, now),
+            (
+                transcription_id,
+                file_id,
+                text,
+                language,
+                language_probability,
+                duration,
+                segments_str,
+                datetime.now(timezone.utc).isoformat(),
+            ),
         )
         conn.commit()
         logger.info("ws_transcription_persisted", file_id=file_id, transcription_id=transcription_id)

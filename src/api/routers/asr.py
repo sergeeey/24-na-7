@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 
 from src.asr.transcribe import transcribe_audio
+from src.core.audio_processing import is_allowed_language, is_meaningful_transcription
 from src.memory.semantic_memory import consolidate_to_memory_node, ensure_semantic_memory_tables
 from src.security.privacy_pipeline import apply_privacy_mode
 from src.storage.ingest_persist import ensure_ingest_tables
@@ -30,6 +31,15 @@ async def transcribe_endpoint(file_id: str = Query(..., description="ID файл
         logger.info("transcription_started", file_id=file_id, path=str(audio_path))
 
         result = transcribe_audio(audio_path, language=settings.ASR_LANGUAGE)
+
+        detected_lang = (result.get("language") or "").lower()
+        lang_prob = result.get("language_probability", 1.0) or 1.0
+        text = (result.get("text") or "").strip()
+        if not is_allowed_language(detected_lang):
+            unsupported = detected_lang or "unknown"
+            raise HTTPException(status_code=422, detail=f"Unsupported language: {unsupported}")
+        if not is_meaningful_transcription(text, lang_prob):
+            raise HTTPException(status_code=422, detail="Transcription considered noise")
 
         privacy = apply_privacy_mode(result.get("text", ""), mode=settings.PRIVACY_MODE)
         if not privacy.allowed:
