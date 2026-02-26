@@ -27,6 +27,18 @@ android {
         versionName = "1.0"
     }
 
+    // ПОЧЕМУ signingConfigs: Google Play требует подписанный AAB.
+    // Ключи читаются из local.properties (gitignored) — никогда не коммитятся в репо.
+    // Создать keystore: Build > Generate Signed Bundle/APK > Create new key
+    signingConfigs {
+        create("release") {
+            storeFile = localProps.getProperty("KEYSTORE_PATH")?.let { file(it) }
+            storePassword = localProps.getProperty("KEYSTORE_PASSWORD", "")
+            keyAlias = localProps.getProperty("KEY_ALIAS", "reflexio")
+            keyPassword = localProps.getProperty("KEY_PASSWORD", "")
+        }
+    }
+
     buildTypes {
         debug {
             // Эмулятор: 10.0.2.2 → хост-машина
@@ -36,19 +48,25 @@ android {
             //   WiFi             → ws://192.168.1.XXX:8000 (в local.properties)
             val deviceUrl = localProps.getProperty("SERVER_WS_URL_DEVICE", "ws://localhost:8000")
             buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"$deviceUrl\"")
-            // API key for server auth. Empty = auth disabled (dev mode).
-            buildConfigField("String", "SERVER_API_KEY", "\"\"")
+            // API key for server auth — читаем из local.properties (gitignored, безопасно).
+            // Добавь в android/local.properties: SERVER_API_KEY=UKpOEPN9Tyv...
+            val apiKey = localProps.getProperty("SERVER_API_KEY", "")
+            buildConfigField("String", "SERVER_API_KEY", "\"$apiKey\"")
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true  // Уменьшает размер APK ~30%, обфускация кода
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Заменить на реальный URL перед production
-            buildConfigField("String", "SERVER_WS_URL", "\"wss://api.reflexio.example.com\"")
-            buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"wss://api.reflexio.example.com\"")
-            buildConfigField("String", "SERVER_API_KEY", "\"\"")  // Set via CI/CD or local.properties
+            signingConfig = signingConfigs.getByName("release")
+            // Продакшн URL — заменить на реальный домен с SSL-сертификатом
+            val prodUrl = localProps.getProperty("PROD_SERVER_URL", "wss://api.reflexio.example.com")
+            buildConfigField("String", "SERVER_WS_URL", "\"$prodUrl\"")
+            buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"$prodUrl\"")
+            val prodApiKey = localProps.getProperty("PROD_API_KEY", "")
+            buildConfigField("String", "SERVER_API_KEY", "\"$prodApiKey\"")
         }
     }
     compileOptions {

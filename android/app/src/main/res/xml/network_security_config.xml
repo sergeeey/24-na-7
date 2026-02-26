@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network Security Config.
+
+  ПОЧЕМУ отдельный файл вместо android:usesCleartextTraffic="true" в манифесте:
+  usesCleartextTraffic=true разрешает HTTP/WS ВЕЗДЕ включая release-билд.
+  Google Play с 2024 года блокирует такие приложения.
+
+  Этот файл разрешает cleartext ТОЛЬКО для отладочного трафика (debug builds
+  перекрывают его своим network_security_config.xml из debug/ папки).
+  Release-билд использует этот файл — только HTTPS/WSS.
+-->
+<network-security-config>
+    <!-- Production: только зашифрованный трафик -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!-- Доверяем системным CA (Let's Encrypt, Cloudflare и т.д.) -->
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
