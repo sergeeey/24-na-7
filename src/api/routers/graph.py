@@ -185,6 +185,19 @@ async def approve_person_profile(name: str):
             status_code=404,
             detail=f"No pending samples for '{name}' or approval failed",
         )
+
+    # ПОЧЕМУ sync здесь: approve — момент когда персона "официальна" в графе.
+    # Kuzu — read projection, нет смысла синхронизировать при каждом sample.
+    try:
+        from src.persongraph.kuzu_engine import get_kuzu_engine
+        engine = get_kuzu_engine()
+        if engine.is_available():
+            engine.sync_from_sqlite(_db())
+            logger.info("kuzu_synced_after_approve", person=name)
+    except Exception as e:
+        # Kuzu — опциональный, не блокируем основной flow
+        logger.warning("kuzu_sync_after_approve_failed", person=name, error=str(e))
+
     logger.info("profile_approved_via_api", person=name)
     return {"status": "approved", "person": name}
 

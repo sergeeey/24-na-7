@@ -77,13 +77,12 @@ stripe>=7.0.0
 # биометрических данных (KZ GDPR). Без этого cleanup только ручной.
 apscheduler>=3.10.0
 
-# Social Graph (опционально — требует принять лицензию на huggingface.co/pyannote)
+# Social Graph — speaker diarization
 # ПОЧЕМУ pyannote: DER ~5% на CPU, де-факто стандарт speaker diarization 2024.
-# Нужен HF_TOKEN в .env. Установка: pip install pyannote.audio
-# pyannote.audio>=3.1.0  # Раскомментировать после принятия лицензии
+# Требует: HF_TOKEN в .env + принять лицензию на huggingface.co/pyannote
+pyannote.audio>=3.1.0
 
 # Embedded Graph DB для multi-hop запросов (Sprint 3)
 # ПОЧЕМУ kuzu: embedded как SQLite, Cypher, 15-188x быстрее NetworkX на graph traversal.
-# Нет отдельного сервера. pip install kuzu
-# kuzu>=0.7.0  # Раскомментировать для активации Social Graph multi-hop
+kuzu>=0.7.0
 
