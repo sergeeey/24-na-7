@@ -1,9 +1,9 @@
 """Анализатор информационной плотности и паттернов."""
 from datetime import date
 from typing import Dict
-import sqlite3
 from pathlib import Path
 
+from src.storage.db import get_reflexio_db
 from src.utils.config import settings
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics, interpret_semantic_density, interpret_wpm_rate
@@ -35,101 +35,94 @@ class InformationDensityAnalyzer:
             logger.warning("database_not_found", db_path=str(self.db_path))
             return self._empty_analysis(target_date)
         
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        
-        try:
-            cursor = conn.cursor()
-            
-            # Получаем статистику транскрипций
-            cursor.execute("""
-                SELECT 
-                    COUNT(*) as count,
-                    SUM(duration) as total_duration,
-                    SUM(LENGTH(text)) as total_chars,
-                    AVG(LENGTH(text)) as avg_chars
+        db = get_reflexio_db(self.db_path)
+
+        # Получаем статистику транскрипций
+        row = db.fetchone("""
+            SELECT
+                COUNT(*) as count,
+                SUM(duration) as total_duration,
+                SUM(LENGTH(text)) as total_chars,
+                AVG(LENGTH(text)) as avg_chars
+            FROM transcriptions
+            WHERE DATE(created_at) = ?
+        """, (target_date.isoformat(),))
+
+        stats = dict(row) if row else {}
+
+        # Распределение по часам
+        hourly_rows = db.fetchall("""
+            SELECT
+                strftime('%H', created_at) as hour,
+                COUNT(*) as count
+            FROM transcriptions
+            WHERE DATE(created_at) = ?
+            GROUP BY hour
+            ORDER BY hour
+        """, (target_date.isoformat(),))
+
+        hourly_distribution = {r[0]: r[1] for r in hourly_rows}
+
+        # Вычисляем плотность
+        total_duration = stats.get("total_duration") or 0
+        total_chars = stats.get("total_chars") or 0
+        count = stats.get("count") or 0
+
+        density_metrics = self._calculate_density_metrics(
+            count, total_duration, total_chars, hourly_distribution
+        )
+
+        # Получаем полные транскрипции для расширенных метрик
+        transcriptions = []
+        if count > 0:
+            trans_rows = db.fetchall("""
+                SELECT
+                    id,
+                    text,
+                    duration,
+                    created_at
                 FROM transcriptions
                 WHERE DATE(created_at) = ?
+                ORDER BY created_at ASC
             """, (target_date.isoformat(),))
-            
-            stats = dict(cursor.fetchone() or {})
-            
-            # Распределение по часам
-            cursor.execute("""
-                SELECT 
-                    strftime('%H', created_at) as hour,
-                    COUNT(*) as count
-                FROM transcriptions
-                WHERE DATE(created_at) = ?
-                GROUP BY hour
-                ORDER BY hour
-            """, (target_date.isoformat(),))
-            
-            hourly_distribution = {row[0]: row[1] for row in cursor.fetchall()}
-            
-            # Вычисляем плотность
-            total_duration = stats.get("total_duration") or 0
-            total_chars = stats.get("total_chars") or 0
-            count = stats.get("count") or 0
-            
-            density_metrics = self._calculate_density_metrics(
-                count, total_duration, total_chars, hourly_distribution
-            )
-            
-            # Получаем полные транскрипции для расширенных метрик
-            transcriptions = []
-            if count > 0:
-                cursor.execute("""
-                    SELECT 
-                        id,
-                        text,
-                        duration,
-                        created_at
-                    FROM transcriptions
-                    WHERE DATE(created_at) = ?
-                    ORDER BY created_at ASC
-                """, (target_date.isoformat(),))
-                transcriptions = [dict(row) for row in cursor.fetchall()]
-            
-            # Вычисляем расширенные метрики (если включено)
-            extended_metrics = calculate_extended_metrics(
-                transcriptions=transcriptions,
-                hourly_distribution=hourly_distribution,
-                enabled=getattr(settings, "EXTENDED_METRICS", False),
-            )
-            
-            # Объединяем базовые и расширенные метрики
-            result = {
-                "date": target_date.isoformat(),
-                "statistics": {
-                    "transcriptions_count": count,
-                    "total_duration_seconds": total_duration,
-                    "total_duration_minutes": round(total_duration / 60, 2) if total_duration else 0,
-                    "total_characters": total_chars,
-                    "average_characters_per_transcription": round(stats.get("avg_chars") or 0, 1),
-                },
-                "hourly_distribution": hourly_distribution,
-                "density_analysis": density_metrics,
+            transcriptions = [dict(r) for r in trans_rows]
+
+        # Вычисляем расширенные метрики (если включено)
+        extended_metrics = calculate_extended_metrics(
+            transcriptions=transcriptions,
+            hourly_distribution=hourly_distribution,
+            enabled=getattr(settings, "EXTENDED_METRICS", False),
+        )
+
+        # Объединяем базовые и расширенные метрики
+        result = {
+            "date": target_date.isoformat(),
+            "statistics": {
+                "transcriptions_count": count,
+                "total_duration_seconds": total_duration,
+                "total_duration_minutes": round(total_duration / 60, 2) if total_duration else 0,
+                "total_characters": total_chars,
+                "average_characters_per_transcription": round(stats.get("avg_chars") or 0, 1),
+            },
+            "hourly_distribution": hourly_distribution,
+            "density_analysis": density_metrics,
+        }
+
+        # Добавляем расширенные метрики если они есть
+        if extended_metrics:
+            result["extended_metrics"] = extended_metrics
+            result["extended_metrics"]["interpretation"] = {
+                "semantic_density": interpret_semantic_density(extended_metrics.get("semantic_density", 0)),
+                "wpm_rate": interpret_wpm_rate(extended_metrics.get("wpm_rate", 0)),
             }
-            
-            # Добавляем расширенные метрики если они есть
-            if extended_metrics:
-                result["extended_metrics"] = extended_metrics
-                result["extended_metrics"]["interpretation"] = {
-                    "semantic_density": interpret_semantic_density(extended_metrics.get("semantic_density", 0)),
-                    "wpm_rate": interpret_wpm_rate(extended_metrics.get("wpm_rate", 0)),
-                }
-            
-            logger.info(
-                "density_analysis_complete",
-                date=target_date.isoformat(),
-                density_score=density_metrics.get("score", 0),
-            )
-            
-            return result
-            
-        finally:
-            conn.close()
+
+        logger.info(
+            "density_analysis_complete",
+            date=target_date.isoformat(),
+            density_score=density_metrics.get("score", 0),
+        )
+
+        return result
     
     def _calculate_density_metrics(self, count: int, total_duration: float,
                                    total_chars: int, hourly_distribution: Dict[str, int]) -> Dict:

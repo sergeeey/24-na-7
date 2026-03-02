@@ -1,10 +1,10 @@
 """Генератор дайджестов из транскриптов с улучшенным summarization."""
-import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional, Dict, List
 import json
 
+from src.storage.db import get_reflexio_db
 from src.utils.config import settings
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics
@@ -183,54 +183,46 @@ class DigestGenerator:
         if not self.db_path.exists():
             logger.warning("database_not_found", db_path=str(self.db_path))
             return []
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
-        
-        try:
-            cursor = conn.cursor()
+        db = get_reflexio_db(self.db_path)
 
-            # ПОЧЕМУ is_user фильтр: после включения Speaker Verification дайджест
-            # должен содержать только речь пользователя, не фоновый TV/радио.
-            # DEFAULT 1 в схеме гарантирует backward-compatibility (старые записи = user).
-            # Когда SPEAKER_VERIFICATION_ENABLED=False — всё is_user=1, фильтр без эффекта.
-            speaker_filter = (
-                "AND (t.is_user = 1 OR t.is_user IS NULL)"
-                if settings.SPEAKER_VERIFICATION_ENABLED
-                else ""
-            )
+        # ПОЧЕМУ is_user фильтр: после включения Speaker Verification дайджест
+        # должен содержать только речь пользователя, не фоновый TV/радио.
+        # DEFAULT 1 в схеме гарантирует backward-compatibility (старые записи = user).
+        # Когда SPEAKER_VERIFICATION_ENABLED=False — всё is_user=1, фильтр без эффекта.
+        speaker_filter = (
+            "AND (t.is_user = 1 OR t.is_user IS NULL)"
+            if settings.SPEAKER_VERIFICATION_ENABLED
+            else ""
+        )
 
-            # Получаем транскрипции за день
-            cursor.execute(f"""
-                SELECT
-                    t.id,
-                    t.ingest_id,
-                    t.text,
-                    t.language,
-                    t.language_probability,
-                    t.duration,
-                    t.segments,
-                    t.created_at,
-                    i.filename,
-                    i.file_size
-                FROM transcriptions t
-                LEFT JOIN ingest_queue i ON t.ingest_id = i.id
-                WHERE DATE(t.created_at) = ? {speaker_filter}
-                ORDER BY t.created_at ASC
-            """, (target_date.isoformat(),))  # nosec B608 — speaker_filter is a hardcoded literal string, date is parameterized
-            
-            rows = cursor.fetchall()
-            transcriptions = [dict(row) for row in rows]
-            
-            logger.info(
-                "transcriptions_found",
-                date=target_date.isoformat(),
-                count=len(transcriptions),
-            )
-            
-            return transcriptions
-            
-        finally:
-            conn.close()
+        # Получаем транскрипции за день
+        rows = db.fetchall(f"""
+            SELECT
+                t.id,
+                t.ingest_id,
+                t.text,
+                t.language,
+                t.language_probability,
+                t.duration,
+                t.segments,
+                t.created_at,
+                i.filename,
+                i.file_size
+            FROM transcriptions t
+            LEFT JOIN ingest_queue i ON t.ingest_id = i.id
+            WHERE DATE(t.created_at) = ? {speaker_filter}
+            ORDER BY t.created_at ASC
+        """, (target_date.isoformat(),))  # nosec B608 — speaker_filter is a hardcoded literal string, date is parameterized
+
+        transcriptions = [dict(row) for row in rows]
+
+        logger.info(
+            "transcriptions_found",
+            date=target_date.isoformat(),
+            count=len(transcriptions),
+        )
+
+        return transcriptions
     
     def extract_facts(self, transcriptions: List[Dict], use_llm: bool = True) -> List[Dict]:
         """
@@ -335,18 +327,15 @@ class DigestGenerator:
         """Возвращает анализы записей (recording_analyses) за день по транскрипциям."""
         if not self.db_path.exists():
             return []
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row
+        db = get_reflexio_db(self.db_path)
         try:
-            cursor = conn.cursor()
-            cursor.execute("""
+            rows = db.fetchall("""
                 SELECT ra.id, ra.transcription_id, ra.summary, ra.emotions, ra.actions, ra.topics, ra.urgency
                 FROM recording_analyses ra
                 INNER JOIN transcriptions t ON ra.transcription_id = t.id
                 WHERE DATE(t.created_at) = ?
                 ORDER BY t.created_at ASC
             """, (target_date.isoformat(),))
-            rows = cursor.fetchall()
             out = []
             for row in rows:
                 d = dict(row)
@@ -358,12 +347,10 @@ class DigestGenerator:
                             d[key] = []
                 out.append(d)
             return out
-        except sqlite3.OperationalError as e:
+        except Exception as e:
             if "no such table" in str(e).lower():
                 return []
             raise
-        finally:
-            conn.close()
 
     def get_daily_digest_json(self, target_date: date, user_id: Optional[str] = None) -> Dict:
         """

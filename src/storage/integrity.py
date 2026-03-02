@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from src.storage.db import get_reflexio_db
 from src.utils.logging import get_logger
 
 logger = get_logger("storage.integrity")
@@ -21,27 +21,27 @@ def _now_iso() -> str:
 def ensure_integrity_tables(db_path: Path) -> None:
     """Create integrity tables if absent."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS integrity_events (
-                id TEXT PRIMARY KEY,
-                ingest_id TEXT NOT NULL,
-                stage TEXT NOT NULL,
-                content_hash TEXT NOT NULL,
-                prev_hash TEXT,
-                metadata TEXT,
-                created_at TEXT NOT NULL
-            )
-            """
+    # ПОЧЕМУ без db.transaction(): DDL (CREATE TABLE) auto-commits в SQLite.
+    # Оборачивание в transaction() вызывает лишний conn.commit() после auto-commit,
+    # что может сбить implicit transaction state в Python sqlite3 модуле.
+    db = get_reflexio_db(db_path)
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS integrity_events (
+            id TEXT PRIMARY KEY,
+            ingest_id TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            prev_hash TEXT,
+            metadata TEXT,
+            created_at TEXT NOT NULL
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_integrity_ingest_created ON integrity_events(ingest_id, created_at)"
-        )
-        conn.commit()
-    finally:
-        conn.close()
+        """
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_integrity_ingest_created ON integrity_events(ingest_id, created_at)"
+    )
+    db.conn.commit()
 
 
 def _compute_hash(payload_bytes: bytes | None, payload_text: str | None) -> str:
@@ -70,80 +70,71 @@ def append_integrity_event(
     created_at = _now_iso()
     metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
 
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT content_hash
-            FROM integrity_events
-            WHERE ingest_id = ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            """,
-            (ingest_id,),
-        )
-        row = cur.fetchone()
-        prev_hash = row[0] if row else None
+    db = get_reflexio_db(db_path)
+    row = db.fetchone(
+        """
+        SELECT content_hash
+        FROM integrity_events
+        WHERE ingest_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (ingest_id,),
+    )
+    prev_hash = row[0] if row else None
 
-        cur.execute(
+    with db.transaction():
+        db.execute(
             """
             INSERT INTO integrity_events (id, ingest_id, stage, content_hash, prev_hash, metadata, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (event_id, ingest_id, stage, content_hash, prev_hash, metadata_json, created_at),
         )
-        conn.commit()
-        return event_id
-    finally:
-        conn.close()
+    return event_id
 
 
 def get_ingest_integrity_report(db_path: Path, ingest_id: str) -> dict[str, Any]:
     """Return chain validation report for one ingest_id."""
     ensure_integrity_tables(db_path)
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(
-            """
-            SELECT id, stage, content_hash, prev_hash, metadata, created_at
-            FROM integrity_events
-            WHERE ingest_id = ?
-            ORDER BY created_at ASC, id ASC
-            """,
-            (ingest_id,),
-        ).fetchall()
+    db = get_reflexio_db(db_path)
+    rows = db.fetchall(
+        """
+        SELECT id, stage, content_hash, prev_hash, metadata, created_at
+        FROM integrity_events
+        WHERE ingest_id = ?
+        ORDER BY created_at ASC, id ASC
+        """,
+        (ingest_id,),
+    )
 
-        events: list[dict[str, Any]] = []
-        chain_valid = True
-        expected_prev = None
+    events: list[dict[str, Any]] = []
+    chain_valid = True
+    expected_prev = None
 
-        for row in rows:
-            prev_hash = row["prev_hash"]
-            if prev_hash != expected_prev:
-                chain_valid = False
-            expected_prev = row["content_hash"]
-            try:
-                metadata = json.loads(row["metadata"] or "{}")
-            except Exception:
-                metadata = {}
-            events.append(
-                {
-                    "id": row["id"],
-                    "stage": row["stage"],
-                    "content_hash": row["content_hash"],
-                    "prev_hash": prev_hash,
-                    "metadata": metadata,
-                    "created_at": row["created_at"],
-                }
-            )
+    for row in rows:
+        prev_hash = row["prev_hash"]
+        if prev_hash != expected_prev:
+            chain_valid = False
+        expected_prev = row["content_hash"]
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+        except Exception:
+            metadata = {}
+        events.append(
+            {
+                "id": row["id"],
+                "stage": row["stage"],
+                "content_hash": row["content_hash"],
+                "prev_hash": prev_hash,
+                "metadata": metadata,
+                "created_at": row["created_at"],
+            }
+        )
 
-        return {
-            "ingest_id": ingest_id,
-            "events": events,
-            "events_count": len(events),
-            "chain_valid": chain_valid,
-        }
-    finally:
-        conn.close()
+    return {
+        "ingest_id": ingest_id,
+        "events": events,
+        "events_count": len(events),
+        "chain_valid": chain_valid,
+    }

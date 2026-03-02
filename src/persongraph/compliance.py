@@ -15,11 +15,11 @@ TTL по статусам:
 """
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+from src.storage.db import get_reflexio_db
 from src.utils.logging import get_logger
 
 logger = get_logger("persongraph.compliance")
@@ -86,67 +86,63 @@ class BiometricComplianceManager:
         now = datetime.now(timezone.utc)
         report = CleanupReport(run_at=now.isoformat())
 
-        conn = self._connect()
+        db = self._connect()
         try:
             # 1. Удалить неидентифицированные сэмплы > TTL_UNIDENTIFIED_DAYS
             cutoff_unidentified = (now - timedelta(days=TTL_UNIDENTIFIED_DAYS)).isoformat()
-            cursor = conn.execute(
-                """
-                DELETE FROM person_voice_samples
-                WHERE person_name IS NULL
-                AND created_at < ?
-                """,
-                (cutoff_unidentified,),
-            )
-            report.deleted_unidentified = cursor.rowcount
-
-            # 2. Удалить pending_approval сэмплы > TTL_PENDING_DAYS (пользователь не ответил)
-            cutoff_pending = (now - timedelta(days=TTL_PENDING_DAYS)).isoformat()
-            cursor = conn.execute(
-                """
-                DELETE FROM person_voice_samples
-                WHERE status = 'pending_approval'
-                AND created_at < ?
-                """,
-                (cutoff_pending,),
-            )
-            report.deleted_pending_expired = cursor.rowcount
-
-            # Сбрасываем voice_ready у персон, чьи pending сэмплы удалены
-            conn.execute(
-                """
-                UPDATE persons SET voice_ready = 0
-                WHERE voice_ready = 0
-                AND name NOT IN (
-                    SELECT DISTINCT person_name FROM person_voice_profiles
+            with db.transaction():
+                cursor = db.execute(
+                    """
+                    DELETE FROM person_voice_samples
+                    WHERE person_name IS NULL
+                    AND created_at < ?
+                    """,
+                    (cutoff_unidentified,),
                 )
-                AND sample_count > 0
-                AND name NOT IN (
-                    SELECT DISTINCT person_name FROM person_voice_samples
-                    WHERE status IN ('accumulating', 'pending_approval')
-                    AND person_name IS NOT NULL
-                )
-                """,
-            )
+                report.deleted_unidentified = cursor.rowcount
 
-            conn.commit()
+                # 2. Удалить pending_approval сэмплы > TTL_PENDING_DAYS (пользователь не ответил)
+                cutoff_pending = (now - timedelta(days=TTL_PENDING_DAYS)).isoformat()
+                cursor = db.execute(
+                    """
+                    DELETE FROM person_voice_samples
+                    WHERE status = 'pending_approval'
+                    AND created_at < ?
+                    """,
+                    (cutoff_pending,),
+                )
+                report.deleted_pending_expired = cursor.rowcount
+
+                # Сбрасываем voice_ready у персон, чьи pending сэмплы удалены
+                db.execute(
+                    """
+                    UPDATE persons SET voice_ready = 0
+                    WHERE voice_ready = 0
+                    AND name NOT IN (
+                        SELECT DISTINCT person_name FROM person_voice_profiles
+                    )
+                    AND sample_count > 0
+                    AND name NOT IN (
+                        SELECT DISTINCT person_name FROM person_voice_samples
+                        WHERE status IN ('accumulating', 'pending_approval')
+                        AND person_name IS NOT NULL
+                    )
+                    """,
+                )
 
             # 3. Найти профили с истёкшим TTL (не удаляем — уведомляем)
-            expired_rows = conn.execute(
+            expired_rows = db.fetchall(
                 """
                 SELECT person_name FROM person_voice_profiles
                 WHERE expires_at < ?
                 """,
                 (now.isoformat(),),
-            ).fetchall()
+            )
             report.profiles_expired = [r[0] for r in expired_rows]
 
         except Exception as e:
-            conn.rollback()
             report.errors.append(str(e))
             logger.error("compliance_cleanup_error", error=str(e))
-        finally:
-            conn.close()
 
         logger.info(
             "compliance_cleanup_done",
@@ -166,86 +162,78 @@ class BiometricComplianceManager:
         Returns:
             True если удаление выполнено
         """
-        conn = self._connect()
+        db = self._connect()
         try:
-            conn.execute(
-                "DELETE FROM person_voice_samples WHERE person_name = ?",
-                (person_name,),
-            )
-            conn.execute(
-                "DELETE FROM person_voice_profiles WHERE person_name = ?",
-                (person_name,),
-            )
-            conn.execute(
-                """
-                UPDATE persons SET
-                    voice_ready = 0,
-                    sample_count = 0,
-                    approved_at = NULL
-                WHERE name = ?
-                """,
-                (person_name,),
-            )
-            conn.commit()
+            with db.transaction():
+                db.execute(
+                    "DELETE FROM person_voice_samples WHERE person_name = ?",
+                    (person_name,),
+                )
+                db.execute(
+                    "DELETE FROM person_voice_profiles WHERE person_name = ?",
+                    (person_name,),
+                )
+                db.execute(
+                    """
+                    UPDATE persons SET
+                        voice_ready = 0,
+                        sample_count = 0,
+                        approved_at = NULL
+                    WHERE name = ?
+                    """,
+                    (person_name,),
+                )
 
             logger.info("gdpr_erasure_complete", person=person_name)
             return True
 
         except Exception as e:
-            conn.rollback()
             logger.error("gdpr_erasure_failed", person=person_name, error=str(e))
             return False
-        finally:
-            conn.close()
 
     def get_compliance_status(self) -> dict:
         """
         Возвращает текущий статус соответствия требованиям.
         Используется для GET /compliance/status.
         """
-        conn = self._connect()
-        try:
-            now = datetime.now(timezone.utc).isoformat()
+        db = self._connect()
+        now = datetime.now(timezone.utc).isoformat()
 
-            unidentified = conn.execute(
-                "SELECT COUNT(*) FROM person_voice_samples WHERE person_name IS NULL"
-            ).fetchone()[0]
+        unidentified = db.fetchone(
+            "SELECT COUNT(*) FROM person_voice_samples WHERE person_name IS NULL"
+        )[0]
 
-            pending = conn.execute(
-                "SELECT COUNT(*) FROM person_voice_samples WHERE status = 'pending_approval'"
-            ).fetchone()[0]
+        pending = db.fetchone(
+            "SELECT COUNT(*) FROM person_voice_samples WHERE status = 'pending_approval'"
+        )[0]
 
-            active_profiles = conn.execute(
-                "SELECT COUNT(*) FROM person_voice_profiles WHERE expires_at > ?",
-                (now,),
-            ).fetchone()[0]
+        active_profiles = db.fetchone(
+            "SELECT COUNT(*) FROM person_voice_profiles WHERE expires_at > ?",
+            (now,),
+        )[0]
 
-            expired_profiles = conn.execute(
-                "SELECT COUNT(*) FROM person_voice_profiles WHERE expires_at <= ?",
-                (now,),
-            ).fetchone()[0]
+        expired_profiles = db.fetchone(
+            "SELECT COUNT(*) FROM person_voice_profiles WHERE expires_at <= ?",
+            (now,),
+        )[0]
 
-            total_persons = conn.execute(
-                "SELECT COUNT(*) FROM persons"
-            ).fetchone()[0]
+        total_persons = db.fetchone(
+            "SELECT COUNT(*) FROM persons"
+        )[0]
 
-            return {
-                "unidentified_samples": unidentified,
-                "pending_approval_samples": pending,
-                "active_voice_profiles": active_profiles,
-                "expired_voice_profiles": expired_profiles,
-                "total_persons_in_graph": total_persons,
-                "ttl_unidentified_days": TTL_UNIDENTIFIED_DAYS,
-                "ttl_pending_days": TTL_PENDING_DAYS,
-                "ttl_profile_days": TTL_PROFILE_DAYS,
-                "checked_at": now,
-            }
-        finally:
-            conn.close()
+        return {
+            "unidentified_samples": unidentified,
+            "pending_approval_samples": pending,
+            "active_voice_profiles": active_profiles,
+            "expired_voice_profiles": expired_profiles,
+            "total_persons_in_graph": total_persons,
+            "ttl_unidentified_days": TTL_UNIDENTIFIED_DAYS,
+            "ttl_pending_days": TTL_PENDING_DAYS,
+            "ttl_profile_days": TTL_PROFILE_DAYS,
+            "checked_at": now,
+        }
 
     # ── Приватные методы ───────────────────────
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        return get_reflexio_db(self.db_path)

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import tempfile
 import uuid
 from datetime import datetime
@@ -17,6 +16,7 @@ from src.asr.transcribe import transcribe_audio
 from src.edge.filters import SpeechFilter
 from src.memory.semantic_memory import consolidate_to_memory_node, ensure_semantic_memory_tables
 from src.security.privacy_pipeline import apply_privacy_mode
+from src.storage.db import get_reflexio_db
 from src.storage.ingest_persist import ensure_ingest_tables, persist_structured_event, persist_ws_transcription
 from src.storage.integrity import append_integrity_event, ensure_integrity_tables
 from src.utils.config import settings
@@ -99,13 +99,12 @@ def _read_wav_as_numpy(wav_path: Path) -> np.ndarray | None:
 
 def _mark_ingest_status(db_path: Path, ingest_id: str, status: str, error_message: str | None = None) -> None:
     try:
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            "UPDATE ingest_queue SET status=?, processed_at=?, error_message=? WHERE id=?",
-            (status, datetime.now().isoformat(), error_message, ingest_id),
-        )
-        conn.commit()
-        conn.close()
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "UPDATE ingest_queue SET status=?, processed_at=?, error_message=? WHERE id=?",
+                (status, datetime.now().isoformat(), error_message, ingest_id),
+            )
     except Exception as e:
         logger.warning("ingest_status_update_failed", ingest_id=ingest_id, status=status, error=str(e))
 
@@ -230,21 +229,20 @@ def create_ingest_artifact(
     ensure_integrity_tables(db_path)
 
     try:
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            "INSERT OR REPLACE INTO ingest_queue (id, filename, file_path, file_size, status, created_at, processed_at) VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT processed_at FROM ingest_queue WHERE id=?), NULL))",
-            (
-                ingest_id,
-                filename,
-                str(dest_path),
-                len(content),
-                queue_status,
-                datetime.now().isoformat(),
-                ingest_id,
-            ),
-        )
-        conn.commit()
-        conn.close()
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT OR REPLACE INTO ingest_queue (id, filename, file_path, file_size, status, created_at, processed_at) VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT processed_at FROM ingest_queue WHERE id=?), NULL))",
+                (
+                    ingest_id,
+                    filename,
+                    str(dest_path),
+                    len(content),
+                    queue_status,
+                    datetime.now().isoformat(),
+                    ingest_id,
+                ),
+            )
     except Exception as e:
         logger.warning("ingest_queue_upsert_failed", error=str(e), ingest_id=ingest_id)
 

@@ -29,12 +29,7 @@ from src.api.routers import metrics
 from src.api.routers import search
 from src.api.routers import voice
 from src.api.routers import websocket
-from src.memory.semantic_memory import ensure_semantic_memory_tables
-from src.storage.integrity import ensure_integrity_tables
-from src.storage.ingest_persist import ensure_ingest_tables
-from src.balance.storage import ensure_balance_tables
-from src.storage.health_metrics import ensure_health_tables
-from src.persongraph.service import ensure_person_graph_tables
+from src.storage.db import ensure_all_tables, get_reflexio_db
 from src.utils.config import settings
 from src.utils.logging import get_logger, setup_logging
 from src.utils.rate_limiter import RateLimitConfig, setup_rate_limiting
@@ -127,24 +122,17 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
     logger.info("Reflexio API starting", host=settings.API_HOST, port=settings.API_PORT)
 
     db_path = settings.STORAGE_PATH / "reflexio.db"
-    ensure_ingest_tables(db_path)
-    ensure_integrity_tables(db_path)
-    ensure_semantic_memory_tables(db_path)
-    ensure_balance_tables(db_path)
-    ensure_health_tables(db_path)
-    ensure_person_graph_tables(db_path)
+    ensure_all_tables(db_path)
 
     # ПОЧЕМУ верификация WAL: get_connection() ставит WAL при создании,
     # но это может не сработать (read-only FS, permissions). Проверяем факт.
     try:
-        from src.storage.db import get_connection
-        _verify_conn = get_connection(db_path)
-        _wal_mode = _verify_conn.execute("PRAGMA journal_mode").fetchone()[0]
+        db = get_reflexio_db(db_path)
+        _wal_mode = db.fetchone("PRAGMA journal_mode")[0]
         if _wal_mode == "wal":
             logger.info("wal_mode_verified", db_path=str(db_path))
         else:
             logger.warning("wal_mode_not_active", actual=_wal_mode, db_path=str(db_path))
-        _verify_conn.close()
     except Exception as e:
         logger.error("wal_verification_failed", error=str(e))
 

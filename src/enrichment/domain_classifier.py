@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-import sqlite3
 from pathlib import Path
 from typing import Iterable
+
+from src.storage.db import get_reflexio_db
 
 
 @dataclass(frozen=True)
@@ -40,11 +41,10 @@ def _rules_from_db(db_path: Path | None) -> list[DomainRule]:
         return list(_DEFAULT_RULES)
 
     try:
-        conn = sqlite3.connect(str(db_path))
-        rows = conn.execute(
+        db = get_reflexio_db(db_path)
+        rows = db.fetchall(
             "SELECT domain, keywords_json, is_active FROM domain_config WHERE is_active = 1"
-        ).fetchall()
-        conn.close()
+        )
     except Exception:
         return list(_DEFAULT_RULES)
 

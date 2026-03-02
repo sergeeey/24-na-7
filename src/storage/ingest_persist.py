@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from src.storage.db import get_reflexio_db
+
 try:
     from src.utils.logging import get_logger
 except Exception:
@@ -87,39 +89,35 @@ def save_recording_analysis(
     """Сохраняет результат анализа в recording_analyses. Возвращает id записи или None."""
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    db = get_reflexio_db(db_path)
     try:
-        _ensure_recording_analyses_table(conn)
-        cursor = conn.cursor()
+        _ensure_recording_analyses_table(db.conn)
         analysis_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         import json
 
-        cursor.execute(
-            """
-            INSERT INTO recording_analyses (id, transcription_id, summary, emotions, actions, topics, urgency, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                analysis_id,
-                transcription_id,
-                summary or "",
-                json.dumps(emotions) if emotions is not None else "[]",
-                json.dumps(actions) if actions is not None else "[]",
-                json.dumps(topics) if topics is not None else "[]",
-                urgency or "medium",
-                now,
-            ),
-        )
-        conn.commit()
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO recording_analyses (id, transcription_id, summary, emotions, actions, topics, urgency, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    analysis_id,
+                    transcription_id,
+                    summary or "",
+                    json.dumps(emotions) if emotions is not None else "[]",
+                    json.dumps(actions) if actions is not None else "[]",
+                    json.dumps(topics) if topics is not None else "[]",
+                    urgency or "medium",
+                    now,
+                ),
+            )
         logger.info("recording_analysis_saved", transcription_id=transcription_id, analysis_id=analysis_id)
         return analysis_id
     except Exception as e:
         logger.exception("recording_analysis_save_failed", transcription_id=transcription_id, error=str(e))
-        conn.rollback()
         return None
-    finally:
-        conn.close()
 
 
 def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
@@ -160,97 +158,83 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
     """Сохраняет StructuredEvent в SQLite. Возвращает event.id или None."""
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    db = get_reflexio_db(db_path)
     try:
-        _ensure_structured_events_table(conn)
+        _ensure_structured_events_table(db.conn)
         import json
 
-        cursor = conn.cursor()
         tasks_json = json.dumps(
             [t.model_dump() if hasattr(t, "model_dump") else {"text": str(t)} for t in (event.tasks or [])]
         )
 
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO structured_events (
-                id, transcription_id, timestamp, duration_sec, text, language,
-                summary, emotions, topics, domains, tasks, decisions, speakers,
-                urgency, sentiment, location,
-                asr_confidence, enrichment_confidence, enrichment_model,
-                enrichment_tokens, enrichment_latency_ms, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.id,
-                event.transcription_id,
-                event.timestamp.isoformat() if event.timestamp else None,
-                event.duration_sec,
-                event.text,
-                event.language,
-                event.summary,
-                json.dumps(event.emotions) if event.emotions else "[]",
-                json.dumps(event.topics) if event.topics else "[]",
-                json.dumps(getattr(event, "domains", [])) if getattr(event, "domains", None) else "[]",
-                tasks_json,
-                json.dumps(event.decisions) if event.decisions else "[]",
-                json.dumps(event.speakers) if event.speakers else "[]",
-                event.urgency,
-                event.sentiment,
-                event.location,
-                event.asr_confidence,
-                event.enrichment_confidence,
-                event.enrichment_model,
-                event.enrichment_tokens,
-                event.enrichment_latency_ms,
-                event.created_at.isoformat() if event.created_at else None,
-            ),
-        )
-        conn.commit()
+        with db.transaction():
+            db.execute(
+                """
+                INSERT OR REPLACE INTO structured_events (
+                    id, transcription_id, timestamp, duration_sec, text, language,
+                    summary, emotions, topics, domains, tasks, decisions, speakers,
+                    urgency, sentiment, location,
+                    asr_confidence, enrichment_confidence, enrichment_model,
+                    enrichment_tokens, enrichment_latency_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.id,
+                    event.transcription_id,
+                    event.timestamp.isoformat() if event.timestamp else None,
+                    event.duration_sec,
+                    event.text,
+                    event.language,
+                    event.summary,
+                    json.dumps(event.emotions) if event.emotions else "[]",
+                    json.dumps(event.topics) if event.topics else "[]",
+                    json.dumps(getattr(event, "domains", [])) if getattr(event, "domains", None) else "[]",
+                    tasks_json,
+                    json.dumps(event.decisions) if event.decisions else "[]",
+                    json.dumps(event.speakers) if event.speakers else "[]",
+                    event.urgency,
+                    event.sentiment,
+                    event.location,
+                    event.asr_confidence,
+                    event.enrichment_confidence,
+                    event.enrichment_model,
+                    event.enrichment_tokens,
+                    event.enrichment_latency_ms,
+                    event.created_at.isoformat() if event.created_at else None,
+                ),
+            )
         logger.info("structured_event_persisted", event_id=event.id, transcription_id=event.transcription_id)
         return event.id
     except Exception as e:
         logger.exception("structured_event_persist_failed", event_id=getattr(event, "id", "?"), error=str(e))
-        conn.rollback()
         return None
-    finally:
-        conn.close()
 
 
 def ensure_ingest_tables(db_path: Path) -> None:
     """Создаёт таблицы ingest_queue, transcriptions, structured_events при отсутствии."""
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        _ensure_sqlite_ingest_tables(conn)
-        _ensure_recording_analyses_table(conn)
-        _ensure_structured_events_table(conn)
-    finally:
-        conn.close()
+    db = get_reflexio_db(db_path)
+    _ensure_sqlite_ingest_tables(db.conn)
+    _ensure_recording_analyses_table(db.conn)
+    _ensure_structured_events_table(db.conn)
 
 
 def transcription_exists(db_path: Path, transcription_id: str) -> bool:
     """Проверяет, есть ли запись в transcriptions с данным id."""
     if not db_path.exists():
         return False
-    conn = sqlite3.connect(str(db_path))
-    try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM transcriptions WHERE id = ? LIMIT 1", (transcription_id,))
-        return cursor.fetchone() is not None
-    finally:
-        conn.close()
+    db = get_reflexio_db(db_path)
+    return db.fetchone("SELECT 1 FROM transcriptions WHERE id = ? LIMIT 1", (transcription_id,)) is not None
 
 
 def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[str, Any]]:
     """Возвращает enrichment данные из structured_events по ingest file_id."""
     if not db_path.exists():
         return None
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    db = get_reflexio_db(db_path)
     try:
-        cursor = conn.cursor()
-        cursor.execute(
+        row = db.fetchone(
             """
             SELECT se.summary, se.emotions, se.topics, se.domains, se.tasks,
                    se.urgency, se.sentiment, se.decisions, se.speakers,
@@ -263,7 +247,6 @@ def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[st
             """,
             (file_id,),
         )
-        row = cursor.fetchone()
         if not row:
             return None
         import json
@@ -282,8 +265,6 @@ def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[st
     except Exception as e:
         logger.warning("get_enrichment_failed", file_id=file_id, error=str(e))
         return None
-    finally:
-        conn.close()
 
 
 def persist_ws_transcription(
@@ -297,72 +278,66 @@ def persist_ws_transcription(
     """Сохраняет результат транскрипции WebSocket в ingest_queue и transcriptions."""
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    db = get_reflexio_db(db_path)
     try:
-        _ensure_sqlite_ingest_tables(conn)
-        cursor = conn.cursor()
+        _ensure_sqlite_ingest_tables(db.conn)
 
-        cursor.execute("SELECT 1 FROM ingest_queue WHERE id = ?", (file_id,))
-        if not cursor.fetchone():
-            now = datetime.now(timezone.utc).isoformat()
-            cursor.execute(
+        existing_queue = db.fetchone("SELECT 1 FROM ingest_queue WHERE id = ?", (file_id,))
+        with db.transaction():
+            if not existing_queue:
+                now = datetime.now(timezone.utc).isoformat()
+                db.execute(
+                    """
+                    INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at, processed_at)
+                    VALUES (?, ?, ?, ?, 'processed', ?, ?)
+                    """,
+                    (file_id, filename, file_path, file_size, now, now),
+                )
+            else:
+                db.execute(
+                    "UPDATE ingest_queue SET status='processed', processed_at=? WHERE id=?",
+                    (datetime.now(timezone.utc).isoformat(), file_id),
+                )
+
+            existing = db.fetchone("SELECT id FROM transcriptions WHERE ingest_id = ? LIMIT 1", (file_id,))
+            if existing:
+                logger.debug("transcription_already_persisted", file_id=file_id, transcription_id=existing[0])
+                return existing[0]
+
+            transcription_id = str(uuid.uuid4())
+            text = result.get("text") or ""
+            language = result.get("language")
+            language_probability = result.get("language_probability")
+            duration = result.get("duration")
+            segments = result.get("segments")
+
+            segments_str = None
+            if segments is not None:
+                import json
+
+                try:
+                    segments_str = json.dumps(segments) if not isinstance(segments, str) else segments
+                except (TypeError, ValueError):
+                    segments_str = None
+
+            db.execute(
                 """
-                INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at, processed_at)
-                VALUES (?, ?, ?, ?, 'processed', ?, ?)
+                INSERT INTO transcriptions (id, ingest_id, text, language, language_probability, duration, segments, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (file_id, filename, file_path, file_size, now, now),
+                (
+                    transcription_id,
+                    file_id,
+                    text,
+                    language,
+                    language_probability,
+                    duration,
+                    segments_str,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
             )
-        else:
-            cursor.execute(
-                "UPDATE ingest_queue SET status='processed', processed_at=? WHERE id=?",
-                (datetime.now(timezone.utc).isoformat(), file_id),
-            )
-
-        cursor.execute("SELECT id FROM transcriptions WHERE ingest_id = ? LIMIT 1", (file_id,))
-        existing = cursor.fetchone()
-        if existing:
-            conn.commit()
-            logger.debug("transcription_already_persisted", file_id=file_id, transcription_id=existing[0])
-            return existing[0]
-
-        transcription_id = str(uuid.uuid4())
-        text = result.get("text") or ""
-        language = result.get("language")
-        language_probability = result.get("language_probability")
-        duration = result.get("duration")
-        segments = result.get("segments")
-
-        segments_str = None
-        if segments is not None:
-            import json
-
-            try:
-                segments_str = json.dumps(segments) if not isinstance(segments, str) else segments
-            except (TypeError, ValueError):
-                segments_str = None
-
-        cursor.execute(
-            """
-            INSERT INTO transcriptions (id, ingest_id, text, language, language_probability, duration, segments, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                transcription_id,
-                file_id,
-                text,
-                language,
-                language_probability,
-                duration,
-                segments_str,
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
-        conn.commit()
         logger.info("ws_transcription_persisted", file_id=file_id, transcription_id=transcription_id)
         return transcription_id
     except Exception as e:
         logger.exception("ws_transcription_persist_failed", file_id=file_id, error=str(e))
-        conn.rollback()
         return None
-    finally:
-        conn.close()

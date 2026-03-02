@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
+from src.storage.db import get_reflexio_db
 from src.utils.config import settings
 from src.utils.logging import get_logger
 
@@ -71,16 +72,11 @@ async def get_metrics():
     # Проверяем базу данных
     db_path = settings.STORAGE_PATH / "reflexio.db"
     if db_path.exists():
-        import sqlite3
         try:
-            conn = sqlite3.connect(str(db_path))
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM transcriptions")
-            transcriptions_count = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM facts")
-            facts_count = cursor.fetchone()[0]
-            conn.close()
-            
+            db = get_reflexio_db(db_path)
+            transcriptions_count = db.fetchone("SELECT COUNT(*) FROM transcriptions")[0]
+            facts_count = db.fetchone("SELECT COUNT(*) FROM facts")[0]
+
             metrics["database"] = {
                 "transcriptions_count": transcriptions_count,
                 "facts_count": facts_count,
@@ -136,20 +132,15 @@ async def get_prometheus_metrics(request: Request):
     # Метрики из БД
     db_path = settings.STORAGE_PATH / "reflexio.db"
     if db_path.exists():
-        import sqlite3
         try:
-            conn = sqlite3.connect(str(db_path))
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM transcriptions")
-            transcriptions_count = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM facts")
-            facts_count = cursor.fetchone()[0]
-            conn.close()
-            
+            db = get_reflexio_db(db_path)
+            transcriptions_count = db.fetchone("SELECT COUNT(*) FROM transcriptions")[0]
+            facts_count = db.fetchone("SELECT COUNT(*) FROM facts")[0]
+
             prometheus_metrics.append("# HELP reflexio_transcriptions_total Total number of transcriptions")
             prometheus_metrics.append("# TYPE reflexio_transcriptions_total counter")
             prometheus_metrics.append(f"reflexio_transcriptions_total {transcriptions_count}")
-            
+
             prometheus_metrics.append("# HELP reflexio_facts_total Total number of facts")
             prometheus_metrics.append("# TYPE reflexio_facts_total counter")
             prometheus_metrics.append(f"reflexio_facts_total {facts_count}")

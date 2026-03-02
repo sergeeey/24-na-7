@@ -19,7 +19,6 @@ Compliance:
 """
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -30,6 +29,7 @@ from typing import Optional
 import numpy as np
 
 from src.speaker.embedder import embed_audio
+from src.storage.db import get_reflexio_db
 from src.utils.logging import get_logger
 
 logger = get_logger("persongraph.accumulator")
@@ -124,9 +124,9 @@ class VoiceProfileAccumulator:
         sample_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
-        conn = self._connect()
-        try:
-            conn.execute(
+        db = self._connect()
+        with db.transaction():
+            db.execute(
                 """
                 INSERT INTO person_voice_samples
                     (id, person_name, embedding, anchor_conf, status, source_ingest, created_at)
@@ -136,7 +136,7 @@ class VoiceProfileAccumulator:
             )
 
             # Обновляем счётчик сэмплов у персоны
-            conn.execute(
+            db.execute(
                 """
                 UPDATE persons
                 SET sample_count = sample_count + 1,
@@ -145,9 +145,6 @@ class VoiceProfileAccumulator:
                 """,
                 (now[:10], name),  # только дата
             )
-            conn.commit()
-        finally:
-            conn.close()
 
         logger.info(
             "voice_sample_saved",
@@ -169,15 +166,15 @@ class VoiceProfileAccumulator:
         Returns:
             True если профиль успешно создан
         """
-        conn = self._connect()
+        db = self._connect()
         try:
-            rows = conn.execute(
+            rows = db.fetchall(
                 """
                 SELECT embedding, anchor_conf FROM person_voice_samples
                 WHERE person_name = ? AND status IN ('accumulating', 'pending_approval')
                 """,
                 (person_name,),
-            ).fetchall()
+            )
 
             if not rows:
                 logger.warning("approve_no_samples", name=person_name)
@@ -200,36 +197,36 @@ class VoiceProfileAccumulator:
             now = datetime.now(timezone.utc)
             expires = now + timedelta(days=PROFILE_TTL_DAYS)
 
-            # Сохраняем финальный профиль
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO person_voice_profiles
-                    (person_name, avg_embedding, sample_count, avg_confidence,
-                     approved_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    person_name,
-                    avg_emb.tobytes(),
-                    len(rows),
-                    float(np.mean(weights)),
-                    now.isoformat(),
-                    expires.isoformat(),
-                ),
-            )
+            with db.transaction():
+                # Сохраняем финальный профиль
+                db.execute(
+                    """
+                    INSERT OR REPLACE INTO person_voice_profiles
+                        (person_name, avg_embedding, sample_count, avg_confidence,
+                         approved_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        person_name,
+                        avg_emb.tobytes(),
+                        len(rows),
+                        float(np.mean(weights)),
+                        now.isoformat(),
+                        expires.isoformat(),
+                    ),
+                )
 
-            # Помечаем все сэмплы как approved
-            conn.execute(
-                "UPDATE person_voice_samples SET status = 'approved' WHERE person_name = ?",
-                (person_name,),
-            )
+                # Помечаем все сэмплы как approved
+                db.execute(
+                    "UPDATE person_voice_samples SET status = 'approved' WHERE person_name = ?",
+                    (person_name,),
+                )
 
-            # Обновляем флаг voice_ready у персоны
-            conn.execute(
-                "UPDATE persons SET voice_ready = 1, approved_at = ? WHERE name = ?",
-                (now.isoformat(), person_name),
-            )
-            conn.commit()
+                # Обновляем флаг voice_ready у персоны
+                db.execute(
+                    "UPDATE persons SET voice_ready = 1, approved_at = ? WHERE name = ?",
+                    (now.isoformat(), person_name),
+                )
 
             logger.info(
                 "voice_profile_approved",
@@ -240,28 +237,22 @@ class VoiceProfileAccumulator:
             return True
 
         except Exception as e:
-            conn.rollback()
             logger.error("approve_profile_failed", name=person_name, error=str(e))
             return False
-        finally:
-            conn.close()
 
     def reject_profile(self, person_name: str) -> None:
         """Пользователь отклонил профиль — удаляем все сэмплы немедленно."""
-        conn = self._connect()
-        try:
-            conn.execute(
+        db = self._connect()
+        with db.transaction():
+            db.execute(
                 "UPDATE person_voice_samples SET status = 'rejected' WHERE person_name = ?",
                 (person_name,),
             )
-            conn.execute(
+            db.execute(
                 "DELETE FROM person_voice_samples WHERE person_name = ? AND status = 'rejected'",
                 (person_name,),
             )
-            conn.commit()
-            logger.info("voice_profile_rejected_cleaned", name=person_name)
-        finally:
-            conn.close()
+        logger.info("voice_profile_rejected_cleaned", name=person_name)
 
     def load_profile(self, person_name: str) -> Optional[np.ndarray]:
         """
@@ -270,86 +261,74 @@ class VoiceProfileAccumulator:
         Returns:
             np.ndarray(256,) float32 или None если профиля нет
         """
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                """
-                SELECT avg_embedding FROM person_voice_profiles
-                WHERE person_name = ?
-                AND expires_at > ?
-                """,
-                (person_name, datetime.now(timezone.utc).isoformat()),
-            ).fetchone()
-
-            if not row:
-                return None
-            return np.frombuffer(row[0], dtype=np.float32).copy()
-        finally:
-            conn.close()
+        db = self._connect()
+        row = db.fetchone(
+            """
+            SELECT avg_embedding FROM person_voice_profiles
+            WHERE person_name = ?
+            AND expires_at > ?
+            """,
+            (person_name, datetime.now(timezone.utc).isoformat()),
+        )
+        if not row:
+            return None
+        return np.frombuffer(row[0], dtype=np.float32).copy()
 
     def get_pending_approvals(self) -> list[dict]:
         """Возвращает список персон, ожидающих подтверждения пользователем."""
-        conn = self._connect()
-        try:
-            rows = conn.execute(
-                """
-                SELECT p.name, p.sample_count,
-                       AVG(pvs.anchor_conf) as avg_conf,
-                       MIN(pvs.created_at) as first_sample
-                FROM persons p
-                JOIN person_voice_samples pvs ON pvs.person_name = p.name
-                WHERE pvs.status = 'pending_approval'
-                GROUP BY p.name
-                """,
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
+        db = self._connect()
+        rows = db.fetchall(
+            """
+            SELECT p.name, p.sample_count,
+                   AVG(pvs.anchor_conf) as avg_conf,
+                   MIN(pvs.created_at) as first_sample
+            FROM persons p
+            JOIN person_voice_samples pvs ON pvs.person_name = p.name
+            WHERE pvs.status = 'pending_approval'
+            GROUP BY p.name
+            """,
+        )
+        return [dict(r) for r in rows]
 
     # ── Приватные методы ───────────────────────
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _connect(self):
+        return get_reflexio_db(self.db_path)
 
     def _ensure_person(self, name: str) -> None:
         """Создаёт запись персоны если её ещё нет."""
-        conn = self._connect()
-        try:
-            today = datetime.now(timezone.utc).date().isoformat()
-            conn.execute(
+        db = self._connect()
+        today = datetime.now(timezone.utc).date().isoformat()
+        with db.transaction():
+            db.execute(
                 """
                 INSERT OR IGNORE INTO persons (id, name, first_seen, last_seen)
                 VALUES (?, ?, ?, ?)
                 """,
                 (str(uuid.uuid4()), name, today, today),
             )
-            conn.commit()
-        finally:
-            conn.close()
 
     def _check_threshold(self, name: str) -> AccumulationResult:
         """Проверяет достигнут ли порог и обновляет статус сэмплов."""
-        conn = self._connect()
-        try:
-            row = conn.execute(
-                """
-                SELECT COUNT(*) as cnt, AVG(anchor_conf) as avg_conf
-                FROM person_voice_samples
-                WHERE person_name = ?
-                AND status IN ('accumulating', 'pending_approval')
-                """,
-                (name,),
-            ).fetchone()
+        db = self._connect()
+        row = db.fetchone(
+            """
+            SELECT COUNT(*) as cnt, AVG(anchor_conf) as avg_conf
+            FROM person_voice_samples
+            WHERE person_name = ?
+            AND status IN ('accumulating', 'pending_approval')
+            """,
+            (name,),
+        )
 
-            count = row["cnt"] or 0
-            avg_conf = float(row["avg_conf"] or 0.0)
-            ready = count >= MIN_SAMPLES and avg_conf >= MIN_CONFIDENCE
+        count = row["cnt"] or 0
+        avg_conf = float(row["avg_conf"] or 0.0)
+        ready = count >= MIN_SAMPLES and avg_conf >= MIN_CONFIDENCE
 
-            if ready:
-                # Переводим все accumulating → pending_approval
-                conn.execute(
+        if ready:
+            # Переводим все accumulating → pending_approval
+            with db.transaction():
+                db.execute(
                     """
                     UPDATE person_voice_samples
                     SET status = 'pending_approval'
@@ -357,20 +336,17 @@ class VoiceProfileAccumulator:
                     """,
                     (name,),
                 )
-                conn.commit()
-                logger.info(
-                    "voice_profile_ready_for_approval",
-                    name=name,
-                    samples=count,
-                    avg_conf=round(avg_conf, 3),
-                )
-
-            return AccumulationResult(
-                person_name=name,
-                status=ProfileStatus.PENDING_APPROVAL if ready else ProfileStatus.ACCUMULATING,
-                sample_count=count,
-                avg_confidence=round(avg_conf, 3),
-                ready_for_approval=ready,
+            logger.info(
+                "voice_profile_ready_for_approval",
+                name=name,
+                samples=count,
+                avg_conf=round(avg_conf, 3),
             )
-        finally:
-            conn.close()
+
+        return AccumulationResult(
+            person_name=name,
+            status=ProfileStatus.PENDING_APPROVAL if ready else ProfileStatus.ACCUMULATING,
+            sample_count=count,
+            avg_confidence=round(avg_conf, 3),
+            ready_for_approval=ready,
+        )

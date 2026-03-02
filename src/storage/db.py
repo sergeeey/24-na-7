@@ -5,7 +5,9 @@ DAL (Data Access Layer) — единый интерфейс для работы 
 import os
 import json
 import sqlite3
-from typing import Optional, List, Dict, Any, Union
+import threading
+from contextlib import contextmanager
+from typing import Optional, List, Dict, Any, Union, Generator
 from pathlib import Path
 
 try:
@@ -35,7 +37,11 @@ def get_connection(db_path: Union[str, Path], *, check_same_thread: bool = False
     Returns:
         sqlite3.Connection с настроенными pragmas и row_factory
     """
-    conn = sqlite3.connect(str(db_path), check_same_thread=check_same_thread)
+    # ПОЧЕМУ isolation_level=None: autocommit mode. Python sqlite3 default ("")
+    # магически управляет транзакциями, что вызывает "ghost transactions"
+    # после SELECT — данные невидимы между singleton connections в тестах.
+    # С None — каждый statement auto-commits, а транзакции начинаем явно через BEGIN.
+    conn = sqlite3.connect(str(db_path), check_same_thread=check_same_thread, isolation_level=None)
     conn.row_factory = sqlite3.Row
 
     # ПОЧЕМУ каждый pragma:
@@ -70,6 +76,136 @@ def get_connection(db_path: Union[str, Path], *, check_same_thread: bool = False
 
     cursor.close()
     return conn
+
+
+# ──────────────────────────────────────────────
+# ReflexioDB — gateway для всех модулей
+# ПОЧЕМУ: 17 файлов делают sqlite3.connect() каждый по-своему.
+# ReflexioDB — singleton per db_path, thread-local connections,
+# WAL pragmas на каждом connection, transaction() context manager.
+# Потоки получают свой connection (SQLite не thread-safe per connection),
+# но все через одну точку с гарантированными настройками.
+# ──────────────────────────────────────────────
+
+class ReflexioDB:
+    """
+    Thread-safe SQLite gateway с WAL mode.
+
+    Singleton per db_path. Каждый поток получает свой connection
+    через threading.local(). Все connections создаются через
+    get_connection() с production pragmas.
+    """
+
+    _instances: Dict[str, "ReflexioDB"] = {}
+    _instances_lock = threading.Lock()
+
+    def __init__(self, db_path: Union[str, Path]) -> None:
+        self.db_path = str(db_path)
+        self._local = threading.local()
+
+    @classmethod
+    def get_instance(cls, db_path: Union[str, Path]) -> "ReflexioDB":
+        """Singleton per db_path — один gateway на файл БД."""
+        key = str(db_path)
+        if key not in cls._instances:
+            with cls._instances_lock:
+                if key not in cls._instances:
+                    cls._instances[key] = cls(db_path)
+                    logger.info("reflexio_db_created", db_path=key)
+        return cls._instances[key]
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """Thread-local connection (создаётся лениво)."""
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = get_connection(self.db_path)
+            self._local.conn = c
+        return c
+
+    def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Выполняет SQL и возвращает cursor."""
+        return self.conn.execute(sql, params)
+
+    def executemany(self, sql: str, params_seq: list) -> sqlite3.Cursor:
+        """Выполняет SQL для каждого набора параметров."""
+        return self.conn.executemany(sql, params_seq)
+
+    def executescript(self, sql: str) -> sqlite3.Cursor:
+        """Выполняет SQL-скрипт (несколько statements)."""
+        return self.conn.executescript(sql)
+
+    def fetchone(self, sql: str, params: tuple = ()) -> Optional[sqlite3.Row]:
+        """Выполняет SELECT и возвращает одну строку."""
+        return self.conn.execute(sql, params).fetchone()
+
+    def fetchall(self, sql: str, params: tuple = ()) -> List[sqlite3.Row]:
+        """Выполняет SELECT и возвращает все строки."""
+        return self.conn.execute(sql, params).fetchall()
+
+    @contextmanager
+    def transaction(self) -> Generator[sqlite3.Connection, None, None]:
+        """
+        Context manager для транзакций: commit при успехе, rollback при ошибке.
+
+        Usage:
+            with db.transaction() as conn:
+                conn.execute("INSERT ...", (...))
+                conn.execute("UPDATE ...", (...))
+            # auto-commit
+        """
+        conn = self.conn
+        conn.execute("BEGIN")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    def close_thread_connection(self) -> None:
+        """Закрывает connection текущего потока."""
+        c = getattr(self._local, "conn", None)
+        if c is not None:
+            c.close()
+            self._local.conn = None
+
+
+def ensure_all_tables(db_path: Union[str, Path]) -> None:
+    """
+    Создаёт все необходимые таблицы одним вызовом.
+
+    ПОЧЕМУ lazy imports: db.py импортируется всеми модулями.
+    Прямой import создаёт circular dependency. Lazy — только при вызове
+    (один раз на startup), нет overhead.
+    """
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.storage.integrity import ensure_integrity_tables
+    from src.memory.semantic_memory import ensure_semantic_memory_tables
+    from src.balance.storage import ensure_balance_tables
+    from src.storage.health_metrics import ensure_health_tables
+    from src.persongraph.service import ensure_person_graph_tables
+
+    path = Path(db_path)
+    ensure_ingest_tables(path)
+    ensure_integrity_tables(path)
+    ensure_semantic_memory_tables(path)
+    ensure_balance_tables(path)
+    ensure_health_tables(path)
+    ensure_person_graph_tables(path)
+    logger.info("all_tables_ensured", db_path=str(path))
+
+
+def get_reflexio_db(db_path: Optional[Union[str, Path]] = None) -> ReflexioDB:
+    """
+    Фабричная функция — основной способ получить ReflexioDB.
+
+    Если db_path не указан, берёт из settings.STORAGE_PATH.
+    """
+    if db_path is None:
+        from src.utils.config import settings
+        db_path = settings.STORAGE_PATH / "reflexio.db"
+    return ReflexioDB.get_instance(db_path)
 
 
 # Whitelist разрешённых таблиц для защиты от SQL injection

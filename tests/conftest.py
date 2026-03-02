@@ -23,3 +23,20 @@ def disable_auth_for_tests():
     object.__setattr__(settings, "API_KEY", None)
     yield
     object.__setattr__(settings, "API_KEY", original)
+
+
+@pytest.fixture(autouse=True)
+def _clean_reflexio_db_singletons():
+    """Очищает ReflexioDB singleton cache между тестами.
+
+    ПОЧЕМУ: ReflexioDB._instances — class-level dict, который переживает тесты.
+    Каждый тест использует уникальный tmp_path, но stale instances с thread-local
+    connections к удалённым temp-базам могут сбивать sqlite3 module internal state.
+    """
+    from src.storage.db import ReflexioDB
+
+    yield
+    # Закрываем все thread-local connections перед очисткой
+    for instance in ReflexioDB._instances.values():
+        instance.close_thread_connection()
+    ReflexioDB._instances.clear()

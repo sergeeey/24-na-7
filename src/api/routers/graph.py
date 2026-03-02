@@ -15,7 +15,6 @@ Endpoints:
 """
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from src.persongraph.accumulator import VoiceProfileAccumulator
+from src.storage.db import get_reflexio_db
 from src.utils.config import settings
 from src.utils.logging import get_logger
 
@@ -69,10 +69,8 @@ def _db() -> Path:
     return settings.STORAGE_PATH / "reflexio.db"
 
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(_db()), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _connect():
+    return get_reflexio_db(_db())
 
 
 # ──────────────────────────────────────────────
@@ -88,75 +86,69 @@ async def list_persons(
     offset: int = Query(0, ge=0),
 ):
     """Возвращает список известных персон из социального графа."""
-    conn = _connect()
-    try:
-        conditions = []
-        params: list = []
+    db = _connect()
+    conditions = []
+    params: list = []
 
-        if relationship is not None:
-            conditions.append("relationship = ?")
-            params.append(relationship)
-        if voice_ready is not None:
-            conditions.append("voice_ready = ?")
-            params.append(1 if voice_ready else 0)
+    if relationship is not None:
+        conditions.append("relationship = ?")
+        params.append(relationship)
+    if voice_ready is not None:
+        conditions.append("voice_ready = ?")
+        params.append(1 if voice_ready else 0)
 
-        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        params += [limit, offset]
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params += [limit, offset]
 
-        rows = conn.execute(
-            f"""
-            SELECT name, relationship, voice_ready, sample_count,
-                   first_seen, last_seen, approved_at
-            FROM persons
-            {where}
-            ORDER BY last_seen DESC NULLS LAST
-            LIMIT ? OFFSET ?
-            """,  # nosec B608
-            params,
-        ).fetchall()
+    rows = db.fetchall(
+        f"""
+        SELECT name, relationship, voice_ready, sample_count,
+               first_seen, last_seen, approved_at
+        FROM persons
+        {where}
+        ORDER BY last_seen DESC NULLS LAST
+        LIMIT ? OFFSET ?
+        """,  # nosec B608
+        params,
+    )
 
-        return [
-            PersonOut(
-                name=r["name"],
-                relationship=r["relationship"] or "unknown",
-                voice_ready=bool(r["voice_ready"]),
-                sample_count=r["sample_count"] or 0,
-                first_seen=r["first_seen"],
-                last_seen=r["last_seen"],
-                approved_at=r["approved_at"],
-            )
-            for r in rows
-        ]
-    finally:
-        conn.close()
+    return [
+        PersonOut(
+            name=r["name"],
+            relationship=r["relationship"] or "unknown",
+            voice_ready=bool(r["voice_ready"]),
+            sample_count=r["sample_count"] or 0,
+            first_seen=r["first_seen"],
+            last_seen=r["last_seen"],
+            approved_at=r["approved_at"],
+        )
+        for r in rows
+    ]
 
 
 @router.get("/persons/{name}", response_model=PersonOut)
 async def get_person(name: str):
     """Возвращает детали конкретной персоны."""
-    conn = _connect()
-    try:
-        row = conn.execute(
-            """
-            SELECT name, relationship, voice_ready, sample_count,
-                   first_seen, last_seen, approved_at
-            FROM persons WHERE name = ?
-            """,
-            (name,),
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail=f"Person '{name}' not found")
-        return PersonOut(
-            name=row["name"],
-            relationship=row["relationship"] or "unknown",
-            voice_ready=bool(row["voice_ready"]),
-            sample_count=row["sample_count"] or 0,
-            first_seen=row["first_seen"],
-            last_seen=row["last_seen"],
-            approved_at=row["approved_at"],
-        )
-    finally:
-        conn.close()
+    db = _connect()
+    row = db.fetchone(
+        """
+        SELECT name, relationship, voice_ready, sample_count,
+               first_seen, last_seen, approved_at
+        FROM persons WHERE name = ?
+        """,
+        (name,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Person '{name}' not found")
+    return PersonOut(
+        name=row["name"],
+        relationship=row["relationship"] or "unknown",
+        voice_ready=bool(row["voice_ready"]),
+        sample_count=row["sample_count"] or 0,
+        first_seen=row["first_seen"],
+        last_seen=row["last_seen"],
+        approved_at=row["approved_at"],
+    )
 
 
 @router.get("/pending", response_model=list[PendingApprovalOut])
@@ -213,29 +205,26 @@ async def reject_person_profile(name: str):
 @router.get("/stats", response_model=GraphStatsOut)
 async def graph_stats():
     """Общая статистика социального графа."""
-    conn = _connect()
-    try:
-        total_persons = conn.execute("SELECT COUNT(*) FROM persons").fetchone()[0]
-        voice_ready = conn.execute(
-            "SELECT COUNT(*) FROM persons WHERE voice_ready = 1"
-        ).fetchone()[0]
-        pending = conn.execute(
-            "SELECT COUNT(DISTINCT person_name) FROM person_voice_samples "
-            "WHERE status = 'pending_approval'"
-        ).fetchone()[0]
-        total_samples = conn.execute(
-            "SELECT COUNT(*) FROM person_voice_samples"
-        ).fetchone()[0]
-        total_interactions = conn.execute(
-            "SELECT COUNT(*) FROM person_interactions"
-        ).fetchone()[0]
+    db = _connect()
+    total_persons = db.fetchone("SELECT COUNT(*) FROM persons")[0]
+    voice_ready = db.fetchone(
+        "SELECT COUNT(*) FROM persons WHERE voice_ready = 1"
+    )[0]
+    pending = db.fetchone(
+        "SELECT COUNT(DISTINCT person_name) FROM person_voice_samples "
+        "WHERE status = 'pending_approval'"
+    )[0]
+    total_samples = db.fetchone(
+        "SELECT COUNT(*) FROM person_voice_samples"
+    )[0]
+    total_interactions = db.fetchone(
+        "SELECT COUNT(*) FROM person_interactions"
+    )[0]
 
-        return GraphStatsOut(
-            total_persons=total_persons,
-            voice_ready_count=voice_ready,
-            pending_approvals=pending,
-            total_samples=total_samples,
-            total_interactions=total_interactions,
-        )
-    finally:
-        conn.close()
+    return GraphStatsOut(
+        total_persons=total_persons,
+        voice_ready_count=voice_ready,
+        pending_approvals=pending,
+        total_samples=total_samples,
+        total_interactions=total_interactions,
+    )

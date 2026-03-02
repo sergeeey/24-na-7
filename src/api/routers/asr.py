@@ -1,6 +1,5 @@
 """Роутер для транскрипции аудио."""
 import json
-import sqlite3
 import uuid
 from datetime import datetime
 
@@ -12,6 +11,7 @@ from src.memory.semantic_memory import consolidate_to_memory_node, ensure_semant
 from src.security.privacy_pipeline import apply_privacy_mode
 from src.storage.ingest_persist import ensure_ingest_tables
 from src.storage.integrity import append_integrity_event, ensure_integrity_tables
+from src.storage.db import get_reflexio_db
 from src.utils.config import settings
 from src.utils.logging import get_logger
 
@@ -57,8 +57,9 @@ async def transcribe_endpoint(file_id: str = Query(..., description="ID файл
         trans_id = str(uuid.uuid4())
         segments_json = json.dumps(result.get("segments", []), ensure_ascii=False)
 
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(
+        db = get_reflexio_db(db_path)
+        # ПОЧЕМУ DDL без transaction(): CREATE TABLE auto-commits в SQLite
+        db.execute(
             """
             CREATE TABLE IF NOT EXISTS transcriptions (
                 id TEXT PRIMARY KEY, ingest_id TEXT NOT NULL,
@@ -68,25 +69,25 @@ async def transcribe_endpoint(file_id: str = Query(..., description="ID файл
             )
             """
         )
-        conn.execute(
-            "INSERT OR IGNORE INTO transcriptions (id, ingest_id, text, language, language_probability, duration, segments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                trans_id,
-                file_id,
-                result.get("text", ""),
-                result.get("language"),
-                result.get("language_probability"),
-                result.get("duration"),
-                segments_json,
-                datetime.now().isoformat(),
-            ),
-        )
-        conn.execute(
-            "UPDATE ingest_queue SET status='processed', processed_at=? WHERE id=?",
-            (datetime.now().isoformat(), file_id),
-        )
-        conn.commit()
-        conn.close()
+        db.conn.commit()
+        with db.transaction():
+            db.execute(
+                "INSERT OR IGNORE INTO transcriptions (id, ingest_id, text, language, language_probability, duration, segments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    trans_id,
+                    file_id,
+                    result.get("text", ""),
+                    result.get("language"),
+                    result.get("language_probability"),
+                    result.get("duration"),
+                    segments_json,
+                    datetime.now().isoformat(),
+                ),
+            )
+            db.execute(
+                "UPDATE ingest_queue SET status='processed', processed_at=? WHERE id=?",
+                (datetime.now().isoformat(), file_id),
+            )
 
         if settings.INTEGRITY_CHAIN_ENABLED:
             append_integrity_event(
