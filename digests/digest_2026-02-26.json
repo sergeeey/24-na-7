@@ -1,0 +1,137 @@
+{
+  "date": "2026-02-26",
+  "generated_at": "2026-02-26T08:16:11.997161",
+  "metrics": {
+    "transcriptions_count": 10,
+    "facts_count": 0,
+    "total_duration_minutes": 0,
+    "total_characters": 198,
+    "total_words": 24,
+    "average_words_per_transcription": 2.4,
+    "information_density_score": 0.0,
+    "density_level": "⚪ Очень низкая"
+  },
+  "facts": [],
+  "transcriptions": [
+    {
+      "id": "441105a6-6c0c-4e43-b689-b96566ac13a8",
+      "ingest_id": "28da590f-a588-4785-9a37-fafa95f58d5c",
+      "text": "WebSocket транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": null,
+      "created_at": "2026-02-26T03:13:44.190245+00:00",
+      "filename": "20260226_081344_28da590f-a588-4785-9a37-fafa95f58d5c.wav",
+      "file_size": 44
+    },
+    {
+      "id": "1115e70d-ef96-4cc5-9bb4-20d257974e6f",
+      "ingest_id": "362cfde4-ed7d-4e71-82e7-bdfc3fb0923a",
+      "text": "WebSocket транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": null,
+      "created_at": "2026-02-26T03:14:19.070129+00:00",
+      "filename": "20260226_081419_362cfde4-ed7d-4e71-82e7-bdfc3fb0923a.wav",
+      "file_size": 44
+    },
+    {
+      "id": "c0c2bc1d-3ce7-4136-8330-aece48a9406e",
+      "ingest_id": "379be1cd-5725-47b4-9495-c189a5075067",
+      "text": "hello team meeting",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": null,
+      "created_at": "2026-02-26T03:14:25.327586+00:00",
+      "filename": "20260226_081425_379be1cd-5725-47b4-9495-c189a5075067.wav",
+      "file_size": 364
+    },
+    {
+      "id": "4b074717-d0bf-4116-8472-1328e325c305",
+      "ingest_id": "59186d63-4749-48ff-94d3-25b485767f67",
+      "text": "test project update",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": null,
+      "created_at": "2026-02-26T03:14:25.357731+00:00",
+      "filename": "20260226_081425_59186d63-4749-48ff-94d3-25b485767f67.wav",
+      "file_size": 364
+    },
+    {
+      "id": "0984c40f-a1aa-4022-8a4d-74d1181eff87",
+      "ingest_id": "ab32f24b-3727-4fa8-8f0f-7760088325b1",
+      "text": "WebSocket транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": null,
+      "created_at": "2026-02-26T03:16:11.885074+00:00",
+      "filename": "20260226_081611_ab32f24b-3727-4fa8-8f0f-7760088325b1.wav",
+      "file_size": 44
+    },
+    {
+      "id": "ecbcc489-8c93-4aa0-b53a-8f32959082e9",
+      "ingest_id": "17f1c1c6-a9f1-4724-a5ec-cc7c57344492",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-02-26T08:13:44.083137",
+      "filename": "20260226_081344_17f1c1c6-a9f1-4724-a5ec-cc7c57344492.wav",
+      "file_size": 44
+    },
+    {
+      "id": "0b57c88b-8dcc-4137-90b1-aba1552f323d",
+      "ingest_id": "abc12345-0000-0000-0000-000000000001",
+      "text": "Hello world test",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-02-26T08:13:48.694462",
+      "filename": null,
+      "file_size": null
+    },
+    {
+      "id": "581c4349-ee8e-424b-9ac7-e8baed35f6df",
+      "ingest_id": "f4161af9-c86d-49c0-8048-1e3174c1a21e",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-02-26T08:14:18.969217",
+      "filename": "20260226_081418_f4161af9-c86d-49c0-8048-1e3174c1a21e.wav",
+      "file_size": 44
+    },
+    {
+      "id": "b87efe4c-384e-4f5a-a64e-4d2dbff91dc0",
+      "ingest_id": "abc12345-0000-0000-0000-000000000001",
+      "text": "Hello world test",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-02-26T08:14:24.057003",
+      "filename": null,
+      "file_size": null
+    },
+    {
+      "id": "f5b7360f-a6fb-4c29-ab43-3ac61bf96aa1",
+      "ingest_id": "fc22c21c-9b81-4ef9-91a7-bdf0b326a754",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-02-26T08:16:11.782768",
+      "filename": "20260226_081611_fc22c21c-9b81-4ef9-91a7-bdf0b326a754.wav",
+      "file_size": 44
+    }
+  ]
+}

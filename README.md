@@ -1,354 +1,212 @@
 # Reflexio 24/7
 
-**Умный диктофон и дневной анализатор** — AI-Native система для пассивной записи речи, транскрипции и анализа.
+**AI-powered voice diary & daily cognitive digest**
+*Умный голосовой дневник с AI-анализом и ежедневным когнитивным дайджестом*
 
-## 🎯 Что это?
+![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue?logo=python)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi)
+![Kotlin](https://img.shields.io/badge/Kotlin-Android-7F52FF?logo=kotlin)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker)
+![License: MIT](https://img.shields.io/badge/License-MIT-green)
 
-Reflexio 24/7 слушает речь 24/7, распознаёт только голос (не тишину), транскрибирует, анализирует и вечером выдаёт дневной дайджест с эмоциями и задачами.
+<p align="center">
+  <img src="docs/screenshots/reflexio_home_v2.png" width="270" alt="Reflexio Home"/>
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/reflexio_digest_deployed.png" width="270" alt="Daily Digest"/>
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/reflexio_v7_polish.png" width="270" alt="Final Design"/>
+</p>
 
-**Польза для пользователя:** Reflexio помогает видеть структуру своего дня — что говорил, что чувствовал, какие решения принимал, и чему стоит уделить внимание завтра. Это пассивный когнитивный ассистент, который превращает поток речи в осмысленную дневную сводку.
+---
 
-## 🏗️ Архитектура MVP
+## What is Reflexio? / Что такое Reflexio?
 
-### Edge (телефон/десктоп)
-- Запись речи с VAD (Voice Activity Detection)
-- Сегментация по тишине (2 сек)
-- Автоматическая отправка на сервер
-- Удаление локальных файлов после отправки
+Reflexio записывает речь 24/7 на телефоне, распознает только голос (игнорирует тишину, музыку, ТВ), транскрибирует через Whisper, анализирует через LLM и вечером выдает **дневной когнитивный дайджест** — что говорил, что чувствовал, какие решения принимал.
 
-### Backend (FastAPI)
-- Приём аудио (`/ingest/audio`)
-- Транскрипция (faster-whisper)
-- Сохранение фактов в БД
-- Дневной дайджест с анализом плотности
+Это пассивный когнитивный ассистент: превращает поток речи в осмысленную дневную сводку с эмоциями, задачами и социальным графом.
 
-## 🔑 Настройка API ключей
+---
 
-**⚠️ ВАЖНО:** У нас **два отдельных "мира" ключей:**
-1. **Python-приложение** — ключи в `.env` файле (корень проекта)
-2. **MCP-серверы Cursor** — ключи в настройках Cursor (не читают `.env`!)
+## Architecture / Архитектура
 
-**Подробная инструкция:** [`API_KEYS_SETUP.md`](API_KEYS_SETUP.md)
-
-**Быстрая проверка:**
-```bash
-python scripts/check_api_keys.py
+```
+Android (Kotlin)              Backend (FastAPI)              Output
++-----------------+          +---------------------+        +------------------+
+| Microphone      |   HTTP   | /ingest/audio       |        | Daily Digest     |
+| VAD Filter  ----+--------->| Whisper ASR         |------->| Emotion Analysis |
+| Auto-upload     |          | LLM Analysis        |        | Social Graph     |
+| Local cleanup   |          | SQLite / Supabase   |        | Task Extraction  |
++-----------------+          +---------------------+        +------------------+
 ```
 
 ---
 
-## 🚀 Быстрый старт
+## Features / Возможности
 
-**📖 Документация:**
-- [QUICKSTART.md](QUICKSTART.md) — пошаговый запуск
-- [QUICK_COMMANDS.md](QUICK_COMMANDS.md) — шпаргалка команд
-- [DIGEST.md](DIGEST.md) — документация по дайджестам
-- [FIRST_LAUNCH_GUIDE.md](FIRST_LAUNCH_GUIDE.md) — первый запуск с нуля
-- **Full Audit:** комплексный аудит по сценарию [FULL_AUDIT_SPEC.md](FULL_AUDIT_SPEC.md) и [full_audit.yml](full_audit.yml). Запуск: запрос к агенту «выполни full audit» или «/full_audit»; выходы — в `audit_output/`.
-
-**⚡ Самый быстрый способ (Production-Ready):**
-
-```bash
-# Linux/macOS
-./scripts/first_launch.sh
-
-# Windows PowerShell
-.\scripts\first_launch.ps1
-```
-
-Это автоматически:
-- ✅ Проверит окружение
-- ✅ Запустит init-reflexio playbook
-- ✅ Проверит API ключи (два мира)
-- ✅ Проверит весь конвейер
-- ✅ Запустит Docker контейнеры
-
-**Или вручную:**
-
-1. Установи зависимости: `pip install -e ".[dev]"`
-2. Инициализация: `@playbook init-reflexio`
-3. Запусти API: `uvicorn src.api.main:app --reload`
-4. Запусти listener: `python src/edge/listener.py`
+- **Voice Activity Detection** — запись только речи, пропуск тишины/музыки/шума
+- **Speaker Diarization** — разделение говорящих (кто говорил)
+- **Whisper ASR** — транскрипция через faster-whisper (local)
+- **LLM Digest** — ежедневная сводка с эмоциями и задачами (OpenAI / Anthropic)
+- **Social Graph** — автоматическое построение графа контактов из речи (KuzuDB)
+- **Compliance Layer** — PII-маскирование, TTL, zero-retention аудио
+- **Balance Wheel** — визуализация жизненного баланса на Android
+- **Docker Deploy** — production-ready с Caddy, Redis, Vault
 
 ---
 
-### 1. Установка зависимостей
+## Quick Start / Быстрый запуск
+
+### Docker (рекомендуемый)
 
 ```bash
-# Создайте виртуальное окружение
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# или
-venv\Scripts\activate  # Windows
-
-# Установите зависимости
-pip install -e ".[dev]"
-```
-
-### 2. Настройка
-
-Скопируйте `.env.example` в `.env` и при необходимости отредактируйте:
-
-```bash
-cp .env.example .env
-```
-
-### 3. Запуск API сервера
-
-```bash
-uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-API будет доступен на `http://localhost:8000`
-
-### 4. Запуск Edge listener
-
-В отдельном терминале:
-
-```bash
-python src/edge/listener.py
-```
-
-Или с указанием API URL:
-
-```bash
-python src/edge/listener.py http://your-server:8000
-```
-
-## 📱 Использование на Android (Termux)
-
-1. Установите Termux из F-Droid или Google Play
-2. Обновите пакеты:
-   ```bash
-   pkg update && pkg upgrade
-   pkg install python git
-   ```
-3. Установите зависимости:
-   ```bash
-   pip install sounddevice webrtcvad requests numpy
-   ```
-4. Скопируйте проект на устройство
-5. Отредактируйте `.env` и укажите URL вашего сервера:
-   ```bash
-   API_URL=https://your-server.com
-   ```
-6. Запустите listener:
-   ```bash
-   python src/edge/listener.py
-   ```
-
-## 🧪 Тестирование
-
-```bash
-# Запуск всех тестов
-pytest
-
-# С покрытием
-pytest --cov=src --cov-report=html
-
-# Проверка типов
-mypy src
-
-# Линтинг
-ruff check src tests
-
-# Форматирование
-black src tests
-```
-
-## 🔧 Build & CI
-
-### Полная сборка через Playbook
-
-```bash
-@playbook build-reflexio
-```
-
-Playbook автоматически:
-- Проверяет окружение (Python ≥ 3.10, FFmpeg)
-- Устанавливает зависимости
-- Инициализирует БД
-- Запускает API сервер
-- Выполняет smoke-тесты (ingest + transcription)
-- Создаёт метрики
-- Запускает все тесты
-- Выполняет CEB-E аудит
-- Корректно останавливает сервер
-
-С параметрами:
-
-```bash
-@playbook build-reflexio --skip_tests true --force_reinstall true --api_port 8001
-```
-
-### Включение расширенных функций
-
-```bash
-@playbook enhancement-plan --enable_autocalibration true --enable_queue true --enable_privacy_filter true
-```
-
-Доступные улучшения (R-E1):
-- **R-E1.1**: VAD Autocalibration — автоматическая калибровка детектора голоса
-- **R-E1.2**: Processing Queue — очередь обработки с retry
-- **R-E1.3**: PII Privacy Filter — фильтрация персональных данных
-- **R-E1.4**: Auto Transcription — автоматическая транскрипция после загрузки
-- **R-E1.5**: Night Triggers — ночные триггеры для дайджеста и чек-ина
-
-## 📁 Структура проекта
-
-```
-reflexio/
-├── .cursor/              # Cursor IDE конфигурация (Memory Bank, Audit Pack)
-├── src/
-│   ├── api/             # FastAPI приложение
-│   │   └── main.py      # Основные endpoints
-│   ├── edge/            # Edge listener
-│   │   └── listener.py  # VAD и запись
-│   ├── asr/             # Транскрипция
-│   │   └── transcribe.py
-│   ├── utils/           # Утилиты
-│   │   ├── config.py    # Настройки
-│   │   └── logging.py   # Логирование
-│   └── storage/         # Хранилище
-│       ├── uploads/     # Загруженные файлы
-│       └── recordings/  # Локальные записи
-├── tests/               # Тесты
-├── pyproject.toml       # Зависимости
-└── README.md
-```
-
-## 🔌 API Endpoints
-
-| Method | Path | Описание |
-|--------|------|----------|
-| `GET` | `/` | Информация о сервисе |
-| `GET` | `/health` | Health check |
-| `POST` | `/ingest/audio` | Загрузка аудио |
-| `POST` | `/asr/transcribe?file_id=...` | Транскрипция файла |
-| `GET` | `/ingest/status/{id}` | Статус обработки |
-| `GET` | `/digest/today` | Дайджест за сегодня |
-| `GET` | `/digest/{date}` | Дайджест за дату (YYYY-MM-DD) |
-| `GET` | `/digest/{date}/density` | Анализ информационной плотности |
-
-## ⚙️ Конфигурация
-
-Все настройки в `.env` или через переменные окружения:
-
-- `API_URL` — URL API сервера для edge-устройств
-- `AUDIO_SAMPLE_RATE` — частота дискретизации (по умолчанию 16000)
-- `AUDIO_SILENCE_LIMIT` — лимит тишины для сегментации (по умолчанию 2.0 сек)
-- `EDGE_AUTO_UPLOAD` — автоматическая отправка на сервер (по умолчанию true)
-- `EDGE_DELETE_AFTER_UPLOAD` — удаление локальных файлов после отправки
-- `ASR_MODEL_SIZE` — размер модели Whisper (tiny/small/medium/large)
-
-## 🔒 Безопасность
-
-- ✅ Zero-retention режим: аудио удаляется после обработки
-- ✅ PII-маскирование: автоматическое маскирование персональных данных
-- ✅ SAFE validation: проверка payload, доменов, файлов
-- ✅ CoVe validation: проверка согласованности данных
-- ✅ Domain allowlist: контроль внешних запросов
-- ✅ Secrets management: безопасное хранение API ключей
-
-**Подробнее:** [SECURITY.md](SECURITY.md)
-
-## 🚀 Production Deployment
-
-**Reflexio 24/7 Level 5 (Self-Adaptive)** готов к продакшену!
-
-### Быстрый старт (Production)
-
-```bash
-# 1. Настройка
-cp .env.example .env
-# Заполните LLM, Supabase, MCP ключи
-
-# 2. Проверка готовности
-@playbook prod-readiness
-
-# 3. Docker deployment
-docker compose up -d --build
-
-# 4. Проверка
+git clone https://github.com/sergeeey/24-na-7.git
+cd 24-na-7
+cp .env.example .env   # заполнить API ключи
+docker compose up -d
 curl http://localhost:8000/health
 ```
 
-**📖 Полная документация:**
-- [DEPLOYMENT.md](DEPLOYMENT.md) — руководство по развёртыванию
-- [SECURITY.md](SECURITY.md) — политика безопасности
-- [RUNBOOKS.md](RUNBOOKS.md) — решение инцидентов
-
-### 🎯 Playbooks Suite
-
-| Playbook | Описание |
-|----------|----------|
-| `@playbook audit-standard` | CEB-E аудит системы |
-| `@playbook security-validate` | SAFE+CoVe проверка безопасности |
-| `@playbook db-migrate` | Миграция SQLite → Supabase |
-| `@playbook observability-setup` | Настройка Prometheus/Grafana |
-| `@playbook validate-mcp` | Проверка MCP сервисов |
-| `@playbook osint-mission` | Запуск OSINT миссии |
-| `@playbook prod-readiness` | Проверка готовности к продакшену |
-
-**Полный список:** `.cursor/playbooks/*.yaml`
-
-## 📊 Дорожная карта
-
-### ✅ Завершено
-
-- [x] MVP: Edge listener с VAD
-- [x] MVP: API для приёма аудио
-- [x] MVP: Базовая транскрипция
-- [x] Дневной дайджест с анализом плотности
-- [x] Расширенные когнитивные метрики (семантика, лексика, динамика)
-- [x] **OSINT KDS (Knowledge Discovery System)**
-- [x] **LLM Integration (OpenAI/Anthropic)**
-- [x] **Supabase интеграция**
-- [x] **Security Layer (SAFE + CoVe)**
-- [x] **Production Level 5 (Self-Adaptive)**
-- [x] **v2.1 "Surpass Smart Noter" — OZERO-Result ✅**
-
-### 🔄 В разработке
-
-- [ ] **v2.2 "Self-Optimized"** — автоматическая оптимизация на основе метрик
-
-### 💡 Планируется
-
-- [ ] Telegram-бот для ночных триггеров
-- [ ] Диаризация (мультиспикер)
-- [ ] **v2.3 "Self-Learning"** — обучение на пользовательских данных
-- [ ] **v3.0 "Cognitive OS"** — полноценная когнитивная ОС
-
-**Подробнее:** `docs/ROADMAP.md`
-
-## 🎯 Фильтрация речи
-
-Reflexio умеет отличать речь от музыки/шума/телевизора:
+### Local development
 
 ```bash
-# Включить фильтр в .env
-FILTER_MUSIC=true
+python -m venv venv && source venv/bin/activate
+pip install -e ".[dev]"
+uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Подробнее: [FILTERS.md](FILTERS.md)
+Android-приложение: `android/` — открыть в Android Studio, собрать APK.
 
 ---
 
-## 🛠️ Разработка
+## Tech Stack / Стек
 
-Проект использует:
-- **Python 3.11+**
-- **FastAPI** — веб-фреймворк
-- **faster-whisper** — транскрипция речи
-- **webrtcvad** — Voice Activity Detection
-- **librosa** — анализ спектра для фильтрации
-- **sounddevice** — запись аудио
-- **structlog** — структурированное логирование
+| Layer | Technology |
+|-------|-----------|
+| Mobile | Kotlin, Jetpack Compose, Material 3 |
+| Backend | Python 3.11+, FastAPI, Pydantic |
+| ASR | faster-whisper (local inference) |
+| LLM | OpenAI GPT / Anthropic Claude |
+| Database | SQLite (dev) / Supabase (prod) |
+| Graph DB | KuzuDB (social graph) |
+| Queue | Redis + APScheduler |
+| Secrets | HashiCorp Vault |
+| Deploy | Docker Compose, Caddy, systemd |
+| Security | SAFE validation, CoVe, PII masking |
 
-## 📝 Лицензия
+---
+
+<details>
+<summary><strong>Project Structure / Структура проекта</strong></summary>
+
+```
+24-na-7/
+├── android/                # Kotlin Android app (Jetpack Compose)
+│   └── app/src/main/kotlin/com/reflexio/app/
+│       ├── ui/             # Screens, components, Balance Wheel
+│       ├── domain/         # Use cases, models
+│       ├── data/           # API client, repositories
+│       └── debug/          # Debug tools
+├── src/
+│   ├── api/                # FastAPI endpoints
+│   │   └── main.py         # /ingest/audio, /digest, /health
+│   ├── edge/               # Edge listener (VAD + upload)
+│   │   └── listener.py
+│   ├── asr/                # Whisper transcription
+│   ├── digest/             # Daily digest generation
+│   ├── social_graph/       # Speaker graph (KuzuDB)
+│   ├── compliance/         # PII masking, TTL, audit
+│   ├── utils/              # Config, logging, guards
+│   └── storage/            # File & DB storage
+├── tests/                  # 40+ pytest tests
+├── digests/                # Generated daily digests (JSON + MD)
+├── docs/                   # Documentation & screenshots
+├── config/                 # Environment configs
+├── scripts/                # Launch & check scripts
+├── docker-compose.yml      # Dev deployment
+├── docker-compose.prod.yml # Production deployment
+├── Dockerfile.api          # API container
+├── Dockerfile.worker       # Worker container
+├── Caddyfile               # Reverse proxy config
+└── pyproject.toml          # Python dependencies
+```
+</details>
+
+---
+
+<details>
+<summary><strong>Screenshots / Скриншоты</strong></summary>
+
+| Home Screen | Daily Digest | Smart Cards | Balance Wheel |
+|:-----------:|:------------:|:-----------:|:-------------:|
+| <img src="docs/screenshots/reflexio_home_v2.png" width="200"/> | <img src="docs/screenshots/reflexio_digest_deployed.png" width="200"/> | <img src="docs/screenshots/reflexio_smart_cards.png" width="200"/> | <img src="docs/screenshots/reflexio_v7_polish.png" width="200"/> |
+
+<details>
+<summary>All screenshots (23)</summary>
+
+| Screenshot | File |
+|-----------|------|
+| After Splash | `reflexio_after_splash.png` |
+| After Tap | `reflexio_after_tap.png` |
+| Clean Cards | `reflexio_clean_cards.png` |
+| Clean Cards v2 | `reflexio_clean_cards2.png` |
+| Dark Theme | `reflexio_dark_theme.png` |
+| Deployed | `reflexio_deployed.png` |
+| Digest Deployed | `reflexio_digest_deployed.png` |
+| Digest v2 | `reflexio_digest_v2.png` |
+| Digest v2b | `reflexio_digest_v2b.png` |
+| Digest v2c | `reflexio_digest_v2c.png` |
+| Digest v2d | `reflexio_digest_v2d.png` |
+| Enrichment | `reflexio_enrichment.png` |
+| Home v2 | `reflexio_home_v2.png` |
+| New Design | `reflexio_new_design.png` |
+| Smart Cards | `reflexio_smart_cards.png` |
+| Splash | `reflexio_splash.png` |
+| Splash v2 | `reflexio_splash2.png` |
+| Splash v3 | `reflexio_splash3.png` |
+| v3 | `reflexio_v3.png` |
+| v4 FAB | `reflexio_v4_fab.png` |
+| v5 Border | `reflexio_v5_border.png` |
+| v6 Teal | `reflexio_v6_teal.png` |
+| v7 Polish | `reflexio_v7_polish.png` |
+
+All screenshots are in [`docs/screenshots/`](docs/screenshots/).
+</details>
+</details>
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `POST` | `/ingest/audio` | Upload audio segment |
+| `POST` | `/asr/transcribe?file_id=...` | Transcribe uploaded file |
+| `GET` | `/ingest/status/{id}` | Processing status |
+| `GET` | `/digest/today` | Today's digest |
+| `GET` | `/digest/{date}` | Digest by date (YYYY-MM-DD) |
+| `GET` | `/digest/{date}/density` | Information density analysis |
+
+---
+
+## Documentation / Документация
+
+| Doc | Description |
+|-----|-------------|
+| [QUICKSTART.md](docs/QUICKSTART.md) | Step-by-step launch guide |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment |
+| [SECURITY.md](docs/SECURITY.md) | Security policy (SAFE, CoVe, PII) |
+| [DIGEST.md](docs/DIGEST.md) | Digest system documentation |
+| [API_KEYS_SETUP.md](docs/ENV_SETUP_INSTRUCTIONS.md) | API keys & env configuration |
+| [USER_GUIDE_DEMO.md](docs/USER_GUIDE_DEMO.md) | User guide & demo |
+| [RUNBOOKS.md](docs/RUNBOOKS.md) | Incident runbooks |
+
+---
+
+## License
 
 MIT
 
-## 🤝 Вклад
+## Author
 
-Проект находится в активной разработке. Pull requests приветствуются!
+Sergey Kucherenko — [@sergeeey](https://github.com/sergeeey)
