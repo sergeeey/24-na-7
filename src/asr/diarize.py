@@ -18,6 +18,7 @@ Lazy load:
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -41,6 +42,7 @@ class DiarizationNotAvailableError(RuntimeError):
 
 _pipeline = None  # type: ignore[var-annotated]
 _pipeline_loaded: bool = False
+_pipeline_lock = threading.Lock()
 
 
 def _load_pipeline():  # type: ignore[return]
@@ -55,36 +57,39 @@ def _load_pipeline():  # type: ignore[return]
     if _pipeline_loaded:
         return _pipeline
 
-    _pipeline_loaded = True  # флаг чтобы не пытаться повторно при ошибке
+    with _pipeline_lock:
+        if _pipeline_loaded:
+            return _pipeline
 
-    hf_token = os.getenv("HF_TOKEN")
-    if not hf_token:
-        logger.warning(
-            "diarize_disabled",
-            reason="HF_TOKEN not set — speaker diarization unavailable",
-        )
-        return None
+        hf_token = os.getenv("HF_TOKEN")
+        if not hf_token:
+            logger.warning(
+                "diarize_disabled",
+                reason="HF_TOKEN not set — speaker diarization unavailable",
+            )
+            _pipeline_loaded = True
+            return None
 
-    try:
-        from pyannote.audio import Pipeline  # type: ignore[import-untyped]
+        try:
+            from pyannote.audio import Pipeline  # type: ignore[import-untyped]
 
-        logger.info("diarize_pipeline_loading", model="pyannote/speaker-diarization-3.1")
-        _pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
-            use_auth_token=hf_token,
-        )
-        logger.info("diarize_pipeline_ready")
-        return _pipeline
+            logger.info("diarize_pipeline_loading", model="pyannote/speaker-diarization-3.1")
+            _pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                use_auth_token=hf_token,
+            )
+            logger.info("diarize_pipeline_ready")
+        except ImportError:
+            logger.warning(
+                "diarize_disabled",
+                reason="pyannote.audio not installed",
+            )
+        except Exception as e:
+            logger.error("diarize_pipeline_failed", error=str(e))
 
-    except ImportError:
-        logger.warning(
-            "diarize_disabled",
-            reason="pyannote.audio not installed",
-        )
-        return None
-    except Exception as e:
-        logger.error("diarize_pipeline_failed", error=str(e))
-        return None
+        _pipeline_loaded = True
+
+    return _pipeline
 
 
 # ──────────────────────────────────────────────

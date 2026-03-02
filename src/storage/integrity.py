@@ -76,7 +76,7 @@ def append_integrity_event(
         SELECT content_hash
         FROM integrity_events
         WHERE ingest_id = ?
-        ORDER BY created_at DESC, id DESC
+        ORDER BY created_at DESC, ROWID DESC
         LIMIT 1
         """,
         (ingest_id,),
@@ -103,7 +103,7 @@ def get_ingest_integrity_report(db_path: Path, ingest_id: str) -> dict[str, Any]
         SELECT id, stage, content_hash, prev_hash, metadata, created_at
         FROM integrity_events
         WHERE ingest_id = ?
-        ORDER BY created_at ASC, id ASC
+        ORDER BY created_at ASC, ROWID ASC
         """,
         (ingest_id,),
     )

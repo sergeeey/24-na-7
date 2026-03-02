@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
+
 from src.enrichment.domain_classifier import classify_domains
 from src.enrichment.schema import StructuredEvent, TaskExtracted
 from src.utils.logging import get_logger
@@ -39,8 +41,6 @@ WHISPER_HALLUCINATIONS = {
 }
 
 MIN_WORDS_FOR_ENRICHMENT = 3
-ENRICHMENT_MAX_RETRIES = 3
-ENRICHMENT_BACKOFF_SEC = (2, 4, 8)
 
 
 def _compute_enrichment_confidence(analysis: dict) -> float:
@@ -58,33 +58,29 @@ def _compute_enrichment_confidence(analysis: dict) -> float:
     return round(min(score, 1.0), 2)
 
 
-def _run_analysis_with_retry(clean_text: str) -> tuple[dict[str, Any], float]:
-    """Вызывает LLM-анализ с retry + exponential backoff."""
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=8),
+    before_sleep=before_sleep_log(logger, "warning"),
+    reraise=True,
+)
+def _call_llm_analysis(clean_text: str) -> dict[str, Any]:
+    """LLM-анализ с tenacity retry + exponential backoff.
+
+    ПОЧЕМУ tenacity вместо ручного loop + time.sleep:
+    time.sleep блокирует thread pool worker на 2-8 сек.
+    tenacity — декларативный retry с logging hooks из коробки.
+    """
     from src.summarizer.few_shot import analyze_recording_text
+    return analyze_recording_text(clean_text)
 
-    last_error: Exception | None = None
-    for attempt in range(ENRICHMENT_MAX_RETRIES):
-        try:
-            start = time.time()
-            analysis = analyze_recording_text(clean_text)
-            latency_ms = (time.time() - start) * 1000
-            return analysis, latency_ms
-        except Exception as e:
-            last_error = e
-            wait_s = ENRICHMENT_BACKOFF_SEC[min(attempt, len(ENRICHMENT_BACKOFF_SEC) - 1)]
-            logger.warning(
-                "enrichment_attempt_failed",
-                attempt=attempt + 1,
-                max_attempts=ENRICHMENT_MAX_RETRIES,
-                backoff_sec=wait_s,
-                error=str(e),
-            )
-            if attempt < ENRICHMENT_MAX_RETRIES - 1:
-                time.sleep(wait_s)
 
-    if last_error:
-        raise last_error
-    raise RuntimeError("Unknown enrichment failure")
+def _run_analysis_with_retry(clean_text: str) -> tuple[dict[str, Any], float]:
+    """Вызывает LLM-анализ с retry, возвращает (result, latency_ms)."""
+    start = time.time()
+    analysis = _call_llm_analysis(clean_text)
+    latency_ms = (time.time() - start) * 1000
+    return analysis, latency_ms
 
 
 def enrich_transcription(

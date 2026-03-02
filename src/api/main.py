@@ -153,6 +153,11 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
     # до удаления. Фоновая задача — defense in depth для zero-retention.
     asyncio.create_task(_orphan_sweep(settings.STORAGE_PATH, interval=300))
 
+    # Enrichment workers: async queue для LLM-обогащения
+    from src.enrichment.worker import get_enrichment_worker
+    enrichment_worker = get_enrichment_worker()
+    await enrichment_worker.start()
+
     # APScheduler: ежедневный compliance cleanup в 03:00
     scheduler = None
     try:
@@ -178,6 +183,7 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
     yield  # ── Приложение работает ──────────────
 
     # ── Shutdown ─────────────────────────────────
+    await enrichment_worker.stop()
     if scheduler and scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("apscheduler_stopped")

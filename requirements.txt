@@ -26,6 +26,9 @@ openai>=1.0.0
 # LLM
 anthropic>=0.18.0
 
+# Retry
+tenacity>=8.2.0
+
 # HTTP & Requests
 requests>=2.31.0
 

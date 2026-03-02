@@ -1,4 +1,5 @@
 """Модуль транскрипции речи (ASR) с поддержкой multiple providers."""
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any
 import os
@@ -13,17 +14,26 @@ logger = get_logger("asr")
 
 # Глобальный экземпляр модели (ленивая загрузка) для backward compatibility
 _model: Optional[Any] = None
+_model_lock = threading.Lock()
 
 # Глобальный провайдер ASR
 _asr_provider: Optional[Any] = None
 _asr_provider_initialized: bool = False
+_asr_lock = threading.Lock()
 
 
 def get_model():
     """Возвращает модель Whisper (ленивая загрузка) для backward compatibility."""
     global _model
 
-    if _model is None:
+    # ПОЧЕМУ double-check: WhisperModel загружается ~5 сек и ~600MB RAM.
+    # Без lock два concurrent запроса загрузят модель дважды.
+    if _model is not None:
+        return _model
+
+    with _model_lock:
+        if _model is not None:
+            return _model
         try:
             from faster_whisper import WhisperModel
             logger.info(
@@ -52,9 +62,10 @@ def get_asr_provider():
     # Без флага каждый вызов заново читал бы yaml и логировал инициализацию.
     if _asr_provider_initialized:
         return _asr_provider
-    _asr_provider_initialized = True
 
-    if _asr_provider is None:
+    with _asr_lock:
+        if _asr_provider_initialized:
+            return _asr_provider
         # Загружаем конфигурацию
         config_path = Path("config/asr.yaml")
         edge_mode = False
@@ -129,6 +140,8 @@ def get_asr_provider():
             except Exception as e:
                 logger.error("failed_to_create_asr_provider", error=str(e), fallback="local")
                 _asr_provider = None
+
+        _asr_provider_initialized = True
 
     return _asr_provider
 

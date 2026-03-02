@@ -15,26 +15,40 @@ from src.utils.logging import get_logger
 logger = get_logger("api.websocket")
 router = APIRouter(tags=["websocket"])
 
-_last_transcription_by_connection: dict[str, dict] = {}
-MERGE_WINDOW_SECONDS = 5
+class _ConnectionState:
+    """Кэш последней транскрипции per WebSocket connection.
 
+    ПОЧЕМУ класс: инкапсулирует state + behavior вместо голого dict + 3 функций.
+    Не нуждается в threading.Lock — WebSocket handlers работают в asyncio event loop
+    (single-threaded cooperative multitasking).
+    """
 
-def _recent_text(connection_id: str) -> str:
-    now = datetime.now(timezone.utc)
-    prev = _last_transcription_by_connection.get(connection_id)
-    if not prev:
+    MERGE_WINDOW_SECONDS = 5
+
+    def __init__(self) -> None:
+        self._cache: dict[str, dict] = {}
+
+    def recent_text(self, connection_id: str) -> str:
+        now = datetime.now(timezone.utc)
+        prev = self._cache.get(connection_id)
+        if not prev:
+            return ""
+        dt = (now - prev["ts"]).total_seconds()
+        if dt <= self.MERGE_WINDOW_SECONDS and prev.get("text"):
+            return str(prev["text"])
         return ""
-    dt = (now - prev["ts"]).total_seconds()
-    if dt <= MERGE_WINDOW_SECONDS and prev.get("text"):
-        return str(prev["text"])
-    return ""
+
+    def remember(self, connection_id: str, text: str) -> None:
+        self._cache[connection_id] = {
+            "ts": datetime.now(timezone.utc),
+            "text": text,
+        }
+
+    def disconnect(self, connection_id: str) -> None:
+        self._cache.pop(connection_id, None)
 
 
-def _remember_text(connection_id: str, text: str) -> None:
-    _last_transcription_by_connection[connection_id] = {
-        "ts": datetime.now(timezone.utc),
-        "text": text,
-    }
+_conn_state = _ConnectionState()
 
 
 async def _process_audio_segment(websocket: WebSocket, audio_bytes: bytes, file_id: str, connection_id: str) -> None:
@@ -48,7 +62,7 @@ async def _process_audio_segment(websocket: WebSocket, audio_bytes: bytes, file_
             ingest_stage="ws_audio_received",
             transcription_stage="ws_transcription_saved",
             run_enrichment=True,
-            enrichment_prefix=_recent_text(connection_id),
+            enrichment_prefix=_conn_state.recent_text(connection_id),
             transcribe_fn=transcribe_audio,
         )
     except Exception as e:
@@ -91,7 +105,7 @@ async def _process_audio_segment(websocket: WebSocket, audio_bytes: bytes, file_
     payload = result.get("result", {})
     text = payload.get("text", "")
     if text:
-        _remember_text(connection_id, text)
+        _conn_state.remember(connection_id, text)
 
     await websocket.send_json(
         {
@@ -156,4 +170,4 @@ async def websocket_ingest(websocket: WebSocket):
         except Exception:
             pass
     finally:
-        _last_transcription_by_connection.pop(connection_id, None)
+        _conn_state.disconnect(connection_id)

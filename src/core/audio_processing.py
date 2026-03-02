@@ -1,8 +1,8 @@
 """Core audio processing helpers shared by REST and WebSocket paths."""
 from __future__ import annotations
 
-import asyncio
 import tempfile
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +25,7 @@ from src.speaker.storage import ensure_speaker_tables
 
 logger = get_logger("core.audio_processing")
 _speech_filter: SpeechFilter | None = None
+_speech_filter_lock = threading.Lock()
 
 ALLOWED_WAV_CONTENT_TYPES = {
     "audio/wav",
@@ -78,7 +79,11 @@ ALLOWED_TRANSCRIPTION_LANGUAGES = {"ru", "kk", "en"}
 
 def _get_speech_filter() -> SpeechFilter:
     global _speech_filter
-    if _speech_filter is None:
+    if _speech_filter is not None:
+        return _speech_filter
+    with _speech_filter_lock:
+        if _speech_filter is not None:
+            return _speech_filter
         _speech_filter = SpeechFilter(
             enabled=settings.FILTER_MUSIC,
             method=settings.FILTER_METHOD,
@@ -428,7 +433,14 @@ async def process_audio_bytes(
 
         if run_enrichment and transcription_id:
             text_for_enrichment = enrichment_text or f"{(enrichment_prefix or '').strip()} {result.get('text', '').strip()}".strip()
-            await asyncio.to_thread(_run_enrichment_sync, db_path, transcription_id, result, text_for_enrichment)
+            from src.enrichment.worker import get_enrichment_worker, EnrichmentTask
+            worker = get_enrichment_worker()
+            await worker.submit(EnrichmentTask(
+                db_path=db_path,
+                transcription_id=transcription_id,
+                result=result,
+                enrichment_text=text_for_enrichment,
+            ))
 
         return {
             "status": "transcribed",
