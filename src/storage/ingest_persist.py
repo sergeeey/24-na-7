@@ -147,15 +147,51 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
             enrichment_model TEXT DEFAULT '',
             enrichment_tokens INTEGER DEFAULT 0,
             enrichment_latency_ms REAL DEFAULT 0.0,
-            created_at TEXT
+            created_at TEXT,
+            version INTEGER DEFAULT 1,
+            supersedes_id TEXT,
+            is_current INTEGER DEFAULT 1
         )
+        """
+    )
+    # ПОЧЕМУ ALTER TABLE: существующие БД не имеют новых колонок.
+    # ALTER TABLE ADD COLUMN идемпотентен с try/except — безопасно вызывать повторно.
+    for col_def in [
+        "version INTEGER DEFAULT 1",
+        "supersedes_id TEXT",
+        "is_current INTEGER DEFAULT 1",
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE structured_events ADD COLUMN {col_def}")
+        except sqlite3.OperationalError:
+            pass  # колонка уже существует
+
+    # ПОЧЕМУ partial index: запросы всегда ищут is_current=1, partial index
+    # покрывает только актуальные версии — меньше размер, быстрее поиск.
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_structured_events_current
+        ON structured_events(transcription_id) WHERE is_current = 1
+        """
+    )
+    # VIEW для удобства — всегда показывает только актуальные версии
+    cursor.execute(
+        """
+        CREATE VIEW IF NOT EXISTS current_events AS
+        SELECT * FROM structured_events WHERE is_current = 1
         """
     )
     conn.commit()
 
 
 def persist_structured_event(db_path: Path, event) -> Optional[str]:
-    """Сохраняет StructuredEvent в SQLite. Возвращает event.id или None."""
+    """Append-only сохранение StructuredEvent. Возвращает event.id или None.
+
+    ПОЧЕМУ append-only вместо INSERT OR REPLACE:
+    REPLACE уничтожает предыдущую версию — теряется история обогащений.
+    Append-only: старая версия помечается is_current=0, новая вставляется
+    с version+1 и supersedes_id → полная history для аудита и отката.
+    """
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
     db = get_reflexio_db(db_path)
@@ -168,15 +204,36 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
         )
 
         with db.transaction():
+            # Ищем текущую версию для этого transcription_id
+            existing = db.fetchone(
+                """
+                SELECT id, version FROM structured_events
+                WHERE transcription_id = ? AND is_current = 1
+                """,
+                (event.transcription_id,),
+            )
+
+            version = 1
+            supersedes_id = None
+            if existing:
+                version = (existing["version"] or 1) + 1
+                supersedes_id = existing["id"]
+                # Помечаем старую версию как неактуальную
+                db.execute(
+                    "UPDATE structured_events SET is_current = 0 WHERE id = ?",
+                    (existing["id"],),
+                )
+
             db.execute(
                 """
-                INSERT OR REPLACE INTO structured_events (
+                INSERT INTO structured_events (
                     id, transcription_id, timestamp, duration_sec, text, language,
                     summary, emotions, topics, domains, tasks, decisions, speakers,
                     urgency, sentiment, location,
                     asr_confidence, enrichment_confidence, enrichment_model,
-                    enrichment_tokens, enrichment_latency_ms, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    enrichment_tokens, enrichment_latency_ms, created_at,
+                    version, supersedes_id, is_current
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
@@ -201,9 +258,17 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                     event.enrichment_tokens,
                     event.enrichment_latency_ms,
                     event.created_at.isoformat() if event.created_at else None,
+                    version,
+                    supersedes_id,
+                    1,  # is_current
                 ),
             )
-        logger.info("structured_event_persisted", event_id=event.id, transcription_id=event.transcription_id)
+        logger.info(
+            "structured_event_persisted",
+            event_id=event.id,
+            transcription_id=event.transcription_id,
+            version=version,
+        )
         return event.id
     except Exception as e:
         logger.exception("structured_event_persist_failed", event_id=getattr(event, "id", "?"), error=str(e))
@@ -241,7 +306,7 @@ def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[st
                    se.enrichment_confidence, se.created_at
             FROM structured_events se
             JOIN transcriptions t ON se.transcription_id = t.id
-            WHERE t.ingest_id = ?
+            WHERE t.ingest_id = ? AND se.is_current = 1
             ORDER BY se.created_at DESC
             LIMIT 1
             """,

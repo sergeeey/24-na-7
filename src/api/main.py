@@ -29,7 +29,7 @@ from src.api.routers import metrics
 from src.api.routers import search
 from src.api.routers import voice
 from src.api.routers import websocket
-from src.storage.db import ensure_all_tables, get_reflexio_db
+from src.storage.db import ensure_all_tables, get_reflexio_db, run_migrations
 from src.utils.config import settings
 from src.utils.logging import get_logger, setup_logging
 from src.utils.rate_limiter import RateLimitConfig, setup_rate_limiting
@@ -123,6 +123,9 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
 
     db_path = settings.STORAGE_PATH / "reflexio.db"
     ensure_all_tables(db_path)
+    applied = run_migrations(db_path)
+    if applied:
+        logger.info("migrations_applied", count=len(applied), names=applied)
 
     # ПОЧЕМУ верификация WAL: get_connection() ставит WAL при создании,
     # но это может не сработать (read-only FS, permissions). Проверяем факт.

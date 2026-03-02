@@ -196,6 +196,75 @@ def ensure_all_tables(db_path: Union[str, Path]) -> None:
     logger.info("all_tables_ensured", db_path=str(path))
 
 
+def run_migrations(db_path: Union[str, Path]) -> list[str]:
+    """
+    Применяет SQLite миграции из src/storage/migrations/sqlite/.
+
+    ПОЧЕМУ отдельный каталог sqlite/: существующие 0001-0009 — PostgreSQL/Supabase.
+    SQLite миграции начинаются с 0010 и содержат только SQLite-совместимый DDL.
+
+    Returns:
+        Список имён применённых миграций.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    db = get_reflexio_db(db_path)
+
+    # Создаём таблицу tracking (DDL — без transaction)
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL,
+            checksum TEXT NOT NULL
+        )
+        """
+    )
+    db.conn.commit()
+
+    # Ищем SQL файлы
+    migrations_dir = Path(__file__).parent / "migrations" / "sqlite"
+    if not migrations_dir.exists():
+        return []
+
+    sql_files = sorted(migrations_dir.glob("*.sql"))
+    if not sql_files:
+        return []
+
+    # Какие уже применены
+    applied = {
+        row["name"]
+        for row in db.fetchall("SELECT name FROM schema_migrations")
+    }
+
+    applied_now: list[str] = []
+    for sql_file in sql_files:
+        name = sql_file.name
+        if name in applied:
+            continue
+
+        content = sql_file.read_text(encoding="utf-8")
+        checksum = hashlib.sha256(content.encode()).hexdigest()[:16]
+
+        try:
+            # ПОЧЕМУ executescript: миграция может содержать несколько statements.
+            # executescript автоматически коммитит после каждого statement.
+            db.conn.executescript(content)
+            with db.transaction():
+                db.execute(
+                    "INSERT INTO schema_migrations (name, applied_at, checksum) VALUES (?, ?, ?)",
+                    (name, datetime.now(timezone.utc).isoformat(), checksum),
+                )
+            applied_now.append(name)
+            logger.info("migration_applied", name=name, checksum=checksum)
+        except Exception as e:
+            logger.error("migration_failed", name=name, error=str(e))
+            raise
+
+    return applied_now
+
+
 def get_reflexio_db(db_path: Optional[Union[str, Path]] = None) -> ReflexioDB:
     """
     Фабричная функция — основной способ получить ReflexioDB.
