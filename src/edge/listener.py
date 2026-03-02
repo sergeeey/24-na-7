@@ -6,11 +6,12 @@ import wave
 import time
 import requests
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from src.utils.config import settings
 from src.utils.logging import setup_logging, get_logger
+from src.utils.secure_delete import secure_delete
 from src.edge.filters import SpeechFilter
 
 # Настройка логирования
@@ -33,6 +34,29 @@ speech_filter = SpeechFilter(
 
 # Создаём директорию для локальных записей
 settings.RECORDINGS_PATH.mkdir(parents=True, exist_ok=True)
+
+
+# ── Startup sweep: удалить WAV-сироты старше 1 часа ──
+# ПОЧЕМУ: если listener крашился, WAV с PII (голос) остаются на диске.
+# При рестарте подчищаем — это zero-retention compliance.
+def _startup_sweep(recordings_path: Path, max_age_hours: int = 1) -> int:
+    """Удаляет WAV файлы старше max_age_hours при старте."""
+    deleted = 0
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=max_age_hours)
+    for wav_file in recordings_path.glob("*.wav"):
+        try:
+            mtime = datetime.fromtimestamp(wav_file.stat().st_mtime, tz=timezone.utc)
+            if mtime < cutoff:
+                secure_delete(wav_file)
+                deleted += 1
+        except Exception as e:
+            logger.warning("startup_sweep_error", file=str(wav_file), error=str(e))
+    if deleted > 0:
+        logger.info("startup_sweep_done", deleted=deleted, path=str(recordings_path))
+    return deleted
+
+
+_startup_sweep(settings.RECORDINGS_PATH)
 
 
 def write_wave(path: Path, audio_frames: list[bytes], sample_rate: int) -> None:
@@ -186,8 +210,8 @@ def listen_forever(api_url: Optional[str] = None) -> None:
                     if settings.EDGE_AUTO_UPLOAD and api_url:
                         success = upload_audio(filename, api_url)
                         if success and settings.EDGE_DELETE_AFTER_UPLOAD:
-                            filename.unlink()
-                            logger.debug("local_file_deleted", filename=filename.name)
+                            secure_delete(filename)
+                            logger.debug("local_file_securely_deleted", filename=filename.name)
                 except Exception as e:
                     logger.error(
                         "save_failed",

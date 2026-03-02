@@ -2,7 +2,8 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,6 +73,47 @@ def _run_compliance_cleanup() -> None:
 
 
 # ──────────────────────────────────────────────
+# Orphan WAV sweep — zero-retention compliance
+# ──────────────────────────────────────────────
+
+async def _orphan_sweep(storage_path: Path, interval: int = 300, max_age_hours: int = 1) -> None:
+    """
+    Фоновая задача: удаляет WAV-сироты старше max_age_hours.
+
+    Сканирует uploads/ и recordings/ каждые `interval` секунд.
+    Использует secure_delete для compliance с KZ GDPR.
+    """
+    from src.utils.secure_delete import secure_delete
+
+    scan_dirs = [
+        storage_path / "uploads",
+        storage_path / "recordings",
+    ]
+    cutoff_delta = timedelta(hours=max_age_hours)
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            deleted = 0
+            cutoff = datetime.now(tz=timezone.utc) - cutoff_delta
+            for scan_dir in scan_dirs:
+                if not scan_dir.exists():
+                    continue
+                for wav_file in scan_dir.glob("*.wav"):
+                    try:
+                        mtime = datetime.fromtimestamp(wav_file.stat().st_mtime, tz=timezone.utc)
+                        if mtime < cutoff:
+                            secure_delete(wav_file)
+                            deleted += 1
+                    except Exception as e:
+                        logger.warning("orphan_sweep_file_error", file=str(wav_file), error=str(e))
+            if deleted > 0:
+                logger.info("orphan_sweep_done", deleted=deleted)
+        except Exception as e:
+            logger.error("orphan_sweep_failed", error=str(e))
+
+
+# ──────────────────────────────────────────────
 # FastAPI lifespan (startup + shutdown)
 # ПОЧЕМУ @asynccontextmanager вместо @app.on_event:
 #   on_event устарел в FastAPI 0.93+. lifespan — официальный способ.
@@ -92,6 +134,20 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
     ensure_health_tables(db_path)
     ensure_person_graph_tables(db_path)
 
+    # ПОЧЕМУ верификация WAL: get_connection() ставит WAL при создании,
+    # но это может не сработать (read-only FS, permissions). Проверяем факт.
+    try:
+        from src.storage.db import get_connection
+        _verify_conn = get_connection(db_path)
+        _wal_mode = _verify_conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if _wal_mode == "wal":
+            logger.info("wal_mode_verified", db_path=str(db_path))
+        else:
+            logger.warning("wal_mode_not_active", actual=_wal_mode, db_path=str(db_path))
+        _verify_conn.close()
+    except Exception as e:
+        logger.error("wal_verification_failed", error=str(e))
+
     from src.api.middleware.safe_middleware import get_safe_checker
     safe_checker = get_safe_checker()
     if safe_checker:
@@ -104,6 +160,10 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
         logger.info("health_monitor_started")
     except Exception as e:
         logger.warning("health_monitor_failed", error=str(e))
+
+    # ПОЧЕМУ orphan sweep: ingest сохраняет WAV в uploads/ и может крашнуться
+    # до удаления. Фоновая задача — defense in depth для zero-retention.
+    asyncio.create_task(_orphan_sweep(settings.STORAGE_PATH, interval=300))
 
     # APScheduler: ежедневный compliance cleanup в 03:00
     scheduler = None

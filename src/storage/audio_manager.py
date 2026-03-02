@@ -2,14 +2,16 @@
 Менеджер аудио файлов с шифрованием и retention policy.
 Reflexio v2.1 — Surpass Smart Noter Sprint
 """
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Generator
 from datetime import datetime, timedelta
 import json
 
 from src.utils.logging import get_logger
 from src.utils.config import settings
 from src.storage.encryption import get_audio_encryption
+from src.utils.secure_delete import secure_delete
 
 logger = get_logger("storage.audio")
 
@@ -73,8 +75,8 @@ class AudioManager:
             # Шифруем если нужно
             if self.encrypt and self.encryption:
                 encrypted_path = self.encryption.encrypt_file(stored_path)
-                # Удаляем незашифрованную версию
-                stored_path.unlink()
+                # ПОЧЕМУ secure_delete: plaintext версия содержит PII (голос)
+                secure_delete(stored_path)
                 stored_path = encrypted_path
                 logger.info("audio_encrypted", file_id=file_id)
             
@@ -153,42 +155,73 @@ class AudioManager:
             logger.error("audio_retrieval_failed", error=str(e))
             return None
     
+    @contextmanager
+    def get_audio_ctx(self, file_id: str) -> Generator[Optional[Path], None, None]:
+        """
+        Context manager для безопасного доступа к аудио.
+
+        ПОЧЕМУ: get_audio() расшифровывает в .decrypted файл, который
+        нигде не чистился. Context manager гарантирует secure_delete
+        расшифрованной копии в finally — нет утечки plaintext данных.
+
+        Usage:
+            with manager.get_audio_ctx("file123") as audio_path:
+                if audio_path:
+                    process(audio_path)
+            # .decrypted автоматически удалён
+        """
+        decrypted_path: Optional[Path] = None
+        try:
+            path = self.get_audio(file_id, decrypt=True)
+            if path and path.suffix == ".decrypted":
+                decrypted_path = path
+            yield path
+        finally:
+            if decrypted_path and decrypted_path.exists():
+                secure_delete(decrypted_path)
+
     def cleanup_expired(self) -> int:
         """
         Удаляет истёкшие файлы (zero-retention).
-        
+
         Returns:
             Количество удалённых файлов
         """
         if self.retention_hours == 0:
             return 0
-        
+
         deleted_count = 0
         cutoff_time = datetime.now() - timedelta(hours=self.retention_hours)
-        
+
         try:
+            # ПОЧЕМУ sweep .decrypted: get_audio() создаёт временные расшифрованные файлы.
+            # Если вызывающий код крашнулся, .decrypted остаются — подчищаем.
+            for decrypted_file in self.storage_path.glob("*.decrypted"):
+                secure_delete(decrypted_file)
+                deleted_count += 1
+                logger.info("orphan_decrypted_deleted", path=str(decrypted_file))
+
             for metadata_file in self.storage_path.glob("*.meta.json"):
                 try:
                     metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
                     stored_at = datetime.fromisoformat(metadata["stored_at"])
-                    
+
                     if stored_at < cutoff_time:
-                        # Удаляем файл и метаданные
                         stored_path = Path(metadata["stored_path"])
                         if stored_path.exists():
-                            stored_path.unlink()
-                        
+                            secure_delete(stored_path)
+
                         metadata_file.unlink()
                         deleted_count += 1
-                        
+
                         logger.info("expired_audio_deleted", file_id=metadata.get("file_id"))
-                        
+
                 except Exception as e:
                     logger.warning("cleanup_file_failed", file=str(metadata_file), error=str(e))
-            
+
             logger.info("cleanup_completed", deleted_count=deleted_count)
             return deleted_count
-            
+
         except Exception as e:
             logger.error("cleanup_failed", error=str(e))
             return deleted_count

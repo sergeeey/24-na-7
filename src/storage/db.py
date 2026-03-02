@@ -4,7 +4,8 @@ DAL (Data Access Layer) — единый интерфейс для работы 
 """
 import os
 import json
-from typing import Optional, List, Dict, Any
+import sqlite3
+from typing import Optional, List, Dict, Any, Union
 from pathlib import Path
 
 try:
@@ -14,6 +15,61 @@ try:
 except Exception:
     import logging
     logger = logging.getLogger("storage.db")
+
+
+# ──────────────────────────────────────────────
+# Connection Factory — единая точка создания SQLite connections
+# ПОЧЕМУ: 31 файл делал sqlite3.connect() без pragmas.
+# WAL mode + busy_timeout + cache — базовый минимум для concurrent access.
+# ──────────────────────────────────────────────
+
+def get_connection(db_path: Union[str, Path], *, check_same_thread: bool = False) -> sqlite3.Connection:
+    """
+    Создаёт SQLite connection с production-grade pragmas.
+
+    Args:
+        db_path: путь к файлу БД
+        check_same_thread: по умолчанию False для FastAPI (multi-thread).
+            Потокобезопасность обеспечивается на уровне приложения.
+
+    Returns:
+        sqlite3.Connection с настроенными pragmas и row_factory
+    """
+    conn = sqlite3.connect(str(db_path), check_same_thread=check_same_thread)
+    conn.row_factory = sqlite3.Row
+
+    # ПОЧЕМУ каждый pragma:
+    # WAL — читатели не блокируют писателей (критично для concurrent WebSocket)
+    # synchronous=NORMAL — баланс скорость/надёжность (FULL слишком медленный для WAL)
+    # busy_timeout=5000 — ждать 5 сек вместо мгновенного SQLITE_BUSY
+    # cache_size=-65536 — 64MB page cache (дефолт 2MB, наши данные больше)
+    # mmap_size=268435456 — 256MB memory-mapped I/O для read-heavy workload
+    # temp_store=MEMORY — temp таблицы в RAM (не на диск)
+    # foreign_keys=ON — SQLite по дефолту не проверяет FK, это баг-магнит
+    # wal_autocheckpoint=1000 — checkpoint каждые 1000 страниц (дефолт)
+    pragmas = [
+        ("journal_mode", "WAL"),
+        ("synchronous", "NORMAL"),
+        ("busy_timeout", "5000"),
+        ("cache_size", "-65536"),
+        ("mmap_size", "268435456"),
+        ("temp_store", "MEMORY"),
+        ("foreign_keys", "ON"),
+        ("wal_autocheckpoint", "1000"),
+    ]
+
+    cursor = conn.cursor()
+    for pragma_name, pragma_value in pragmas:
+        cursor.execute(f"PRAGMA {pragma_name} = {pragma_value}")  # nosec B608 — hardcoded values, not user input
+
+    # Верифицируем WAL (journal_mode SET возвращает результат)
+    result = cursor.execute("PRAGMA journal_mode").fetchone()
+    actual_mode = result[0] if result else "unknown"
+    if actual_mode != "wal":
+        logger.warning("wal_mode_not_set", expected="wal", actual=actual_mode, db_path=str(db_path))
+
+    cursor.close()
+    return conn
 
 
 # Whitelist разрешённых таблиц для защиты от SQL injection
@@ -76,12 +132,10 @@ class DatabaseBackend:
 
 class SQLiteBackend(DatabaseBackend):
     """Бэкенд для SQLite."""
-    
+
     def __init__(self, db_path: Path):
         self.db_path = db_path
-        import sqlite3
-        self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+        self.conn = get_connection(db_path)
     
     def insert(self, table: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Вставляет запись в SQLite."""
