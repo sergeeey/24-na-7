@@ -62,6 +62,10 @@ python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
 addopts = "--json-report --json-report-file=tests/.report.json --json-report-summary"
+markers = [
+    "performance: marks tests as performance benchmarks",
+    "slow: marks tests as slow-running",
+]
 
 [tool.coverage.run]
 source = ["src"]

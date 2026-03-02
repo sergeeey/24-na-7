@@ -102,12 +102,16 @@ class TestAnthropicClient:
     def test_anthropic_initialization(self):
         """Инициализация Anthropic клиента (anthropic может быть не установлен)."""
         import sys
+        from src.utils.config import settings
         mock_anthropic_mod = MagicMock()
         mock_anthropic_mod.Anthropic.return_value = Mock()
         old = sys.modules.get("anthropic")
         sys.modules["anthropic"] = mock_anthropic_mod
         try:
-            client = AnthropicClient(model="claude-3", temperature=0.3)
+            # ПОЧЕМУ: settings загружает ключи из .env при импорте,
+            # patch.dict(os.environ) не влияет на уже загруженный объект
+            with patch.object(settings, "ANTHROPIC_API_KEY", "sk-ant-test"):
+                client = AnthropicClient(model="claude-3", temperature=0.3)
             assert client.provider == LLMProvider.ANTHROPIC
             assert client.api_key == "sk-ant-test"
         finally:

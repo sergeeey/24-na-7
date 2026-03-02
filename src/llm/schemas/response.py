@@ -1,18 +1,17 @@
 """Базовые схемы для LLM ответов."""
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LLMResponse(BaseModel):
     """Базовая схема ответа от LLM."""
+    model_config = ConfigDict(extra="allow")
+
     text: str = Field(..., description="Текст ответа от LLM")
     tokens_used: Optional[int] = Field(None, description="Количество использованных токенов")
     latency_ms: Optional[float] = Field(None, description="Латентность запроса в миллисекундах")
     model: Optional[str] = Field(None, description="Модель LLM")
     reasoning_trace: Optional[Dict[str, Any]] = Field(None, description="Трассировка reasoning")
-    
-    class Config:
-        extra = "allow"  # Разрешаем дополнительные поля
 
 
 class LLMErrorResponse(BaseModel):

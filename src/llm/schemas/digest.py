@@ -1,6 +1,6 @@
 """Схемы для валидации дайджестов и анализа записей."""
 from typing import List, Optional, Literal
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class EmotionItem(BaseModel):
@@ -30,7 +30,8 @@ class DigestOutput(BaseModel):
     dominant_emotion: Optional[str] = Field(None, description="Доминирующая эмоция")
     intensity: Optional[float] = Field(None, ge=0.0, le=1.0, description="Общая интенсивность эмоций")
     
-    @validator("emotions", "actions", "topics", pre=True)
+    @field_validator("emotions", "actions", "topics", mode="before")
+    @classmethod
     def ensure_list(cls, v):
         """Обеспечиваем что значение - список."""
         if v is None:
@@ -47,7 +48,8 @@ class DigestAnalysis(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0, description="Уверенность в результате (0-1)")
     warning: Optional[str] = Field(None, description="Предупреждение о качестве результата")
     
-    @validator("confidence", pre=True)
+    @field_validator("confidence", mode="before")
+    @classmethod
     def ensure_confidence(cls, v):
         """Обеспечиваем что confidence в диапазоне 0-1."""
         if v is None:

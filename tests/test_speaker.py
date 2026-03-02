@@ -6,12 +6,10 @@
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 import wave
-import struct
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -311,7 +309,7 @@ class TestEnrollment:
             enroll_from_wavs([wav_path], db_path)
 
     def test_enrollment_too_short_sample(self, tmp_path, db_path):
-        from src.speaker.enrollment import enroll_from_wavs, MIN_DURATION_SECONDS
+        from src.speaker.enrollment import enroll_from_wavs
         ensure_tables_for_test(db_path)
 
         # 0.5 секунд — слишком коротко

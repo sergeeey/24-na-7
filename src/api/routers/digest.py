@@ -38,7 +38,7 @@ def get_digest_daily(
 
 
 @router.get("/today")
-async def get_digest_today(format: str = Query("markdown", regex="^(markdown|json)$")):
+async def get_digest_today(format: str = Query("markdown", pattern="^(markdown|json)$")):
     """
     Получает дайджест за сегодня.
     
@@ -77,7 +77,7 @@ async def get_digest_today(format: str = Query("markdown", regex="^(markdown|jso
 @router.get("/{target_date}")
 async def get_digest(
     target_date: str = PathParam(..., description="Дата в формате YYYY-MM-DD"),
-    format: str = Query("markdown", regex="^(markdown|json)$"),
+    format: str = Query("markdown", pattern="^(markdown|json)$"),
 ):
     """
     Получает дайджест за указанную дату.

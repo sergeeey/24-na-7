@@ -6,6 +6,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -181,6 +182,25 @@ app.include_router(balance.router)
 app.include_router(health_metrics.router)
 app.include_router(graph.router)       # Sprint 2: Social Graph
 app.include_router(compliance.router)  # Sprint 2: KZ GDPR Compliance
+
+
+# ── Global Exception Handler ──────────────────
+# ПОЧЕМУ: без этого необработанные исключения возвращают сырой traceback
+# клиенту — утечка внутренних деталей (пути, версии библиотек, SQL).
+# Handler ловит всё, логирует для отладки, клиенту — generic 500.
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        "unhandled_exception",
+        path=request.url.path,
+        method=request.method,
+        error=str(exc),
+        error_type=type(exc).__name__,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 @app.get("/health")

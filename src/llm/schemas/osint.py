@@ -1,6 +1,6 @@
 """Схемы для валидации OSINT ответов."""
 from typing import List, Optional, Literal
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class Claim(BaseModel):
@@ -12,7 +12,8 @@ class Claim(BaseModel):
     extracted_at: Optional[str] = Field(None, description="Время извлечения (ISO format)")
     extracted_from: Optional[str] = Field(None, description="Метод извлечения")
     
-    @validator("source_urls", pre=True)
+    @field_validator("source_urls", mode="before")
+    @classmethod
     def ensure_list(cls, v):
         """Обеспечиваем что source_urls - список."""
         if v is None:
@@ -39,7 +40,8 @@ class OSINTResponse(BaseModel):
     mission_id: Optional[str] = Field(None, description="ID миссии")
     status: Literal["pending", "completed", "failed"] = Field("pending", description="Статус миссии")
     
-    @validator("claims", "validated_claims", pre=True)
+    @field_validator("claims", "validated_claims", mode="before")
+    @classmethod
     def ensure_list(cls, v):
         """Обеспечиваем что значение - список."""
         if v is None:

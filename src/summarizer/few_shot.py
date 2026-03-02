@@ -158,7 +158,7 @@ def generate_structured_output(
                 validated=True
             )
             
-            return validated.dict()
+            return validated.model_dump()
             
         except Exception as validation_error:
             logger.warning(

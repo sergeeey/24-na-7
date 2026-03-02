@@ -6,9 +6,9 @@ import pytest
 from pathlib import Path
 import tempfile
 import numpy as np
-import soundfile as sf
+sf = pytest.importorskip("soundfile")
 
-from src.asr.providers import get_asr_provider
+from src.asr.providers import get_asr_provider  # noqa: E402
 
 
 def calculate_wer(reference: str, hypothesis: str) -> float:

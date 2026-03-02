@@ -7,10 +7,10 @@ import time
 from pathlib import Path
 import tempfile
 import numpy as np
-import soundfile as sf
+sf = pytest.importorskip("soundfile")
 
-from src.asr.providers import OpenAIWhisperProvider
-from src.asr.transcribe import transcribe_audio
+from src.asr.providers import OpenAIWhisperProvider  # noqa: E402
+from src.asr.transcribe import transcribe_audio  # noqa: E402
 
 
 @pytest.fixture

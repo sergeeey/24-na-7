@@ -1131,12 +1131,15 @@ def test_llm_get_llm_client_unknown_provider():
 
 def test_llm_get_llm_client_google():
     """get_llm_client с provider=google возвращает GoogleGeminiClient (без ключа client=None)."""
-    import os
     try:
         from src.llm.providers import get_llm_client, GoogleGeminiClient
     except ImportError:
         pytest.skip("llm not available")
-    with patch.dict(os.environ, {"LLM_PROVIDER": "google", "GOOGLE_API_KEY": ""}, clear=False):
+    from src.utils.config import settings
+    # ПОЧЕМУ: GOOGLE_API_KEY нет в модели settings (она не знает про Google),
+    # поэтому патчим только LLM_PROVIDER на settings, а GOOGLE_API_KEY через env
+    with patch.object(settings, "LLM_PROVIDER", "google"), \
+         patch.dict(os.environ, {"GOOGLE_API_KEY": "", "GEMINI_API_KEY": ""}, clear=False):
         client = get_llm_client(role="actor")
     assert client is not None
     assert isinstance(client, GoogleGeminiClient) or client.client is None
@@ -1253,7 +1256,7 @@ def test_asr_get_asr_provider_env_fallback():
             MockPath.return_value.exists.return_value = False
             with patch.dict(os.environ, {"ASR_PROVIDER": "local", "ASR_MODEL": "faster-whisper"}, clear=False):
                 try:
-                    p = transcribe.get_asr_provider()
+                    transcribe.get_asr_provider()
                 except Exception:
                     pytest.skip("asr provider init failed")
         # For "local" provider, _asr_provider may be None (uses direct whisper call)
@@ -2229,8 +2232,10 @@ def test_storage_supabase_test_connection_no_client():
 def test_llm_anthropic_client_no_key():
     """AnthropicClient has client=None when ANTHROPIC_API_KEY not set."""
     from src.llm.providers import AnthropicClient
+    from src.utils.config import settings
 
-    with patch.dict(os.environ, {}, clear=False):
+    with patch.object(settings, "ANTHROPIC_API_KEY", None), \
+         patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}, clear=False):
         c = AnthropicClient(model="claude-3-haiku")
     assert c.client is None
 

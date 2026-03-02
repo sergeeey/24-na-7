@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import Dict
 
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings
 
 
@@ -135,10 +136,11 @@ class Settings(BaseSettings):
     def brightdata_api_key(self) -> str | None:
         return _get_secret_from_vault(self, "brightdata", self.BRIGHTDATA_API_KEY)
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+    )
 
 
 settings = Settings()
