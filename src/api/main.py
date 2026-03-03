@@ -29,6 +29,7 @@ from src.api.routers import metrics
 from src.api.routers import search
 from src.api.routers import voice
 from src.api.routers import websocket
+from src.api.routers import query
 from src.storage.db import ensure_all_tables, get_reflexio_db, run_migrations
 from src.utils.config import settings
 from src.utils.logging import get_logger, setup_logging
@@ -317,6 +318,7 @@ app.include_router(balance.router)
 app.include_router(health_metrics.router)
 app.include_router(graph.router)       # Sprint 2: Social Graph
 app.include_router(compliance.router)  # Sprint 2: KZ GDPR Compliance
+app.include_router(query.router)       # v1.0: Query Engine (5 unified tools)
 
 
 # ── Global Exception Handler ──────────────────
@@ -347,6 +349,63 @@ async def health(request: Request, response: Response):
         "timestamp": datetime.utcnow().isoformat(),
         "version": "0.2.0",
     }
+
+
+# ── v1.0: One Interface ────────────────────────────────────────────────────
+# POST /ask — единственная точка входа для пользователя.
+# Оркестратор сам выбирает тулы, параллельно вызывает, объединяет ответ.
+# Пользователь не знает о тулах, роутерах, event_ids.
+
+from pydantic import BaseModel as _BaseModel
+
+class AskRequest(_BaseModel):
+    question: str
+    include_evidence: bool = False
+
+
+@app.post("/ask")
+@limiter.limit("30/minute")
+async def ask(request: Request, body: AskRequest):
+    """
+    One Interface — задай вопрос, получи ответ с confidence.
+
+    Оркестратор автоматически:
+      1. Анализирует интент
+      2. Выбирает нужные тулы (query_events / get_digest / get_person_insights)
+      3. Вызывает параллельно (target: ≤400 ms)
+      4. Объединяет confidence
+      5. Возвращает минимальный ответ
+
+    Response:
+      answer          — текстовый ответ (минимальный)
+      confidence      — 0.0–1.0
+      confidence_label — high / medium / low / speculative
+      data            — структурированные данные от каждого тула
+      evidence_count  — кол-во источников
+      needs_clarification — true если speculative
+      total_ms        — latency
+    """
+    from src.core.orchestrator import orchestrate
+    from dataclasses import asdict
+
+    result = await orchestrate(body.question)
+
+    response: dict = {
+        "answer": result.answer,
+        "confidence": result.confidence,
+        "confidence_label": result.confidence_label,
+        "evidence_count": result.evidence_count,
+        "tools_used": result.tools_used,
+        "total_ms": result.total_ms,
+        "needs_clarification": result.needs_clarification,
+        "data": result.data,
+    }
+    if result.warning:
+        response["warning"] = result.warning
+    if body.include_evidence:
+        response["tools_used"] = result.tools_used
+
+    return response
 
 
 @app.get("/")
