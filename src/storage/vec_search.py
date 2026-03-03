@@ -216,7 +216,7 @@ def retroindex_all(conn: Any) -> int:
 
         from src.storage.embeddings import generate_embeddings
         count = 0
-        for id, text, rowid in rows:
+        for event_id, text, rowid in rows:
             try:
                 embedding = generate_embeddings(text)
                 blob = _to_blob(embedding)
@@ -229,7 +229,7 @@ def retroindex_all(conn: Any) -> int:
                     conn.commit()
                     logger.info("retroindex_progress", count=count, total=len(rows))
             except Exception as e:
-                logger.warning("retroindex_event_failed", id=id, error=str(e))
+                logger.warning("retroindex_event_failed", event_id=event_id, error=str(e))
 
         conn.commit()
         logger.info("retroindex_complete", indexed=count, total=len(rows))
