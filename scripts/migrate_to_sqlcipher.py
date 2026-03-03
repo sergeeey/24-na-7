@@ -41,22 +41,48 @@ def main() -> None:
     shutil.copy2(DB_PATH, BACKUP_PATH)
     print(f"[1/4] Бэкап сохранён: {BACKUP_PATH}")
 
-    # 2. Дамп из plain SQLite → восстановление в зашифрованную БД.
-    # ПОЧЕМУ iterdump(): SQLCipher не поддерживает пустой ключ для plain БД,
-    # поэтому нельзя открыть plain через sqlcipher3. Вместо этого:
-    # читаем через стандартный sqlite3, генерируем SQL dump,
-    # воспроизводим в зашифрованной БД через sqlcipher3.
+    # 2. Копируем schema + данные по таблицам.
+    # ПОЧЕМУ не executescript: sqlcipher3.executescript() не flush'ит корректно,
+    # файл создаётся но HMAC check fails при следующем открытии.
+    # Надёжнее: DDL по одному execute(), данные через executemany() → commit().
     plain_conn = sqlite3.connect(str(DB_PATH))
-    sql_dump = "\n".join(plain_conn.iterdump())
-    plain_conn.close()
+    plain_conn.row_factory = sqlite3.Row
 
     if ENCRYPTED_PATH.exists():
         ENCRYPTED_PATH.unlink()
 
     enc_conn = sqlcipher3.connect(str(ENCRYPTED_PATH))
     enc_conn.execute(f'PRAGMA key = "{key}"')  # nosec B608
-    enc_conn.executescript(sql_dump)
+    enc_conn.execute("PRAGMA journal_mode = DELETE")  # WAL после полной записи
+
+    # Копируем DDL (таблицы, индексы, триггеры)
+    ddl_rows = plain_conn.execute(
+        "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type DESC, name"
+    ).fetchall()
+    for row in ddl_rows:
+        try:
+            enc_conn.execute(row[0])
+        except Exception:
+            pass  # skip duplicates / virtual tables
+
+    # Копируем данные по каждой таблице
+    tables = plain_conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    for (tbl_name,) in tables:
+        rows = plain_conn.execute(f"SELECT * FROM \"{tbl_name}\"").fetchall()  # nosec B608 — table names from sqlite_master
+        if not rows:
+            continue
+        cols_count = len(rows[0])
+        placeholders = ",".join(["?" for _ in range(cols_count)])
+        enc_conn.executemany(
+            f"INSERT OR IGNORE INTO \"{tbl_name}\" VALUES ({placeholders})",  # nosec B608
+            [tuple(r) for r in rows],
+        )
+
+    enc_conn.commit()
     enc_conn.close()
+    plain_conn.close()
     print(f"[2/4] Зашифрованная копия создана: {ENCRYPTED_PATH}")
 
     # 3. Верификация — открываем зашифрованную и считаем строки
