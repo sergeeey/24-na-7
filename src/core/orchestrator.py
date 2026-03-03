@@ -44,6 +44,12 @@ _PERSON_KEYWORDS = re.compile(
     r"(?:о|про|с|насчёт)\s+([А-ЯЁа-яёA-Za-z]{2,})|([А-ЯЁ][а-яё]{2,})\s+(?:говорил|сказал|писал|звонил)",
     re.IGNORECASE,
 )
+# Стоп-слова которые не являются именами персон
+_PERSON_STOPWORDS = frozenset({
+    "было", "чём", "ком", "чем", "том", "сём", "всём", "этом",
+    "работе", "доме", "деле", "мне", "тебе", "нас", "них",
+    "здоровье", "стрессе", "времени", "дне", "неделе", "месяце",
+})
 _HEALTH_KEYWORDS = re.compile(
     r"здоровь|стресс|сон|энергия|усталост|самочувстви|настроени|тревог",
     re.IGNORECASE,
@@ -97,7 +103,7 @@ def analyze_intent(question: str) -> list[ToolCall]:
     person_match = _PERSON_KEYWORDS.search(question)
     if person_match:
         name = person_match.group(1) or person_match.group(2)
-        if name:
+        if name and name.lower() not in _PERSON_STOPWORDS:
             calls.append(ToolCall("get_person_insights", {"name": name}))
 
     # Дайджест?
