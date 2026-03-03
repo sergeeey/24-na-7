@@ -74,9 +74,11 @@ def _load_pipeline():  # type: ignore[return]
             from pyannote.audio import Pipeline  # type: ignore[import-untyped]
 
             logger.info("diarize_pipeline_loading", model="pyannote/speaker-diarization-3.1")
+            # ПОЧЕМУ без use_auth_token: pyannote.audio 4.x удалил этот параметр.
+            # Теперь токен берётся автоматически из HF_TOKEN env var через huggingface-hub.
+            # В контейнере HF_TOKEN уже задан — from_pretrained() найдёт его сам.
             _pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.1",
-                use_auth_token=hf_token,
             )
             logger.info("diarize_pipeline_ready")
         except ImportError:
