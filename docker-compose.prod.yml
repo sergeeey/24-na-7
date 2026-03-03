@@ -17,6 +17,8 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: reflexio-api
+    # ПОЧЕМУ 2 workers: Whisper блокирует CPU, без второго worker REST таймаутится
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
     # ПОЧЕМУ только localhost: Caddy стоит снаружи и проксирует HTTPS→HTTP.
     # Открывать 8000 наружу не нужно — только Caddy должен видеть API.
     ports:
@@ -34,17 +36,14 @@ services:
       - FILTER_MUSIC=true
       - ASR_MODEL_SIZE=medium
       - ASR_LANGUAGE=ru
-      - INGEST_SYNC_PROCESS=1
-      - LLM_PROVIDER=cascade
-      - LLM_CASCADE_ORDER=google,anthropic,openai
     depends_on:
       redis:
         condition: service_healthy
     volumes:
-      # ПОЧЕМУ только storage и config (НЕ ./src):
-      #   Production → код уже внутри образа (COPY в Dockerfile).
-      #   Монтируем только данные (SQLite, аудио) и конфиги (изменяются без rebuild).
-      - ./src/storage:/app/src/storage
+      # ПОЧЕМУ ./src целиком (не только storage):
+      #   git pull + docker restart подхватывает новый код без rebuild образа.
+      #   Экономит 10-15 мин и место на диске при каждом деплое.
+      - ./src:/app/src
       - ./config:/app/config
     restart: unless-stopped
     healthcheck:
