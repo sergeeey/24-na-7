@@ -44,6 +44,62 @@ limiter = Limiter(key_func=get_remote_address)
 # APScheduler — ежедневный compliance cleanup
 # ──────────────────────────────────────────────
 
+def _run_daily_digest_precompute() -> None:
+    """
+    Pre-compute дневного дайджеста в фоне.
+
+    ПОЧЕМУ pre-compute: endpoint /digest/daily делал 3-5 LLM вызовов
+    (Chain of Density + extract_tasks + analyze_emotions) = 4+ минут.
+    Любой HTTP timeout < 4 мин → ошибка на клиенте.
+    Решение: генерируем заранее, клиент получает кеш мгновенно.
+
+    Запускается APScheduler в 18:00 (Алматы). Если сервер был выключен —
+    misfire_grace_time=7200 даёт 2 часа на catch-up.
+    """
+    import json as _json
+
+    try:
+        from src.digest.generator import DigestGenerator
+        from src.storage.db import get_reflexio_db
+
+        db_path = settings.STORAGE_PATH / "reflexio.db"
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        db = get_reflexio_db(db_path)
+
+        # Помечаем статус "generating"
+        db.execute(
+            "INSERT OR REPLACE INTO digest_cache (date, digest_json, generated_at, status) VALUES (?, ?, ?, ?)",
+            (today, "{}", datetime.now().isoformat(), "generating"),
+        )
+        db.conn.commit()
+
+        logger.info("digest_precompute_started", date=today)
+
+        generator = DigestGenerator(db_path=db_path)
+        result = generator.get_daily_digest_json(
+            datetime.strptime(today, "%Y-%m-%d").date()
+        )
+
+        db.execute(
+            "INSERT OR REPLACE INTO digest_cache (date, digest_json, generated_at, status) VALUES (?, ?, ?, ?)",
+            (today, _json.dumps(result, ensure_ascii=False), datetime.now().isoformat(), "ready"),
+        )
+        db.conn.commit()
+        logger.info("digest_precompute_done", date=today, recordings=result.get("total_recordings", 0))
+
+    except Exception as e:
+        logger.error("digest_precompute_failed", error=str(e))
+        try:
+            db.execute(
+                "UPDATE digest_cache SET status = 'failed' WHERE date = ?",
+                (today,),
+            )
+            db.conn.commit()
+        except Exception:
+            pass
+
+
 def _run_compliance_cleanup() -> None:
     """
     TTL-очистка биометрических данных окружения.
@@ -176,8 +232,19 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
             replace_existing=True,
             misfire_grace_time=3600,  # 1 час — если сервер был выключен
         )
+        # ПОЧЕМУ 18:00: пользователь хочет готовый дайджест к 18:30.
+        # Генерация занимает 2-5 мин → запускаем в 18:00, готово к 18:05.
+        scheduler.add_job(
+            _run_daily_digest_precompute,
+            trigger="cron",
+            hour=18,
+            minute=0,
+            id="digest_precompute",
+            replace_existing=True,
+            misfire_grace_time=7200,
+        )
         scheduler.start()
-        logger.info("apscheduler_started", job="compliance_cleanup@03:00")
+        logger.info("apscheduler_started", jobs="compliance_cleanup@03:00, digest_precompute@18:00")
     except ImportError:
         logger.warning("apscheduler_not_installed", hint="pip install apscheduler")
     except Exception as e:

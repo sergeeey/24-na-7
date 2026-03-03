@@ -121,6 +121,24 @@ fun DailySummaryScreen(
                 ErrorState(error = error!!, onRetry = { retryCount++ })
             }
             data != null -> {
+                // ПОЧЕМУ notice banner: сервер может вернуть предыдущий день
+                // с объяснением "дайджест будет готов к 18:30".
+                data!!.notice?.let { noticeText ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = ColorAmber.copy(alpha = 0.15f),
+                        ),
+                    ) {
+                        Text(
+                            text = noticeText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ColorAmber,
+                            modifier = Modifier.padding(12.dp),
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
                 DailySummaryContent(data = data!!)
             }
         }
@@ -380,6 +398,10 @@ private data class DailyDigestData(
     val total_recordings: Int,
     val total_duration: String,
     val repetitions: List<String>,
+    // ПОЧЕМУ _notice/_status: сервер pre-compute дайджест в 18:00.
+    // До 18:30 возвращает предыдущий день + notice объяснение.
+    val notice: String? = null,
+    val status: String? = null,  // "ready" | "pending" | "generating"
 )
 
 private data class ActionItem(
@@ -395,14 +417,14 @@ private sealed class DailyDigestResult {
 
 private fun fetchDailyDigest(baseHttpUrl: String, date: String): DailyDigestResult {
     val url = "$baseHttpUrl/digest/daily?date=$date".replace("//digest", "/digest")
+    // ПОЧЕМУ 30s: с pre-compute кешем ответ мгновенный.
+    // 30s — достаточно для inline fallback на прошлые дни.
     val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
     return try {
         val requestBuilder = Request.Builder().url(url).get()
-        // ПОЧЕМУ auth header: после security fix (auth_middleware) все endpoints
-        // кроме /health и / требуют Bearer token. Без этого — 401.
         val apiKey = BuildConfig.SERVER_API_KEY
         if (apiKey.isNotEmpty()) {
             requestBuilder.addHeader("Authorization", "Bearer $apiKey")
@@ -446,6 +468,8 @@ private fun fetchDailyDigest(baseHttpUrl: String, date: String): DailyDigestResu
             total_recordings = json.optInt("total_recordings", 0),
             total_duration = json.optString("total_duration", "0m 0s"),
             repetitions = repetitions,
+            notice = json.optString("_notice", null),
+            status = json.optString("_status", null),
         )
         DailyDigestResult.Success(data)
     } catch (e: Exception) {

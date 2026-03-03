@@ -110,6 +110,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_HEALTH: str = "200/minute"
     RATE_LIMIT_DEFAULT: str = "100/minute"
 
+    # Hugging Face (pyannote.audio diarization)
+    HF_TOKEN: str | None = None
+
+    # Google AI (Gemini — будущий каскадный LLM fallback)
+    GOOGLE_API_KEY: str | None = None
+
     # Vault Configuration
     VAULT_ENABLED: bool = False
     VAULT_ADDR: str = "http://localhost:8200"
