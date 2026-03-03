@@ -1,6 +1,6 @@
 # Reflexio 24/7 — Project Documentation
 
-> **Версия:** 0.3.0 | **Дата:** 2026-03-03 | **Статус:** Production (Beta)
+> **Версия:** 0.4.0 | **Дата:** 2026-03-04 | **Статус:** Production (Beta)
 > **VPS:** reflexio247.duckdns.org | **SSH:** `root@46.225.211.115` | **Репо:** github.com/sergeeey/24-na-7
 
 ---
@@ -13,6 +13,8 @@
 **Ключевая идея:** не заметки голосом, а пассивная цифровая память — пользователь ничего не нажимает, система сама слушает и структурирует.
 
 **One Interface (v0.3.0):** один вопрос на естественном языке → `POST /ask` → Orchestrator выбирает нужные тулы → синтезированный ответ с уровнем уверенности.
+
+**Visual Memory (v0.4.0):** ответ несёт `UIHint` (подсказка рендеринга) и `evidence_metadata` (временные якоря событий). Android показывает EvidenceTraceRow — горизонтальный таймлайн улик со sentiment-цветом.
 
 ---
 
@@ -121,8 +123,22 @@ ToolResult(
     db_query_ms=42.0,
     error=None,
     warning=None,
+    # v0.4.0 Visual Memory:
+    ui_hint=UIHint.TIMELINE,             # TIMELINE|PERSON_GRAPH|ACTION_LIST|CARD|LIST
+    evidence_metadata=[                  # temporal anchors для EvidenceTraceRow
+        {"id": "...", "timestamp": "...", "sentiment_score": 0.5, "top_topic": "работа"}
+    ],
 )
 ```
+
+**UIHint — rendering contract:**
+| Value | Когда | Android рендер |
+|-------|-------|----------------|
+| `timeline` | События по времени (default) | EvidenceTraceRow |
+| `action_list` | Есть tasks в events | ActionList |
+| `person_graph` | Запрос про персону | PersonGraph |
+| `card` | Одиночный факт | Card |
+| `list` | Простой список | List |
 
 ### Confidence Policy (4 уровня)
 
@@ -206,7 +222,7 @@ ToolResult(
 ### Core
 | Метод | Endpoint | Rate | Описание |
 |-------|----------|------|----------|
-| GET | `/health` | — | Health check (`{"status":"ok","version":"0.3.0"}`) |
+| GET | `/health` | — | Health check (`{"status":"ok","version":"0.4.0"}`) |
 | POST | `/ingest/audio` | 10/min | Загрузка аудио файла |
 | WS | `/ws/audio` | — | WebSocket стриминг с Android |
 
@@ -246,6 +262,7 @@ ToolResult(
 | POST | `/graph/approve/{name}` | 10/min | Подтвердить профиль (+ Kuzu sync) |
 | POST | `/graph/reject/{name}` | 10/min | Отклонить (немедленное удаление) |
 | GET | `/graph/stats` | 50/min | Статистика графа |
+| GET | `/graph/neighborhood/{name}?hops=2` | 30/min | Граф соседей (KùzuDB→SQLite fallback) *(v0.4.0)* |
 
 ### Compliance (KZ GDPR)
 | Метод | Endpoint | Rate | Описание |
@@ -293,10 +310,13 @@ ToolResult(
 │ "Спроси что угодно о своём дне…"    │
 │                        [Спросить 🔍] │
 ├─────────────────────────────────────┤
-│ 🟢 Высокая уверенность · 87%        │  ← ConfidenceBadge
+│ 🟢 Высокая уверенность · 87%        │  ← ConfidenceBadge (v0.4.0: пульсирует для speculative)
 ├─────────────────────────────────────┤
 │ Найдено 5 событий о стрессе.        │  ← answer text
 │ Последнее — 14:32 о дедлайне.       │
+├─────────────────────────────────────┤
+│ [14:32·стресс·🔴] [15:10·работа·🟡] │  ← EvidenceTraceRow (v0.4.0)
+│ [16:45·финансы·🟢]                  │
 ├─────────────────────────────────────┤
 │                   [Детали ▼]         │
 │  Улик найдено   8                    │
@@ -309,13 +329,15 @@ ToolResult(
 - `high` → зелёный `#4CAF50`
 - `medium` → синий `#2196F3`
 - `low` → оранжевый `#FF9800`
-- `speculative` → красный `#F44336`
+- `speculative` → красный `#F44336` + пульсирующая анимация (alpha 0.5→1.0, 800ms)
 
 ### Ключевые компоненты
 - `BalanceWheelVisualizer` — GPU-accelerated визуализация 8 сфер жизни
 - `ParticleFieldVisualizer` — 300 частиц с физикой (60 FPS)
 - `AudioSpectrumAnalyzer` — FFT анализ (8 частотных полос)
 - `PendingUpload` + `UploadWorker` — offline queue (Room DB → retry при сети)
+- `EvidenceTraceRow` — горизонтальный LazyRow с temporal anchors (v0.4.0)
+- `ConfidenceBadge` — пульсирующий badge для speculative уверенности (v0.4.0)
 
 ### Сетевой стек
 - WebSocket: binary audio streaming (VAD сегменты 3 сек)
@@ -346,6 +368,8 @@ ToolResult(
 ### Миграции
 - 0001–0009: PostgreSQL-совместимые (legacy)
 - 0010–0013: SQLite-специфичные (digest_cache, acoustic, vec, missing_tables)
+- 0014: digest_sources (GDPR lineage)
+- 0015: индексы для UIHint/EvidenceTrace (acoustic_arousal, sentiment+created_at, person+created_at)
 
 ---
 
@@ -473,23 +497,28 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 # 4. docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-### KùzuDB (multi-hop граф)
+### KùzuDB (multi-hop граф) — активирован в v0.4.0
 Встроенный граф-движок — shortest path, clusters, соседи за N hops.
-```bash
-# 1. Раскомментировать в requirements.txt: kuzu>=0.7.0
-# 2. docker compose up -d --build
-# 3. engine.sync_from_sqlite(db_path) вызывается автоматически после approve_profile()
-```
+- `kuzu>=0.7.0` раскомментирован в requirements.txt ✅
+- `GET /graph/neighborhood/{name}?hops=2` — активен ✅
+- Fallback: если kuzu недоступен → SQLite persons без multi-hop
 
 ---
 
 ## Дорожная карта
 
-### v1.1 (следующий спринт)
+### v0.5.0 (следующий спринт)
+- [ ] EWMA voice profile adaptation (адаптация к изменениям голоса)
+- [ ] `speaker_score` поле в structured_events (float 0–1)
+- [ ] Quarantine mode для non-owner аудио сегментов
+- [ ] Docker health check timeout fix (увеличить в docker-compose.yml)
+- [ ] Whisper worker memory leak watchdog (рестарт каждые N часов)
+- [ ] E2E тесты для `/ask` + UIHint валидация
+
+### v1.1
 - [ ] Beta testing: 500 пользователей (referral + Product Hunt)
-- [ ] Graph API: `/graph/paths`, `/graph/clusters` (нужен KùzuDB)
+- [ ] Graph API: `/graph/paths`, `/graph/clusters`
 - [ ] Активация pyannote.audio на проде
-- [ ] E2E тесты для `/ask` + Query Engine
 
 ### v1.2
 - [ ] English language support
@@ -512,6 +541,7 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 **Android:** Kotlin, Jetpack Compose, Room, WorkManager, OkHttp 4.12
 **Infra:** Docker multi-stage, Caddy, Hetzner VPS
 **Quality:** ruff, structlog, pydantic v2, pytest (595 tests)
+**v0.4.0:** UIHint rendering contract, evidence_metadata temporal anchors, KùzuDB neighborhood graph, resemblyzer GE2E speaker verification
 
 ---
 
@@ -519,6 +549,7 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
 | Версия | Дата | Изменения |
 |--------|------|-----------|
+| 0.4.0 | 2026-03-04 | Visual Memory: UIHint enum (rendering contract), evidence_metadata (temporal anchors), GET /graph/neighborhood (KùzuDB→SQLite fallback), migration 0015 (3 индекса). Android: EvidenceTraceRow + pulsating ConfidenceBadge. KùzuDB активирован. Voice enrollment (resemblyzer GE2E, 3 сэмпла). SPEAKER_VERIFICATION_ENABLED. |
 | 0.3.0 | 2026-03-03 | Query Engine v1.0: ToolResult, Orchestrator, POST /ask, ConfidencePolicy, Permission Gate, date_utils. Rate limits: 32 декоратора в 13 роутерах. Android AskScreen (One Interface, таб 0). _meta миграция search/balance. |
 | 0.2.0 | 2026-03-03 | Security hardening, migration 0013, docker env vars fix, missing Settings fields, migration race condition fix |
 | 0.1.0 | 2026-02-xx | Initial production deploy: WebSocket pipeline, Whisper ASR, LLM enrichment, digest, social graph, compliance |

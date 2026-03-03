@@ -35,33 +35,35 @@ class EnrichmentApiClient(
                 requestBuilder.addHeader("Authorization", "Bearer $apiKey")
             }
             val request = requestBuilder.build()
-            val response = client.newCall(request).execute()
+            // ПОЧЕМУ response.use{}: гарантирует закрытие body при любом исходе.
+            // Без этого OkHttp утекает соединение при 404 (body не закрывается).
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.d(TAG, "Enrichment not ready for $fileId: ${response.code}")
+                    return@withContext null
+                }
 
-            if (!response.isSuccessful) {
-                Log.d(TAG, "Enrichment not ready for $fileId: ${response.code}")
-                return@withContext null
+                val body = response.body?.string() ?: return@withContext null
+                val json = JSONObject(body)
+
+                if (json.optString("status") != "enriched") {
+                    return@withContext null
+                }
+
+                val data = json.optJSONObject("data") ?: return@withContext null
+                EnrichmentData(
+                    summary = data.optString("summary", "").ifEmpty { null },
+                    emotions = data.optJSONArray("emotions")?.let { arr ->
+                        (0 until arr.length()).map { arr.getString(it) }
+                    } ?: emptyList(),
+                    topics = data.optJSONArray("topics")?.let { arr ->
+                        (0 until arr.length()).map { arr.getString(it) }
+                    } ?: emptyList(),
+                    tasks = data.optJSONArray("tasks")?.toString(),
+                    urgency = data.optString("urgency", "medium").ifEmpty { "medium" },
+                    sentiment = data.optString("sentiment", "neutral").ifEmpty { "neutral" },
+                )
             }
-
-            val body = response.body?.string() ?: return@withContext null
-            val json = JSONObject(body)
-
-            if (json.optString("status") != "enriched") {
-                return@withContext null
-            }
-
-            val data = json.optJSONObject("data") ?: return@withContext null
-            EnrichmentData(
-                summary = data.optString("summary", "").ifEmpty { null },
-                emotions = data.optJSONArray("emotions")?.let { arr ->
-                    (0 until arr.length()).map { arr.getString(it) }
-                } ?: emptyList(),
-                topics = data.optJSONArray("topics")?.let { arr ->
-                    (0 until arr.length()).map { arr.getString(it) }
-                } ?: emptyList(),
-                tasks = data.optJSONArray("tasks")?.toString(),
-                urgency = data.optString("urgency", "medium").ifEmpty { "medium" },
-                sentiment = data.optString("sentiment", "neutral").ifEmpty { "neutral" },
-            )
         } catch (e: Exception) {
             Log.w(TAG, "Failed to fetch enrichment for $fileId", e)
             null

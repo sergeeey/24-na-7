@@ -1,13 +1,46 @@
 # Active Context — Reflexio 24/7
 
 ## Последнее обновление
-2026-03-03 (Session: Unified Event Log — DONE)
+2026-03-04 (Session: v0.4.0 Visual Memory — DONE)
 
 ## Текущая фаза
+**v0.4.0 Visual Memory отправлен** ✅ (commit 318fc22)
+- UIHint + evidence_metadata ✅ | /graph/neighborhood ✅ | EvidenceTraceRow Android ✅
+- Voice enrollment (3 сэмпла) ✅ | SPEAKER_VERIFICATION_ENABLED=true ✅
+- Следующее: Docker health check fix, Whisper memory leak watchdog, v0.5.0 (EWMA adaptation)
+
+## Сессия 2026-03-04: v0.4.0 Visual Memory
+
+### Что сделано (commit 318fc22):
+- **UIHint enum** (`src/core/tool_result.py`): rendering contract между API и Android
+  - TIMELINE/PERSON_GRAPH/ACTION_LIST/CARD/LIST
+  - `to_api_dict()` включает `ui_hint` и `evidence_metadata`
+- **evidence_metadata** в `query_events()` (`src/api/routers/query.py`):
+  - `{id, timestamp, sentiment_score, top_topic}` per event
+  - sentiment_score = маппинг "positive"→1.0/"neutral"→0.5/"negative"→0.0 (НЕ enrichment_confidence!)
+  - UIHint.ACTION_LIST если есть tasks, иначе TIMELINE
+- **GET /graph/neighborhood/{name}** (`src/api/routers/graph.py`):
+  - KùzuDB → SQLite fallback, rate 30/min
+  - `NeighborhoodOut`: center, nodes[], edges[], hops, source
+  - Critical: early return при пустых nodes (иначе broken SQL IN())
+- **Migration 0015** (`src/storage/migrations/sqlite/0015_ui_hints_indexes.sql`):
+  - 3 индекса: acoustic_arousal, sentiment+created_at, person_name+created_at
+- **requirements.txt**: раскомментирован kuzu>=0.7.0
+- **AskScreen.kt**: EvidenceTraceRow (LazyRow) + pulsating ConfidenceBadge для speculative
+- **VPS**: убиты zombie Whisper workers (3.4GB каждый), CPU нормализован
+- **Voice enrollment**: 2 WhatsApp OGG → ffmpeg → 3 WAV сэмпла → /voice/enroll
+  - profile_id=07a08518-aff2-4fe1-be70-9272157d05af
+  - SPEAKER_VERIFICATION_ENABLED=true в /opt/reflexio/.env
+
+### Незакрытые задачи:
+- Docker health check timeout (увеличить timeout в docker-compose.yml, cosmetic)
+- Whisper memory leak: watchdog рестарт каждые N часов
+- v0.5.0: EWMA voice profile adaptation, quarantine mode для чужого аудио
+
+## Прошлая фаза (все выполнены)
 **ВСЕ BACKLOG ЗАДАЧИ ВЫПОЛНЕНЫ** ✅
 - P1 SQLCipher ✅ | P1 vec_search ✅ | P2 Event Log ✅
 - P2 Digest Data Lineage ✅ | P2 Android Offline Queue ✅ | Docker multi-stage ✅
-- Следующее: Beta testing, ротация API ключей, pyannote.audio активация
 
 ## Сессия 2026-03-03f: Digest Lineage + Docker + All Backlog Done
 
@@ -336,12 +369,14 @@ Pixel 9 Pro → VAD (3-сек сегменты) → WebSocket binary
 - `DELETE /compliance/erase/{person}` — право забытым
 - `POST /compliance/run-cleanup` — ручная очистка
 
-### Social Graph (NEW)
+### Social Graph
 - `GET /graph/persons` — список персон окружения
+- `GET /graph/persons/{name}` — детали персоны
 - `GET /graph/pending` — ожидают подтверждения
 - `POST /graph/approve/{name}` — подтвердить профиль
 - `POST /graph/reject/{name}` — отклонить
 - `GET /graph/stats` — статистика
+- `GET /graph/neighborhood/{name}?hops=2` — граф соседей (v0.4.0, KùzuDB→SQLite)
 
 ## Сессия 2026-02-27: Android UI + Business Documentation
 
