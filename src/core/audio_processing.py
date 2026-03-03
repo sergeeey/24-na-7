@@ -20,6 +20,14 @@ from src.security.privacy_pipeline import apply_privacy_mode
 from src.storage.db import get_reflexio_db
 from src.storage.ingest_persist import ensure_ingest_tables, persist_structured_event, persist_ws_transcription
 from src.storage.integrity import append_integrity_event, ensure_integrity_tables
+from src.storage.event_log import (
+    log_event,
+    STAGE_AUDIO_RECEIVED,
+    STAGE_ASR_DONE,
+    STAGE_ENRICHED,
+    STATUS_OK,
+    STATUS_ERROR,
+)
 from src.utils.config import settings
 from src.utils.logging import get_logger
 from src.speaker.storage import ensure_speaker_tables
@@ -141,8 +149,10 @@ def _run_enrichment_sync(
     enrichment_text: str,
     acoustic_metadata: dict[str, Any] | None = None,
 ) -> None:
+    import time as _time
     from src.enrichment.enricher import enrich_transcription
 
+    _enrich_t0 = _time.monotonic()
     event = enrich_transcription(
         transcription_id=transcription_id,
         text=enrichment_text,
@@ -151,7 +161,18 @@ def _run_enrichment_sync(
         language=result.get("language", "unknown") or "unknown",
         acoustic_metadata=acoustic_metadata,
     )
+    _enrich_latency_ms = int((_time.monotonic() - _enrich_t0) * 1000)
     persist_structured_event(db_path, event)
+    log_event(
+        result.get("ingest_id", transcription_id),
+        STAGE_ENRICHED,
+        latency_ms=_enrich_latency_ms,
+        details={
+            "model": getattr(event, "enrichment_model", ""),
+            "tokens": getattr(event, "enrichment_tokens", 0),
+            "transcription_id": transcription_id,
+        },
+    )
     if settings.MEMORY_ENABLED:
         consolidate_to_memory_node(
             db_path=db_path,
@@ -273,6 +294,8 @@ def create_ingest_artifact(
             },
         )
 
+    log_event(ingest_id, STAGE_AUDIO_RECEIVED, details={"filename": filename, "size": len(content)})
+
     return {
         "ingest_id": ingest_id,
         "filename": filename,
@@ -383,8 +406,11 @@ async def process_audio_bytes(
                 pitch_var=acoustic_metadata.get("pitch_variance"),
             )
 
+        import time as _time
         transcriber = transcribe_fn or transcribe_audio
+        _asr_t0 = _time.monotonic()
         result = transcriber(dest_path, language=settings.ASR_LANGUAGE)
+        _asr_latency_ms = int((_time.monotonic() - _asr_t0) * 1000)
         text = (result.get("text") or "").strip()
         lang_prob = result.get("language_probability", 1.0) or 1.0
         detected_lang = (result.get("language") or "").lower()
@@ -448,6 +474,12 @@ async def process_audio_bytes(
             )
 
         _mark_ingest_status(db_path, ingest_id, "processed")
+        log_event(
+            ingest_id,
+            STAGE_ASR_DONE,
+            latency_ms=_asr_latency_ms,
+            details={"words": len(text.split()), "lang": detected_lang, "transcription_id": transcription_id},
+        )
         if delete_audio_after:
             dest_path.unlink(missing_ok=True)
 

@@ -52,6 +52,27 @@ async def reindex_endpoint():
         raise HTTPException(status_code=500, detail="Reindex failed")
 
 
+@router.get("/trace/{session_id}")
+async def get_trace_endpoint(session_id: str):
+    """
+    Полный lifecycle одного аудио-файла по session_id (= ingest_id).
+
+    Пример: GET /search/trace/abc-123
+    →  AUDIO_RECEIVED ok 0ms
+       ASR_DONE       ok 2100ms {words: 47, lang: ru}
+       ENRICHED       ok 1300ms {model: haiku, tokens: 453}
+    """
+    from src.storage.event_log import get_trace
+    return {"session_id": session_id, "trace": get_trace(session_id)}
+
+
+@router.get("/errors")
+async def get_recent_errors_endpoint(limit: int = 50):
+    """Последние N ошибок по всем стадиям pipeline — для мониторинга."""
+    from src.storage.event_log import get_recent_errors
+    return {"errors": get_recent_errors(limit), "count": limit}
+
+
 @router.post("/phrases")
 async def search_phrases_endpoint(request: Request):
     """
