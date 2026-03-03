@@ -113,8 +113,9 @@ class Settings(BaseSettings):
     # Hugging Face (pyannote.audio diarization)
     HF_TOKEN: str | None = None
 
-    # Google AI (Gemini — будущий каскадный LLM fallback)
+    # Google AI (Gemini — каскадный LLM fallback)
     GOOGLE_API_KEY: str | None = None
+    LLM_CASCADE_ORDER: str = "google,anthropic,openai"
 
     # Vault Configuration
     VAULT_ENABLED: bool = False

@@ -4,7 +4,7 @@
 import os
 from unittest.mock import Mock, patch, MagicMock
 
-from src.llm.providers import LLMProvider, LLMClient, OpenAIClient, AnthropicClient
+from src.llm.providers import LLMProvider, LLMClient, OpenAIClient, AnthropicClient, CascadeLLMClient
 
 
 class TestLLMProviderEnum:
@@ -182,3 +182,86 @@ class TestLLMConfiguration:
         max_tokens = 1000
         assert max_tokens > 0
         assert max_tokens <= 4000  # Обычный лимит
+
+
+class TestCascadeLLMClient:
+    """Тесты каскадного LLM клиента."""
+
+    def _make_mock_client(self, provider: LLMProvider, response: dict) -> LLMClient:
+        """Создаёт mock LLMClient с заданным ответом call()."""
+        client = LLMClient(provider=provider, model="test-model")
+        client.call = Mock(return_value=response)
+        return client
+
+    def test_cascade_uses_first_provider(self):
+        """Первый провайдер отвечает — второй не вызывается."""
+        first = self._make_mock_client(
+            LLMProvider.GOOGLE,
+            {"text": "Gemini response", "tokens_used": 10, "latency_ms": 100},
+        )
+        second = self._make_mock_client(
+            LLMProvider.ANTHROPIC,
+            {"text": "Haiku response", "tokens_used": 20, "latency_ms": 200},
+        )
+
+        cascade = CascadeLLMClient(clients=[first, second])
+        result = cascade.call("test prompt")
+
+        assert result["text"] == "Gemini response"
+        assert result["cascade_provider"] == "google"
+        first.call.assert_called_once()
+        second.call.assert_not_called()
+
+    def test_cascade_fallback_on_error(self):
+        """Ошибка первого → переход ко второму."""
+        first = self._make_mock_client(
+            LLMProvider.GOOGLE,
+            {"text": "", "error": "Rate limit exceeded", "tokens_used": 0, "latency_ms": 0},
+        )
+        second = self._make_mock_client(
+            LLMProvider.ANTHROPIC,
+            {"text": "Haiku response", "tokens_used": 15, "latency_ms": 150},
+        )
+
+        cascade = CascadeLLMClient(clients=[first, second])
+        result = cascade.call("test prompt")
+
+        assert result["text"] == "Haiku response"
+        assert result["cascade_provider"] == "anthropic"
+        first.call.assert_called_once()
+        second.call.assert_called_once()
+
+    def test_cascade_fallback_on_empty(self):
+        """Пустой ответ первого → переход ко второму."""
+        first = self._make_mock_client(
+            LLMProvider.GOOGLE,
+            {"text": "", "tokens_used": 5, "latency_ms": 50},
+        )
+        second = self._make_mock_client(
+            LLMProvider.OPENAI,
+            {"text": "GPT response", "tokens_used": 12, "latency_ms": 120},
+        )
+
+        cascade = CascadeLLMClient(clients=[first, second])
+        result = cascade.call("test prompt")
+
+        assert result["text"] == "GPT response"
+        assert result["cascade_provider"] == "openai"
+
+    def test_cascade_all_fail(self):
+        """Все провайдеры упали → error dict."""
+        first = self._make_mock_client(
+            LLMProvider.GOOGLE,
+            {"text": "", "error": "Google down", "tokens_used": 0, "latency_ms": 0},
+        )
+        second = self._make_mock_client(
+            LLMProvider.ANTHROPIC,
+            {"text": "", "error": "Anthropic down", "tokens_used": 0, "latency_ms": 0},
+        )
+
+        cascade = CascadeLLMClient(clients=[first, second])
+        result = cascade.call("test prompt")
+
+        assert result["text"] == ""
+        assert "All cascade providers failed" in result["error"]
+        assert result["cascade_provider"] == "none"

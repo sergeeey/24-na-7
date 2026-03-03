@@ -339,6 +339,76 @@ class GoogleGeminiClient(LLMClient):
             }
 
 
+class CascadeLLMClient(LLMClient):
+    """
+    Каскадный клиент: перебирает провайдеров по порядку.
+
+    ПОЧЕМУ каскад, а не retry: разные провайдеры падают по разным причинам
+    (rate limit, outage, key expired). Каскад даёт resilience без ожидания.
+    Gemini Flash бесплатен → ставим первым → $5/мес → $0 при нормальной работе.
+    """
+
+    def __init__(self, clients: list[LLMClient]):
+        # ПОЧЕМУ первый клиент как "основной": для совместимости с кодом,
+        # который читает client.provider / client.model
+        first = clients[0] if clients else None
+        super().__init__(
+            provider=first.provider if first else LLMProvider.OPENAI,
+            model=first.model if first else "cascade",
+            temperature=first.temperature if first else 0.3,
+        )
+        self.clients = clients
+
+    def call(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+        """Перебирает провайдеров: первый успешный ответ — победитель."""
+        errors = []
+
+        for client in self.clients:
+            provider_name = client.provider.value
+            try:
+                result = client.call(prompt, system_prompt=system_prompt, **kwargs)
+
+                # Пустой text или наличие error → fallback к следующему
+                if result.get("error") or not result.get("text"):
+                    err_msg = result.get("error", "empty response")
+                    logger.warning(
+                        "cascade_provider_skipped",
+                        provider=provider_name,
+                        reason=err_msg,
+                    )
+                    errors.append(f"{provider_name}: {err_msg}")
+                    continue
+
+                # Успех — логируем кто ответил
+                logger.info(
+                    "cascade_provider_success",
+                    provider=provider_name,
+                    model=client.model,
+                )
+                result["cascade_provider"] = provider_name
+                return result
+
+            except Exception as e:
+                logger.warning(
+                    "cascade_provider_exception",
+                    provider=provider_name,
+                    error=str(e),
+                )
+                errors.append(f"{provider_name}: {str(e)}")
+                continue
+
+        # Все провайдеры упали
+        all_errors = "; ".join(errors)
+        logger.error("cascade_all_failed", errors=all_errors)
+        return {
+            "text": "",
+            "error": f"All cascade providers failed: {all_errors}",
+            "tokens_used": 0,
+            "latency_ms": 0,
+            "cascade_provider": "none",
+        }
+
+
 def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
     """
     Фабричная функция для получения LLM клиента.
@@ -395,6 +465,35 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
             return AnthropicClient(model=model, temperature=temperature)
         elif provider_name == "google":
             return GoogleGeminiClient(model=model, temperature=temperature)
+        elif provider_name == "cascade":
+            # ПОЧЕМУ cascade отдельной веткой: обратная совместимость —
+            # LLM_PROVIDER=anthropic продолжает работать как раньше
+            cascade_order_str = ""
+            try:
+                from src.utils.config import settings as _cascade_settings
+                cascade_order_str = getattr(_cascade_settings, "LLM_CASCADE_ORDER", "") or ""
+            except Exception:
+                pass
+            cascade_order_str = cascade_order_str or os.getenv("LLM_CASCADE_ORDER", "google,anthropic,openai")
+
+            cascade_defaults = {
+                "google": ("gemini-2.0-flash", GoogleGeminiClient),
+                "anthropic": ("claude-haiku-4-5-20251001", AnthropicClient),
+                "openai": ("gpt-4o-mini", OpenAIClient),
+            }
+
+            clients: list[LLMClient] = []
+            for name in cascade_order_str.split(","):
+                name = name.strip().lower()
+                if name in cascade_defaults:
+                    default_model, client_cls = cascade_defaults[name]
+                    clients.append(client_cls(model=default_model, temperature=temperature))
+
+            if not clients:
+                logger.warning("cascade_no_valid_providers", order=cascade_order_str)
+                return None
+
+            return CascadeLLMClient(clients=clients)
         else:
             logger.warning("unknown_llm_provider", provider=provider_name)
             return None
