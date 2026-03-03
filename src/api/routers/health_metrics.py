@@ -3,13 +3,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.storage.health_metrics import ensure_health_tables, list_health_metrics, save_health_metrics
 from src.utils.config import settings
 
 router = APIRouter(prefix="/health", tags=["health-metrics"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 class HealthMetricBody(BaseModel):
@@ -22,7 +25,8 @@ class HealthMetricBody(BaseModel):
 
 
 @router.post("/metrics")
-async def ingest_health_metrics(body: HealthMetricBody):
+@limiter.limit("30/minute")
+async def ingest_health_metrics(request: Request, response: Response, body: HealthMetricBody):
     try:
         datetime.strptime(body.date, "%Y-%m-%d")
     except ValueError:
@@ -43,7 +47,10 @@ async def ingest_health_metrics(body: HealthMetricBody):
 
 
 @router.get("/metrics")
+@limiter.limit("60/minute")
 async def get_health_metrics(
+    request: Request,
+    response: Response,
     day: str | None = Query(None, description="YYYY-MM-DD"),
     day_from: str | None = Query(None, alias="from"),
     day_to: str | None = Query(None, alias="to"),

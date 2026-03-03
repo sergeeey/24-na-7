@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.balance.storage import (
     ensure_balance_tables,
@@ -12,10 +14,12 @@ from src.balance.storage import (
     get_domain_configs,
     upsert_domain_config,
 )
+from src.core.tool_result import add_meta
 from src.persongraph.service import get_day_insights
 from src.utils.config import settings
 
 router = APIRouter(prefix="/balance", tags=["balance"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 class DomainConfigBody(BaseModel):
@@ -28,14 +32,16 @@ class DomainConfigBody(BaseModel):
 
 
 @router.get("/domains")
-async def list_domains():
+@limiter.limit("60/minute")
+async def list_domains(request: Request, response: Response):
     db_path = settings.STORAGE_PATH / "reflexio.db"
     ensure_balance_tables(db_path)
     return {"domains": get_domain_configs(db_path)}
 
 
 @router.post("/domains")
-async def create_or_update_domain(body: DomainConfigBody):
+@limiter.limit("10/minute")
+async def create_or_update_domain(request: Request, response: Response, body: DomainConfigBody):
     db_path = settings.STORAGE_PATH / "reflexio.db"
     upsert_domain_config(
         db_path=db_path,
@@ -50,7 +56,8 @@ async def create_or_update_domain(body: DomainConfigBody):
 
 
 @router.put("/domains/{domain}")
-async def update_domain(domain: str, body: DomainConfigBody):
+@limiter.limit("10/minute")
+async def update_domain(request: Request, response: Response, domain: str, body: DomainConfigBody):
     db_path = settings.STORAGE_PATH / "reflexio.db"
     upsert_domain_config(
         db_path=db_path,
@@ -65,7 +72,10 @@ async def update_domain(domain: str, body: DomainConfigBody):
 
 
 @router.get("/wheel")
+@limiter.limit("30/minute")
 async def wheel(
+    request: Request,
+    response: Response,
     date_str: str | None = Query(None, alias="date"),
     from_date: str | None = Query(None, alias="from"),
     to_date: str | None = Query(None, alias="to"),
@@ -81,10 +91,13 @@ async def wheel(
         raise HTTPException(status_code=400, detail="Use YYYY-MM-DD")
 
     db_path = settings.STORAGE_PATH / "reflexio.db"
-    return get_balance_wheel(db_path, f, t)
+    result = get_balance_wheel(db_path, f, t)
+    evidence_count = len(result.get("domains", []))
+    return add_meta(result, confidence=0.75 if evidence_count > 0 else 0.0, evidence_count=evidence_count, tool="balance_wheel")
 
 
 @router.get("/insights")
-async def balance_insights(day: str = Query(..., description="YYYY-MM-DD")):
+@limiter.limit("30/minute")
+async def balance_insights(request: Request, response: Response, day: str = Query(..., description="YYYY-MM-DD")):
     db_path = settings.STORAGE_PATH / "reflexio.db"
     return {"day": day, "insights": get_day_insights(db_path, day)}

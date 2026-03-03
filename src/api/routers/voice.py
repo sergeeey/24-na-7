@@ -5,17 +5,21 @@ import tempfile
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File
+from fastapi import APIRouter, HTTPException, Request, Response, UploadFile, File
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.utils.config import settings
 from src.utils.logging import get_logger
 
 logger = get_logger("api.voice")
 router = APIRouter(prefix="/voice", tags=["voice"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/intent")
-async def recognize_intent(request: Request):
+@limiter.limit("20/minute")
+async def recognize_intent(request: Request, response: Response):
     """
     Распознавание intent через Voiceflow RAG или GPT-mini fallback.
 
@@ -50,7 +54,10 @@ async def recognize_intent(request: Request):
 
 
 @router.post("/enroll")
+@limiter.limit("5/minute")
 async def enroll_voice(
+    request: Request,
+    response: Response,
     files: List[UploadFile] = File(...),
     user_id: str = "default",
 ):
@@ -155,7 +162,8 @@ async def enroll_voice(
 
 
 @router.get("/enroll/status")
-async def enrollment_status(user_id: str = "default"):
+@limiter.limit("30/minute")
+async def enrollment_status(request: Request, response: Response, user_id: str = "default"):
     """Проверяет, есть ли активный голосовой профиль у пользователя.
 
     **Ответ:**

@@ -124,6 +124,26 @@ class ToolResult(BaseModel):
         return out
 
 
+def add_meta(data: dict, *, confidence: float, evidence_count: int = 0, tool: str = "") -> dict:
+    """
+    Добавляет _meta к существующему dict ответа без изменения его структуры.
+
+    Используется для обратно-совместимой миграции старых роутеров:
+      return add_meta(existing_response, confidence=0.85, evidence_count=10)
+
+    Клиент который не знает о _meta — игнорирует его.
+    Новый клиент (orchestrator, /ask) — читает _meta для merge_confidence.
+    """
+    label = _label_from_score(confidence)
+    data["_meta"] = {
+        "confidence": round(confidence, 2),
+        "confidence_label": label.value,
+        "evidence_count": evidence_count,
+        "tool": tool,
+    }
+    return data
+
+
 class ToolTimer:
     """Контекстный менеджер для замера времени DB-запроса."""
 

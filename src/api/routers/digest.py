@@ -1,8 +1,9 @@
 """Роутер для генерации дайджестов."""
 import json as _json
 from datetime import date, datetime, timedelta
-from fastapi import APIRouter, HTTPException, Query, Path as PathParam
-from fastapi.responses import Response
+from fastapi import APIRouter, HTTPException, Query, Path as PathParam, Request, Response
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.utils.config import settings  # noqa: F401
 from src.utils.logging import get_logger
@@ -12,6 +13,7 @@ from src.storage.db import get_reflexio_db
 
 logger = get_logger("api.digest")
 router = APIRouter(prefix="/digest", tags=["digest"])
+limiter = Limiter(key_func=get_remote_address)
 
 # ПОЧЕМУ UTC: VPS и Docker контейнер в UTC. Алматы = UTC+6.
 # 18:30 Алматы = 12:30 UTC. Все сравнения datetime.now() в UTC.
@@ -37,7 +39,10 @@ def _get_cached_digest(target_date: str) -> dict | None:
 
 
 @router.get("/daily")
-def get_digest_daily(
+@limiter.limit("30/minute")
+async def get_digest_daily(
+    request: Request,
+    response: Response,
     date: str = Query(..., description="Дата в формате YYYY-MM-DD"),
     user_id: str | None = Query(None, description="Идентификатор пользователя (опционально)"),
     force: bool = Query(False, description="Принудительная генерация (без кеша)"),
@@ -151,7 +156,8 @@ def get_digest_daily(
 
 
 @router.get("/today")
-async def get_digest_today(format: str = Query("markdown", pattern="^(markdown|json)$")):
+@limiter.limit("20/minute")
+async def get_digest_today(request: Request, response: Response, format: str = Query("markdown", pattern="^(markdown|json)$")):
     """
     Получает дайджест за сегодня.
     
@@ -188,7 +194,10 @@ async def get_digest_today(format: str = Query("markdown", pattern="^(markdown|j
 
 
 @router.get("/{target_date}")
+@limiter.limit("20/minute")
 async def get_digest(
+    request: Request,
+    response: Response,
     target_date: str = PathParam(..., description="Дата в формате YYYY-MM-DD"),
     format: str = Query("markdown", pattern="^(markdown|json)$"),
 ):
@@ -233,7 +242,10 @@ async def get_digest(
 
 
 @router.get("/{target_date}/sources")
+@limiter.limit("60/minute")
 async def get_digest_sources_endpoint(
+    request: Request,
+    response: Response,
     target_date: str = PathParam(..., description="Дата в формате YYYY-MM-DD"),
 ):
     """
@@ -254,7 +266,10 @@ async def get_digest_sources_endpoint(
 
 
 @router.get("/{target_date}/density")
+@limiter.limit("10/minute")
 async def get_density_analysis(
+    request: Request,
+    response: Response,
     target_date: str = PathParam(..., description="Дата в формате YYYY-MM-DD"),
 ):
     """

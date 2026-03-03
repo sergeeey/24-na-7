@@ -18,8 +18,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.persongraph.accumulator import VoiceProfileAccumulator
 from src.storage.db import get_reflexio_db
@@ -28,6 +30,7 @@ from src.utils.logging import get_logger
 
 logger = get_logger("api.graph")
 router = APIRouter(prefix="/graph", tags=["social-graph"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ──────────────────────────────────────────────
@@ -171,7 +174,8 @@ async def list_pending():
 
 
 @router.post("/approve/{name}")
-async def approve_person_profile(name: str):
+@limiter.limit("10/minute")
+async def approve_person_profile(request: Request, response: Response, name: str):
     """
     Пользователь подтверждает голосовой профиль персоны.
 
@@ -203,7 +207,8 @@ async def approve_person_profile(name: str):
 
 
 @router.post("/reject/{name}")
-async def reject_person_profile(name: str):
+@limiter.limit("10/minute")
+async def reject_person_profile(request: Request, response: Response, name: str):
     """
     Пользователь отклоняет голосовой профиль.
 

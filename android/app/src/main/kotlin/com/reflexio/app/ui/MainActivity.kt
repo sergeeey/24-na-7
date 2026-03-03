@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -53,6 +54,7 @@ import com.reflexio.app.domain.services.AudioRecordingService
 import com.reflexio.app.ui.components.BalanceWheelVisualizer
 import com.reflexio.app.ui.components.RecordingFab
 import com.reflexio.app.ui.screens.AnalyticsScreen
+import com.reflexio.app.ui.screens.AskScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
 import com.reflexio.app.ui.screens.VoiceEnrollmentScreen
 import com.reflexio.app.ui.screens.SplashScreen
@@ -60,6 +62,7 @@ import com.reflexio.app.ui.theme.ReflexioTheme
 
 // ПОЧЕМУ enum а не sealed class: фиксированный набор экранов, sealed class — overkill
 private enum class Screen(val title: String, val icon: ImageVector) {
+    ASK("Спросить", Icons.Default.Search),        // One Interface — первый таб
     HOME("Запись", Icons.Default.Home),
     DIGEST("Итог дня", Icons.Default.DateRange),
     ANALYTICS("Аналитика", Icons.Default.Insights),
@@ -231,7 +234,11 @@ fun RecordingApp(
             label = "tabCrossfade",
         ) { tab ->
             when (tab) {
-                0 -> HomeScreen(
+                0 -> AskScreen(
+                    baseHttpUrl = baseHttpUrl,
+                    modifier = Modifier.padding(padding),
+                )
+                1 -> HomeScreen(
                     hasPermission = hasPermission,
                     recordingActive = recordingActive,
                     baseHttpUrl = baseHttpUrl,
@@ -245,17 +252,17 @@ fun RecordingApp(
                     },
                     modifier = Modifier.padding(padding),
                 )
-                1 -> DailySummaryScreen(
-                    onBack = { selectedTab = 0 },
+                2 -> DailySummaryScreen(
+                    onBack = { selectedTab = 1 },
                     baseHttpUrl = baseHttpUrl,
                     modifier = Modifier.padding(padding),
                 )
-                2 -> AnalyticsScreen(
-                    onBack = { selectedTab = 0 },
-                    onOpenDailySummary = { selectedTab = 1 },
+                3 -> AnalyticsScreen(
+                    onBack = { selectedTab = 1 },
+                    onOpenDailySummary = { selectedTab = 2 },
                     modifier = Modifier.padding(padding),
                 )
-                3 -> VoiceEnrollmentScreen(
+                4 -> VoiceEnrollmentScreen(
                     baseHttpUrl = baseHttpUrl,
                     modifier = Modifier.padding(padding),
                 )

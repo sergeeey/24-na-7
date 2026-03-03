@@ -3,7 +3,9 @@ import json
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.asr.transcribe import transcribe_audio
 from src.core.audio_processing import is_allowed_language, is_meaningful_transcription
@@ -17,10 +19,12 @@ from src.utils.logging import get_logger
 
 logger = get_logger("api.asr")
 router = APIRouter(prefix="/asr", tags=["asr"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/transcribe")
-async def transcribe_endpoint(file_id: str = Query(..., description="ID файла для транскрипции")):
+@limiter.limit("10/minute")
+async def transcribe_endpoint(request: Request, response: Response, file_id: str = Query(..., description="ID файла для транскрипции")):
     """Транскрибирует загруженный аудиофайл по его ID."""
     try:
         matching_files = list(settings.UPLOADS_PATH.glob(f"*_{file_id}.wav"))

@@ -1,14 +1,18 @@
 """Router for semantic memory retrieval."""
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request, Response
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.memory.semantic_memory import record_retrieval_trace, retrieve_memory
 from src.utils.config import settings
 
 router = APIRouter(prefix="/memory", tags=["memory"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get("/retrieve")
-async def memory_retrieve(q: str = Query(..., min_length=1), top_k: int = Query(5, ge=1, le=20)):
+@limiter.limit("20/minute")
+async def memory_retrieve(request: Request, response: Response, q: str = Query(..., min_length=1), top_k: int = Query(5, ge=1, le=20)):
     """Retrieve evidence-backed memories from semantic store."""
     if not settings.RETRIEVAL_ENABLED:
         return {"status": "disabled", "reason": "RETRIEVAL_ENABLED=false", "query": q, "matches": []}

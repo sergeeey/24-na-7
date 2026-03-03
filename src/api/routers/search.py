@@ -1,15 +1,20 @@
 """Роутер для поиска по фразам."""
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
+from src.core.tool_result import add_meta
 from src.utils.logging import get_logger
 from src.storage.embeddings import search_phrases
 
 logger = get_logger("api.search")
 router = APIRouter(prefix="/search", tags=["search"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get("/events")
-async def search_events_endpoint(q: str, limit: int = 10):
+@limiter.limit("30/minute")
+async def search_events_endpoint(request: Request, response: Response, q: str, limit: int = 10):
     """
     Семантический поиск по событиям дня через sqlite-vec (cosine similarity).
 
@@ -28,14 +33,16 @@ async def search_events_endpoint(q: str, limit: int = 10):
         db = get_reflexio_db()
         load_vec_extension(db.conn)
         results = search_events(db.conn, q, limit=limit)
-        return {"query": q, "results": results, "count": len(results)}
+        result = {"query": q, "results": results, "count": len(results)}
+        return add_meta(result, confidence=0.7 if results else 0.0, evidence_count=len(results), tool="search_events")
     except Exception as e:
         logger.error("vec_search_failed", error=str(e))
         raise HTTPException(status_code=500, detail="Search failed")
 
 
 @router.post("/reindex")
-async def reindex_endpoint():
+@limiter.limit("2/minute")
+async def reindex_endpoint(request: Request, response: Response):
     """
     Запускает retroindex — индексирует все structured_events без embedding.
     Запускать один раз после деплоя vec_search.
@@ -53,7 +60,8 @@ async def reindex_endpoint():
 
 
 @router.get("/trace/{session_id}")
-async def get_trace_endpoint(session_id: str):
+@limiter.limit("60/minute")
+async def get_trace_endpoint(request: Request, response: Response, session_id: str):
     """
     Полный lifecycle одного аудио-файла по session_id (= ingest_id).
 
@@ -67,14 +75,16 @@ async def get_trace_endpoint(session_id: str):
 
 
 @router.get("/errors")
-async def get_recent_errors_endpoint(limit: int = 50):
+@limiter.limit("30/minute")
+async def get_recent_errors_endpoint(request: Request, response: Response, limit: int = 50):
     """Последние N ошибок по всем стадиям pipeline — для мониторинга."""
     from src.storage.event_log import get_recent_errors
     return {"errors": get_recent_errors(limit), "count": limit}
 
 
 @router.post("/phrases")
-async def search_phrases_endpoint(request: Request):
+@limiter.limit("30/minute")
+async def search_phrases_endpoint(request: Request, response: Response):
     """
     Поиск по фразам через semantic search (embeddings).
     

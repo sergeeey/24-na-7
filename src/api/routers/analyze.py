@@ -1,6 +1,8 @@
 """Роутер для анализа транскрипций."""
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Request, Response
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.utils.config import settings
 from src.utils.logging import get_logger
@@ -9,6 +11,7 @@ from src.summarizer.few_shot import analyze_recording_text
 
 logger = get_logger("api.analyze")
 router = APIRouter(prefix="/analyze", tags=["analyze"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 class AnalyzeTextBody(BaseModel):
@@ -19,7 +22,8 @@ class AnalyzeTextBody(BaseModel):
 
 
 @router.post("/text")
-def analyze_text(body: AnalyzeTextBody = Body(...)):
+@limiter.limit("10/minute")
+def analyze_text(request: Request, response: Response, body: AnalyzeTextBody = Body(...)):
     """
     Анализ смысла транскрипции: саммари, эмоции, действия, темы, срочность.
     

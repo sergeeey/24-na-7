@@ -2,8 +2,9 @@
 import json
 from datetime import datetime
 from pathlib import Path
-from fastapi import APIRouter, Request
-from fastapi.responses import Response
+from fastapi import APIRouter, Request, Response
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.storage.db import get_reflexio_db
 from src.utils.config import settings
@@ -11,10 +12,12 @@ from src.utils.logging import get_logger
 
 logger = get_logger("api.metrics")
 router = APIRouter(prefix="/metrics", tags=["metrics"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get("")
-async def get_metrics():
+@limiter.limit("60/minute")
+async def get_metrics(request: Request, response: Response):
     """
     Endpoint для метрик системы (Prometheus-compatible).
     
@@ -97,7 +100,8 @@ async def get_metrics():
 
 
 @router.get("/prometheus")
-async def get_prometheus_metrics(request: Request):
+@limiter.limit("60/minute")
+async def get_prometheus_metrics(request: Request, response: Response):
     """
     Prometheus-compatible metrics endpoint.
     

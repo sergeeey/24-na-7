@@ -12,8 +12,10 @@ Endpoints:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.persongraph.compliance import BiometricComplianceManager
 from src.utils.config import settings
@@ -21,6 +23,7 @@ from src.utils.logging import get_logger
 
 logger = get_logger("api.compliance")
 router = APIRouter(prefix="/compliance", tags=["compliance"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ──────────────────────────────────────────────
@@ -54,7 +57,8 @@ class CleanupResultOut(BaseModel):
 
 
 @router.get("/status", response_model=ComplianceStatusOut)
-async def compliance_status():
+@limiter.limit("30/minute")
+async def compliance_status(request: Request, response: Response):
     """
     Возвращает текущий статус соответствия требованиям KZ GDPR.
 
@@ -68,7 +72,8 @@ async def compliance_status():
 
 
 @router.delete("/erase/{person_name}")
-async def erase_person(person_name: str):
+@limiter.limit("5/minute")
+async def erase_person(request: Request, response: Response, person_name: str):
     """
     Полное удаление биометрических данных персоны (ст. 20 ЗРК).
 
@@ -94,7 +99,8 @@ async def erase_person(person_name: str):
 
 
 @router.post("/run-cleanup", response_model=CleanupResultOut)
-async def run_cleanup():
+@limiter.limit("5/minute")
+async def run_cleanup(request: Request, response: Response):
     """
     Ручной запуск TTL-очистки.
 
