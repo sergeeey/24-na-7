@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.reflexio.app.BuildConfig
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -116,10 +117,12 @@ private fun postAsk(baseHttpUrl: String, question: String): AskResult {
         put("include_evidence", false)
     }.toString().toRequestBody("application/json".toMediaType())
 
-    val request = Request.Builder()
+    val requestBuilder = Request.Builder()
         .url("$baseHttpUrl/ask")
         .post(body)
-        .build()
+    val apiKey = BuildConfig.SERVER_API_KEY
+    if (apiKey.isNotBlank()) requestBuilder.addHeader("Authorization", "Bearer $apiKey")
+    val request = requestBuilder.build()
 
     httpClient.newCall(request).execute().use { resp ->
         val raw = resp.body?.string() ?: throw RuntimeException("Empty response")
