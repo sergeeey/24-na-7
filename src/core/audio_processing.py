@@ -12,6 +12,7 @@ import wave
 from fastapi import HTTPException
 import numpy as np
 
+from src.asr.acoustic import extract_acoustic_features
 from src.asr.transcribe import transcribe_audio
 from src.edge.filters import SpeechFilter
 from src.memory.semantic_memory import consolidate_to_memory_node, ensure_semantic_memory_tables
@@ -133,7 +134,13 @@ def _check_speech_gate(wav_path: Path) -> tuple[bool, str | None]:
     return True, None
 
 
-def _run_enrichment_sync(db_path: Path, transcription_id: str, result: dict[str, Any], enrichment_text: str) -> None:
+def _run_enrichment_sync(
+    db_path: Path,
+    transcription_id: str,
+    result: dict[str, Any],
+    enrichment_text: str,
+    acoustic_metadata: dict[str, Any] | None = None,
+) -> None:
     from src.enrichment.enricher import enrich_transcription
 
     event = enrich_transcription(
@@ -142,6 +149,7 @@ def _run_enrichment_sync(db_path: Path, transcription_id: str, result: dict[str,
         timestamp=datetime.now(),
         duration_sec=result.get("duration", 0.0) or 0.0,
         language=result.get("language", "unknown") or "unknown",
+        acoustic_metadata=acoustic_metadata,
     )
     persist_structured_event(db_path, event)
     if settings.MEMORY_ENABLED:
@@ -363,6 +371,18 @@ async def process_audio_bytes(
                         "speaker_confidence": verification.confidence,
                     }
 
+        # Stage 2.5: Acoustic features — ПЕРЕД Whisper, пока WAV жив.
+        # ПОЧЕМУ здесь: после ASR аудио удаляется (zero-retention).
+        # Акустика даёт LLM второй канал данных для эмоций.
+        acoustic_metadata = extract_acoustic_features(dest_path)
+        if acoustic_metadata:
+            logger.info(
+                "acoustic_features",
+                ingest_id=ingest_id,
+                arousal=acoustic_metadata.get("acoustic_arousal"),
+                pitch_var=acoustic_metadata.get("pitch_variance"),
+            )
+
         transcriber = transcribe_fn or transcribe_audio
         result = transcriber(dest_path, language=settings.ASR_LANGUAGE)
         text = (result.get("text") or "").strip()
@@ -440,6 +460,7 @@ async def process_audio_bytes(
                 transcription_id=transcription_id,
                 result=result,
                 enrichment_text=text_for_enrichment,
+                acoustic_metadata=acoustic_metadata,
             ))
 
         return {

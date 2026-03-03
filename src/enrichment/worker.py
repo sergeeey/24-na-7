@@ -31,6 +31,7 @@ class EnrichmentTask:
     transcription_id: str
     result: dict[str, Any]
     enrichment_text: str
+    acoustic_metadata: dict[str, Any] | None = None
 
 
 class EnrichmentWorker:
@@ -91,6 +92,7 @@ class EnrichmentWorker:
                 transcription_id=task.transcription_id,
                 result=task.result,
                 enrichment_text=task.enrichment_text,
+                acoustic_metadata=task.acoustic_metadata,
             )
         except Exception as e:
             logger.warning(

@@ -1,6 +1,7 @@
 """Enricher — обогащает транскрипцию в StructuredEvent через LLM."""
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
 from datetime import datetime, timezone
@@ -13,6 +14,11 @@ from src.enrichment.schema import StructuredEvent, TaskExtracted
 from src.utils.logging import get_logger
 
 logger = get_logger("enrichment")
+
+# ПОЧЕМУ семантическая версия: при смене промпта или логики enrichment
+# инкрементируем версию. Позволяет фильтровать events по версии,
+# детектировать drift, воспроизводить старые результаты.
+ENRICHMENT_VERSION = "2.1.0"  # 2.0=base, 2.1=acoustic hints
 
 WHISPER_HALLUCINATIONS = {
     "",
@@ -58,6 +64,37 @@ def _compute_enrichment_confidence(analysis: dict) -> float:
     return round(min(score, 1.0), 2)
 
 
+def _build_acoustic_hint(acoustic: dict[str, Any]) -> str:
+    """Формирует текстовую подсказку для LLM из акустических данных.
+
+    ПОЧЕМУ текст а не JSON: LLM лучше понимает естественный язык.
+    15-20 дополнительных tokens — пренебрежимая стоимость ($0.000003).
+    """
+    arousal = acoustic.get("acoustic_arousal", "normal")
+    pitch_var = acoustic.get("pitch_variance", 0)
+    energy = acoustic.get("energy_mean", 0)
+
+    parts = []
+    if arousal == "high":
+        parts.append("Голос возбуждённый: высокая вариативность тона и громкость")
+    elif arousal == "low":
+        parts.append("Голос тихий и монотонный (возможна усталость или подавленность)")
+
+    if pitch_var > 40:
+        parts.append(f"сильные колебания тона ({pitch_var:.0f} Гц)")
+    elif pitch_var < 10 and arousal != "low":
+        parts.append("ровный монотонный тон")
+
+    if energy > 0.08:
+        parts.append("говорит громко")
+    elif energy < 0.01:
+        parts.append("говорит очень тихо")
+
+    if not parts:
+        return ""
+    return "\n[Акустика голоса: " + ", ".join(parts) + ". Учти при определении эмоций.]"
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=8),
@@ -90,8 +127,13 @@ def enrich_transcription(
     duration_sec: float = 0.0,
     language: str = "unknown",
     asr_confidence: float = 0.0,
+    acoustic_metadata: dict[str, Any] | None = None,
 ) -> StructuredEvent:
-    """Обогащает транскрипцию в StructuredEvent."""
+    """Обогащает транскрипцию в StructuredEvent.
+
+    acoustic_metadata: если передан — акустические фичи (pitch, energy, arousal)
+    инжектируются в LLM промпт для улучшения определения эмоций.
+    """
     event_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
@@ -105,6 +147,14 @@ def enrich_transcription(
         asr_confidence=asr_confidence,
         created_at=now,
     )
+
+    # Сохраняем акустику в event независимо от LLM enrichment
+    if acoustic_metadata:
+        base_event.pitch_hz_mean = acoustic_metadata.get("pitch_hz_mean")
+        base_event.pitch_variance = acoustic_metadata.get("pitch_variance")
+        base_event.energy_mean = acoustic_metadata.get("energy_mean")
+        base_event.spectral_centroid_mean = acoustic_metadata.get("spectral_centroid_mean")
+        base_event.acoustic_arousal = acoustic_metadata.get("acoustic_arousal")
 
     clean_text = text.strip()
     if not clean_text:
@@ -123,7 +173,21 @@ def enrich_transcription(
     try:
         from src.utils.config import settings
 
-        analysis, latency_ms = _run_analysis_with_retry(clean_text)
+        # ПОЧЕМУ acoustic hint добавляется к тексту: LLM получает и слова,
+        # и подсказку о тоне голоса — два канала данных вместо одного.
+        enrichment_input = clean_text
+        if acoustic_metadata:
+            hint = _build_acoustic_hint(acoustic_metadata)
+            if hint:
+                enrichment_input = clean_text + hint
+
+        # ПОЧЕМУ hash промпта: через 3 месяца другой промпт даст другие
+        # эмоции. Hash позволяет детектировать момент drift.
+        prompt_hash = hashlib.sha256(
+            enrichment_input.encode("utf-8", errors="ignore")
+        ).hexdigest()[:12]
+
+        analysis, latency_ms = _run_analysis_with_retry(enrichment_input)
 
         tasks = []
         for action in analysis.get("actions", []):
@@ -161,6 +225,8 @@ def enrich_transcription(
         base_event.enrichment_confidence = _compute_enrichment_confidence(analysis)
         base_event.enrichment_model = model_name
         base_event.enrichment_latency_ms = round(latency_ms, 2)
+        base_event.enrichment_prompt_hash = prompt_hash
+        base_event.enrichment_version = ENRICHMENT_VERSION
 
         logger.info(
             "enrichment_complete",

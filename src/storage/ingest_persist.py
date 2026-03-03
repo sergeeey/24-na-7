@@ -160,6 +160,13 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
         "version INTEGER DEFAULT 1",
         "supersedes_id TEXT",
         "is_current INTEGER DEFAULT 1",
+        "pitch_hz_mean REAL",
+        "pitch_variance REAL",
+        "energy_mean REAL",
+        "spectral_centroid_mean REAL",
+        "acoustic_arousal TEXT",
+        "enrichment_prompt_hash TEXT",
+        "enrichment_version TEXT DEFAULT ''",
     ]:
         try:
             cursor.execute(f"ALTER TABLE structured_events ADD COLUMN {col_def}")
@@ -232,8 +239,11 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                     urgency, sentiment, location,
                     asr_confidence, enrichment_confidence, enrichment_model,
                     enrichment_tokens, enrichment_latency_ms, created_at,
-                    version, supersedes_id, is_current
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    version, supersedes_id, is_current,
+                    pitch_hz_mean, pitch_variance, energy_mean,
+                    spectral_centroid_mean, acoustic_arousal,
+                    enrichment_prompt_hash, enrichment_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
@@ -261,6 +271,13 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                     version,
                     supersedes_id,
                     1,  # is_current
+                    getattr(event, "pitch_hz_mean", None),
+                    getattr(event, "pitch_variance", None),
+                    getattr(event, "energy_mean", None),
+                    getattr(event, "spectral_centroid_mean", None),
+                    getattr(event, "acoustic_arousal", None),
+                    getattr(event, "enrichment_prompt_hash", None),
+                    getattr(event, "enrichment_version", ""),
                 ),
             )
         logger.info(

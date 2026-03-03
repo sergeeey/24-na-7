@@ -45,11 +45,20 @@ class StructuredEvent(BaseModel):
     # Где (null для MVP)
     location: Optional[str] = None
 
-    # Качество
+    # Акустика (из DSP, не LLM — объективные данные голоса)
+    pitch_hz_mean: Optional[float] = None
+    pitch_variance: Optional[float] = None
+    energy_mean: Optional[float] = None
+    spectral_centroid_mean: Optional[float] = None
+    acoustic_arousal: Optional[str] = None  # low | normal | high
+
+    # Качество и воспроизводимость
     asr_confidence: float = 0.0
     enrichment_confidence: float = 0.0
     enrichment_model: str = ""
     enrichment_tokens: int = 0
     enrichment_latency_ms: float = 0.0
+    enrichment_prompt_hash: Optional[str] = None  # SHA-256[:12] промпта → аудит drift
+    enrichment_version: str = ""  # семантическая версия логики enrichment
 
     created_at: datetime = Field(default_factory=datetime.utcnow)

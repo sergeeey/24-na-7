@@ -454,6 +454,14 @@ class DigestGenerator:
         except Exception:
             insights = []
 
+        # Acoustic session profile — агрегация per-segment фич в дневной тренд
+        acoustic_profile = None
+        try:
+            from src.asr.acoustic import aggregate_session_acoustics
+            acoustic_profile = aggregate_session_acoustics(self.db_path, target_date)
+        except Exception:
+            pass
+
         return {
             "date": target_date.isoformat(),
             "summary_text": summary_text,
@@ -465,6 +473,7 @@ class DigestGenerator:
             "repetitions": [],
             "balance": balance_payload,
             "insights": insights,
+            "acoustic_profile": acoustic_profile,
         }
 
     def _get_density_level(self, score: float) -> str:
