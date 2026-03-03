@@ -37,8 +37,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Expose порт
 EXPOSE 8000
 
-# Запуск API
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# ПОЧЕМУ --workers 2: Whisper транскрипция блокирует CPU на 100%.
+# С 1 worker — все HTTP запросы (digest, voice) таймаутятся во время ASR.
+# 2 workers: один обрабатывает WebSocket/ASR, второй — REST API.
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
 
 
 
