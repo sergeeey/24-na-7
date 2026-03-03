@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     libportaudio2 \
     curl \
+    libsqlcipher-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Создаём non-root пользователя
@@ -40,11 +41,10 @@ EXPOSE 8000
 # ПОЧЕМУ --workers 2: Whisper транскрипция блокирует CPU на 100%.
 # С 1 worker — все HTTP запросы (digest, voice) таймаутятся во время ASR.
 # 2 workers: один обрабатывает WebSocket/ASR, второй — REST API.
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
-
-
-
-
+# ПОЧЕМУ --timeout-keep-alive 120: дефолт 5 сек слишком короткий для ASR
+# и digest generation (может занимать 30-120 сек). Без этого uvicorn
+# закрывает connection до завершения транскрипции → клиент получает 502.
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "120"]
 
 
 

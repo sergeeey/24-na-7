@@ -8,6 +8,16 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Union, Generator
+
+# ПОЧЕМУ graceful import: sqlcipher3 требует нативной libsqlcipher-dev.
+# На dev-машинах без неё — fallback на plain sqlite3 с предупреждением.
+# В production (VPS) — sqlcipher3 установлен → шифрование активно.
+try:
+    import sqlcipher3 as _sqlcipher_module
+    _SQLCIPHER_AVAILABLE = True
+except ImportError:
+    _sqlcipher_module = None  # type: ignore[assignment]
+    _SQLCIPHER_AVAILABLE = False
 from pathlib import Path
 
 try:
@@ -41,8 +51,19 @@ def get_connection(db_path: Union[str, Path], *, check_same_thread: bool = False
     # магически управляет транзакциями, что вызывает "ghost transactions"
     # после SELECT — данные невидимы между singleton connections в тестах.
     # С None — каждый statement auto-commits, а транзакции начинаем явно через BEGIN.
-    conn = sqlite3.connect(str(db_path), check_same_thread=check_same_thread, isolation_level=None)
-    conn.row_factory = sqlite3.Row
+    sqlcipher_key = os.environ.get("SQLCIPHER_KEY", "")
+    if _SQLCIPHER_AVAILABLE and sqlcipher_key:
+        # ПОЧЕМУ sqlcipher3 вместо sqlite3: AES-256-CBC шифрование всего файла БД.
+        # Без ключа — бинарный мусор. Блокер для App Store.
+        # key задаётся PRAGMA key СРАЗУ после connect — до любого другого запроса.
+        conn = _sqlcipher_module.connect(str(db_path), check_same_thread=check_same_thread, isolation_level=None)
+        conn.row_factory = _sqlcipher_module.Row
+        conn.execute(f"PRAGMA key = \"{sqlcipher_key}\"")  # nosec B608 — key from env, not user input
+    else:
+        if sqlcipher_key and not _SQLCIPHER_AVAILABLE:
+            logger.warning("sqlcipher_unavailable", reason="sqlcipher3 not installed, falling back to plain sqlite3")
+        conn = sqlite3.connect(str(db_path), check_same_thread=check_same_thread, isolation_level=None)
+        conn.row_factory = sqlite3.Row
 
     # ПОЧЕМУ каждый pragma:
     # WAL — читатели не блокируют писателей (критично для concurrent WebSocket)
