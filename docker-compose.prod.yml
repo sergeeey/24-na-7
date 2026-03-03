@@ -17,7 +17,9 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: reflexio-api
-    # ПОЧЕМУ 2 workers: Whisper блокирует CPU, без второго worker REST таймаутится
+    # ПОЧЕМУ 2 workers: 1 worker → Whisper занимает весь event loop; 2 → REST отвечает.
+    # ПОЧЕМУ semaphore(1) в audio_processing.py: только 1 транскрипция одновременно.
+    # cpu_threads=2 в WhisperModel → ctranslate2 max 2 CPU потока.
     command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
     # ПОЧЕМУ только localhost: Caddy стоит снаружи и проксирует HTTPS→HTTP.
     # Открывать 8000 наружу не нужно — только Caddy должен видеть API.
@@ -46,6 +48,13 @@ services:
       - ./src:/app/src
       - ./config:/app/config
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # ПОЧЕМУ 3.5 CPU: Whisper (cpu_threads=2) + uvicorn (0.5-1.5).
+          # Предотвращает zombie workers от захвата всех 4 vCPU VPS.
+          cpus: "3.5"
+          memory: 4G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
