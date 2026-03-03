@@ -19,7 +19,10 @@ from src.utils.logging import get_logger
 
 logger = get_logger("storage.vec_search")
 
-EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 / hash_fallback
+import os
+# ПОЧЕМУ из env: OpenAI text-embedding-3-small = 1536, MiniLM = 384, hash_fallback = 384.
+# Если меняешь провайдер — поменяй EMBEDDING_DIM и запусти /search/reindex заново.
+EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "1536"))
 _VEC_AVAILABLE: bool | None = None  # None = не проверяли
 
 
