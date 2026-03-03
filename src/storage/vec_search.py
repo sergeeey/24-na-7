@@ -8,7 +8,7 @@
 Архитектура:
   vec_events (virtual table) — embedding float[384] для каждого structured_event.
   Запись: index_event() вызывается при persist нового события.
-  Чтение: search_events() → SQL MATCH → event_ids → JOIN structured_events.
+  Чтение: search_events() → SQL MATCH → ids → JOIN structured_events.
 """
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ def index_event(conn: Any, event_id: str, text: str) -> bool:
     try:
         from src.storage.embeddings import generate_embeddings
         row = conn.execute(
-            "SELECT rowid FROM structured_events WHERE event_id = ?", (event_id,)
+            "SELECT rowid FROM structured_events WHERE id = ?", (event_id,)
         ).fetchone()
         if not row:
             return False
@@ -122,7 +122,7 @@ def index_event(conn: Any, event_id: str, text: str) -> bool:
         conn.commit()
         return True
     except Exception as e:
-        logger.warning("vec_index_event_failed", event_id=event_id, error=str(e))
+        logger.warning("vec_index_event_failed", id=id, error=str(e))
         return False
 
 
@@ -131,7 +131,7 @@ def search_events(conn: Any, query: str, limit: int = 10) -> List[dict]:
     Семантический поиск событий по cosine similarity.
 
     Returns:
-        List[{event_id, text, distance, topics, emotions, created_at}]
+        List[{id, text, distance, topics, emotions, created_at}]
         Отсортировано по distance (меньше = ближе).
     """
     if not query.strip():
@@ -146,7 +146,7 @@ def search_events(conn: Any, query: str, limit: int = 10) -> List[dict]:
         rows = conn.execute(
             """
             SELECT
-                se.event_id,
+                se.id,
                 se.text,
                 se.topics,
                 se.emotions,
@@ -173,7 +173,7 @@ def search_events(conn: Any, query: str, limit: int = 10) -> List[dict]:
             except Exception:
                 pass
             results.append({
-                "event_id": row[0],
+                "id": row[0],
                 "text": row[1],
                 "topics": topics,
                 "emotions": emotions,
@@ -200,7 +200,7 @@ def retroindex_all(conn: Any) -> int:
         # Только события без индекса
         rows = conn.execute(
             """
-            SELECT se.event_id, se.text, se.rowid
+            SELECT se.id, se.text, se.rowid
             FROM structured_events se
             LEFT JOIN vec_events v ON v.event_rowid = se.rowid
             WHERE se.is_current = 1
@@ -216,7 +216,7 @@ def retroindex_all(conn: Any) -> int:
 
         from src.storage.embeddings import generate_embeddings
         count = 0
-        for event_id, text, rowid in rows:
+        for id, text, rowid in rows:
             try:
                 embedding = generate_embeddings(text)
                 blob = _to_blob(embedding)
@@ -229,7 +229,7 @@ def retroindex_all(conn: Any) -> int:
                     conn.commit()
                     logger.info("retroindex_progress", count=count, total=len(rows))
             except Exception as e:
-                logger.warning("retroindex_event_failed", event_id=event_id, error=str(e))
+                logger.warning("retroindex_event_failed", id=id, error=str(e))
 
         conn.commit()
         logger.info("retroindex_complete", indexed=count, total=len(rows))
