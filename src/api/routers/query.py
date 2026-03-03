@@ -20,7 +20,9 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from src.core.tool_result import ToolResult, ToolTimer
+import json
+
+from src.core.tool_result import ToolResult, ToolTimer, UIHint
 from src.core.confidence import single_confidence
 from src.api.middleware.permission_gate import (
     issue_confirmation_token,
@@ -109,6 +111,30 @@ async def query_events(
             evidence_ids = [str(r.get("id", "")) for r in results]
             conf = single_confidence(len(results))
 
+            # Evidence metadata для визуального слоя (v0.4.0)
+            # ПОЧЕМУ маппинг, а не enrichment_confidence:
+            #   sentiment — эмоциональная валентность события (что случилось)
+            #   enrichment_confidence — насколько LLM уверена в обогащении (качество данных)
+            #   Пользователь должен видеть цвет настроения, не уверенность модели.
+            _sentiment_to_score = {"positive": 1.0, "neutral": 0.5, "negative": 0.0}
+            evidence_metadata = [
+                {
+                    "id": str(r.get("id", "")),
+                    "timestamp": r.get("created_at", ""),
+                    "sentiment_score": _sentiment_to_score.get(
+                        r.get("sentiment", "neutral"), 0.5
+                    ),
+                    "top_topic": (json.loads(r.get("topics_json") or "[]") or [""])[0],
+                }
+                for r in results
+            ]
+
+            # UIHint: если есть задачи — ACTION_LIST, иначе TIMELINE
+            any_tasks = any(
+                json.loads(r.get("tasks", "[]") or "[]") for r in results
+            )
+            ui_hint = UIHint.ACTION_LIST if any_tasks else UIHint.TIMELINE
+
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
@@ -122,6 +148,8 @@ async def query_events(
         confidence=conf,
         tool_name="query_events",
         db_query_ms=timer.elapsed_ms,
+        ui_hint=ui_hint,
+        evidence_metadata=evidence_metadata,
     )
     return result.to_api_dict(include_evidence=include_evidence)
 
@@ -405,7 +433,7 @@ def _lexical_search(db, q: str, limit: int) -> list[dict]:
     rows = db.fetchall(
         """
         SELECT id, transcription_id, text, summary, topics_json,
-               emotions_json, created_at, enrichment_confidence
+               emotions_json, sentiment, tasks, created_at, enrichment_confidence
         FROM structured_events
         WHERE text LIKE ? OR summary LIKE ?
         ORDER BY created_at DESC

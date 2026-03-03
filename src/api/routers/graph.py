@@ -63,6 +63,20 @@ class GraphStatsOut(BaseModel):
     total_interactions: int
 
 
+class NodeOut(BaseModel):
+    name: str
+    relationship: str
+    voice_ready: bool
+
+
+class NeighborhoodOut(BaseModel):
+    center: str
+    nodes: list[NodeOut]
+    edges: list[dict]  # {"from": ..., "to": ..., "interaction_count": ..., "last_date": ...}
+    hops: int
+    source: str
+
+
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
@@ -218,6 +232,105 @@ async def reject_person_profile(request: Request, response: Response, name: str)
     acc.reject_profile(name)
     logger.info("profile_rejected_via_api", person=name)
     return {"status": "rejected", "person": name}
+
+
+@router.get("/neighborhood/{name}", response_model=NeighborhoodOut)
+@limiter.limit("30/minute")
+async def get_neighborhood(
+    request: Request,
+    response: Response,
+    name: str,
+    hops: int = Query(2, ge=1, le=3),
+):
+    """
+    Граф соседей персоны: кто связан с ней через N хопов.
+
+    Приоритет: KùzuDB (multi-hop Cypher) → fallback SQLite.
+    Рёбра всегда из SQLite person_interactions (взаимодействия через пользователя).
+    """
+    db = _connect()
+    source = "sqlite_fallback"
+    nodes: list[NodeOut] = []
+
+    # 1. Пробуем KùzuDB
+    try:
+        from src.persongraph.kuzu_engine import get_kuzu_engine
+        engine = get_kuzu_engine()
+        if engine.is_available():
+            raw_neighbors = engine.get_neighbors(name, hops)
+            if raw_neighbors:
+                # Обогащаем voice_ready из SQLite одним запросом
+                neighbor_names = [n["name"] for n in raw_neighbors]
+                placeholders = ",".join("?" * len(neighbor_names))
+                vr_rows = db.fetchall(
+                    f"SELECT name, voice_ready FROM persons WHERE name IN ({placeholders})",  # nosec B608
+                    neighbor_names,
+                )
+                vr_map = {r["name"]: bool(r["voice_ready"]) for r in vr_rows}
+                nodes = [
+                    NodeOut(
+                        name=n["name"],
+                        relationship=n["relationship"],
+                        voice_ready=vr_map.get(n["name"], False),
+                    )
+                    for n in raw_neighbors
+                    if n["name"] != "self"
+                ]
+                source = "kuzu"
+    except Exception as e:
+        logger.warning("kuzu_neighborhood_failed", name=name, error=str(e))
+
+    # 2. Fallback: SQLite persons
+    if not nodes:
+        rows = db.fetchall(
+            "SELECT name, relationship, voice_ready FROM persons "
+            "WHERE name != ? ORDER BY last_seen DESC LIMIT 20",
+            (name,),
+        )
+        nodes = [
+            NodeOut(
+                name=r["name"],
+                relationship=r["relationship"] or "unknown",
+                voice_ready=bool(r["voice_ready"]),
+            )
+            for r in rows
+        ]
+
+    # 3. Рёбра из person_interactions (source of truth)
+    if not nodes:
+        return NeighborhoodOut(center=name, nodes=[], edges=[], hops=hops, source=source)
+
+    edges: list[dict] = []
+    if nodes:
+        node_names = [n.name for n in nodes]
+        placeholders = ",".join("?" * len(node_names))
+        edge_rows = db.fetchall(
+            f"""
+            SELECT person_name, COUNT(*) as cnt, MAX(created_at) as last_date
+            FROM person_interactions
+            WHERE person_name IN ({placeholders})
+            GROUP BY person_name
+            """,  # nosec B608
+            node_names,
+        )
+        edge_map = {r["person_name"]: r for r in edge_rows}
+        edges = [
+            {
+                "from": name,
+                "to": n.name,
+                "interaction_count": int(edge_map.get(n.name, {}).get("cnt", 0)),
+                "last_date": (edge_map.get(n.name, {}).get("last_date", "") or "")[:10],
+            }
+            for n in nodes
+        ]
+
+    return NeighborhoodOut(
+        center=name,
+        nodes=nodes,
+        edges=edges,
+        hops=hops,
+        source=source,
+    )
 
 
 @router.get("/stats", response_model=GraphStatsOut)

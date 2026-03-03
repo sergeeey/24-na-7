@@ -87,5 +87,5 @@ apscheduler>=3.10.0
 
 # Embedded Graph DB для multi-hop запросов (Sprint 3)
 # ПОЧЕМУ kuzu: embedded как SQLite, Cypher, 15-188x быстрее NetworkX на graph traversal.
-# kuzu>=0.7.0  # Раскомментировать после активации KùzuDB
+kuzu>=0.7.0
 

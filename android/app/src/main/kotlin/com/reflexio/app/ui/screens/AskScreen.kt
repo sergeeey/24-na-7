@@ -1,8 +1,14 @@
 package com.reflexio.app.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,7 +20,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -54,6 +63,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -84,6 +94,13 @@ private fun confidenceLabel(label: String): String = when (label) {
 // Data classes
 // ──────────────────────────────────────────────
 
+private data class EvidenceMeta(
+    val id: String,
+    val timestamp: String,
+    val sentimentScore: Double,
+    val topTopic: String,
+)
+
 private data class AskResult(
     val answer: String,
     val confidence: Double,
@@ -93,6 +110,8 @@ private data class AskResult(
     val totalMs: Double,
     val needsClarification: Boolean,
     val warning: String?,
+    val uiHint: String,
+    val evidenceMetadata: List<EvidenceMeta>,
 )
 
 private sealed class AskState {
@@ -135,6 +154,29 @@ private fun postAsk(baseHttpUrl: String, question: String): AskResult {
             for (i in 0 until toolsArray.length()) tools.add(toolsArray.getString(i))
         }
 
+        // Парсим evidence_metadata и ui_hint из data[0]
+        var uiHint = "timeline"
+        val evidenceMetadata = mutableListOf<EvidenceMeta>()
+        val dataArr = json.optJSONArray("data")
+        if (dataArr != null && dataArr.length() > 0) {
+            val first = dataArr.getJSONObject(0)
+            uiHint = first.optString("ui_hint", "timeline")
+            val evArr: JSONArray? = first.optJSONArray("evidence_metadata")
+            if (evArr != null) {
+                for (i in 0 until evArr.length()) {
+                    val ev = evArr.getJSONObject(i)
+                    evidenceMetadata.add(
+                        EvidenceMeta(
+                            id = ev.optString("id"),
+                            timestamp = ev.optString("timestamp"),
+                            sentimentScore = ev.optDouble("sentiment_score", 0.0),
+                            topTopic = ev.optString("top_topic"),
+                        )
+                    )
+                }
+            }
+        }
+
         return AskResult(
             answer = json.optString("answer", "Нет ответа"),
             confidence = json.optDouble("confidence", 0.0),
@@ -143,7 +185,9 @@ private fun postAsk(baseHttpUrl: String, question: String): AskResult {
             toolsUsed = tools,
             totalMs = json.optDouble("total_ms", 0.0),
             needsClarification = json.optBoolean("needs_clarification", false),
-            warning = json.optString("warning", null).takeIf { it.isNotBlank() },
+            warning = json.optString("warning", "").takeIf { it.isNotBlank() },
+            uiHint = uiHint,
+            evidenceMetadata = evidenceMetadata,
         )
     }
 }
@@ -253,7 +297,6 @@ fun AskScreen(
 
             is AskState.Success -> {
                 val r = s.result
-                val color = confidenceColor(r.confidenceLabel)
 
                 // Warning banner
                 r.warning?.let { warn ->
@@ -273,20 +316,8 @@ fun AskScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
-                // Confidence badge
-                SuggestionChip(
-                    onClick = {},
-                    label = {
-                        Text(
-                            text = "${confidenceLabel(r.confidenceLabel)} · ${(r.confidence * 100).toInt()}%",
-                            fontWeight = FontWeight.Medium,
-                        )
-                    },
-                    colors = SuggestionChipDefaults.suggestionChipColors(
-                        containerColor = color.copy(alpha = 0.15f),
-                        labelColor = color,
-                    ),
-                )
+                // Confidence badge (пульсирует при speculative)
+                ConfidenceBadge(label = r.confidenceLabel, confidence = r.confidence)
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // Answer
@@ -304,6 +335,12 @@ fun AskScreen(
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
+
+                // EvidenceTrace — горизонтальная лента улик
+                if (r.evidenceMetadata.isNotEmpty()) {
+                    EvidenceTraceRow(r.evidenceMetadata)
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
 
                 // Expandable details
                 TextButton(
@@ -346,6 +383,85 @@ fun AskScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * ConfidenceBadge — chip с пульсирующей анимацией для speculative результатов.
+ * ПОЧЕМУ пульсация: speculative = система не уверена → визуальный сигнал "уточни вопрос".
+ */
+@Composable
+private fun ConfidenceBadge(label: String, confidence: Double) {
+    val color = confidenceColor(label)
+    val infiniteTransition = rememberInfiniteTransition(label = "confidence_pulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+        label = "pulse",
+    )
+    val containerAlpha = if (label == "speculative") pulseAlpha else 1f
+
+    SuggestionChip(
+        onClick = {},
+        label = {
+            Text(
+                text = "${confidenceLabel(label)} · ${(confidence * 100).toInt()}%",
+                fontWeight = FontWeight.Medium,
+            )
+        },
+        colors = SuggestionChipDefaults.suggestionChipColors(
+            containerColor = color.copy(alpha = 0.15f * containerAlpha),
+            labelColor = color,
+        ),
+    )
+}
+
+/**
+ * EvidenceTraceRow — горизонтальная лента улик.
+ * [14:32 · стресс · 🔴] [15:10 · работа · 🟡] [16:45 · финансы · 🟢]
+ */
+@Composable
+private fun EvidenceTraceRow(evidenceList: List<EvidenceMeta>) {
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(evidenceList) { ev -> EvidenceCard(ev) }
+    }
+}
+
+@Composable
+private fun EvidenceCard(ev: EvidenceMeta) {
+    // Цвет dot по sentiment_score (0–1 → красный–жёлтый–зелёный)
+    val dotColor = when {
+        ev.sentimentScore >= 0.7 -> ColorHigh
+        ev.sentimentScore >= 0.4 -> ColorLow
+        else -> ColorSpeculative
+    }
+    // Извлекаем HH:MM из ISO-timestamp "2026-03-03T14:32:00" или "2026-03-03 14:32:00"
+    val timeStr = ev.timestamp.let { ts ->
+        val sep = ts.indexOfFirst { it == 'T' || it == ' ' }
+        if (sep >= 0 && sep + 6 <= ts.length) ts.substring(sep + 1, sep + 6) else ts.take(5)
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(text = timeStr, style = MaterialTheme.typography.labelSmall)
+            if (ev.topTopic.isNotBlank()) {
+                Text(
+                    text = "· ${ev.topTopic}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Box(modifier = Modifier.size(8.dp).background(dotColor, CircleShape))
         }
     }
 }

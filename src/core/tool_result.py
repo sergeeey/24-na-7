@@ -33,6 +33,14 @@ class ConfidenceLabel(str, Enum):
     SPECULATIVE = "speculative"  # <0.4 — требует предупреждения + уточнения
 
 
+class UIHint(str, Enum):
+    TIMELINE = "timeline"           # события по времени
+    PERSON_GRAPH = "person_graph"   # связи людей
+    ACTION_LIST = "action_list"     # задачи/решения
+    CARD = "card"                   # одиночный факт
+    LIST = "list"                   # простой список
+
+
 def _label_from_score(score: float) -> ConfidenceLabel:
     if score >= 0.8:
         return ConfidenceLabel.HIGH
@@ -55,6 +63,11 @@ class ToolResult(BaseModel):
     # Уверенность
     confidence: float = Field(ge=0.0, le=1.0)
     confidence_label: ConfidenceLabel = ConfidenceLabel.SPECULATIVE
+
+    # Визуальный слой (v0.4.0)
+    ui_hint: UIHint = UIHint.TIMELINE
+    evidence_metadata: list[dict] = Field(default_factory=list)
+    # [{id, timestamp, sentiment_score, top_topic}]
 
     # Мета
     tool_name: str
@@ -114,6 +127,8 @@ class ToolResult(BaseModel):
             "confidence_label": self.confidence_label.value,
             "tool": self.tool_name,
             "db_query_ms": round(self.db_query_ms, 1),
+            "ui_hint": self.ui_hint.value,
+            "evidence_metadata": self.evidence_metadata,
         }
         if self.error:
             out["error"] = self.error
