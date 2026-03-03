@@ -1,10 +1,33 @@
 # Dockerfile для Reflexio 24/7 API (FastAPI)
-FROM python:3.11-slim
+# ПОЧЕМУ multi-stage: build-essential (~400MB) нужен только для компиляции C-extension пакетов
+# (sqlcipher3, некоторые numpy/scipy биты). В рантайме он не нужен — удаляем из финального образа.
+# Итог: финальный образ на ~400MB меньше, без потери функциональности.
 
-# ПОЧЕМУ эти пакеты: ffmpeg — конвертация аудио (Whisper), libsndfile1 — чтение WAV (librosa),
-# libportaudio2 — sounddevice, curl — healthcheck
+# ── Stage 1: builder — компиляция C-extensions ────────────────────────────────
+FROM python:3.11-slim AS builder
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    libsqlcipher-dev \
+    libsndfile1-dev \
+    libportaudio2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY requirements.txt .
+
+# ПОЧЕМУ --prefix=/install: изолируем пакеты в отдельный prefix-dir
+# чтобы скопировать в runtime stage без лишнего мусора
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+
+# ── Stage 2: runtime — лёгкий продакшн образ ─────────────────────────────────
+FROM python:3.11-slim
+
+# Только runtime-зависимости: нет build-essential, нет компилятора
+# ПОЧЕМУ эти пакеты: ffmpeg — конвертация аудио (Whisper), libsndfile1 — чтение WAV (librosa),
+# libportaudio2 — sounddevice, curl — healthcheck, libsqlcipher-dev — .so для sqlcipher3
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsndfile1 \
     libportaudio2 \
@@ -17,15 +40,12 @@ RUN useradd -m -u 1000 reflexio && \
     mkdir -p /app /app/storage && \
     chown -R reflexio:reflexio /app
 
+# Копируем установленные пакеты из builder stage
+COPY --from=builder /install /usr/local
+
 WORKDIR /app
 
-# Копируем requirements
-# ВКЛЮЧАЕТ: resemblyzer>=0.1.1 (speaker verification), redis>=5.0.0 (rate limit)
-# При изменении requirements.txt → пересобери образ: docker compose build --no-cache
-COPY requirements.txt* ./
-RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
-
-# Копируем код
+# Копируем код (tests/, docs/, android/ исключены через .dockerignore)
 COPY --chown=reflexio:reflexio . .
 
 # Переключаемся на non-root пользователя
@@ -45,10 +65,3 @@ EXPOSE 8000
 # и digest generation (может занимать 30-120 сек). Без этого uvicorn
 # закрывает connection до завершения транскрипции → клиент получает 502.
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "120"]
-
-
-
-
-
-
-

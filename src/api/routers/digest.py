@@ -147,7 +147,7 @@ def get_digest_daily(
         return result
     except Exception as e:
         logger.exception("digest_daily_failed", date=date, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to generate digest. Check server logs.")
 
 
 @router.get("/today")
@@ -184,7 +184,7 @@ async def get_digest_today(format: str = Query("markdown", pattern="^(markdown|j
             
     except Exception as e:
         logger.error("digest_generation_failed", date="today", error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to generate digest: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to generate digest. Check server logs.")
 
 
 @router.get("/{target_date}")
@@ -229,7 +229,28 @@ async def get_digest(
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     except Exception as e:
         logger.error("digest_generation_failed", date=target_date, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to generate digest: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to generate digest. Check server logs.")
+
+
+@router.get("/{target_date}/sources")
+async def get_digest_sources_endpoint(
+    target_date: str = PathParam(..., description="Дата в формате YYYY-MM-DD"),
+):
+    """
+    Data lineage дайджеста — какие транскрипции вошли в итог за день.
+
+    Отвечает на вопрос: "откуда этот инсайт?" → клик на инсайт → список оригинальных записей.
+    Также используется для GDPR cascading delete: при удалении данных пользователя
+    можно найти все дайджесты, которые их использовали.
+
+    GET /digest/2026-03-03/sources
+    """
+    try:
+        datetime.strptime(target_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    from src.storage.digest_lineage import get_digest_sources
+    return get_digest_sources(target_date)
 
 
 @router.get("/{target_date}/density")
@@ -260,6 +281,6 @@ async def get_density_analysis(
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     except Exception as e:
         logger.error("density_analysis_failed", date=target_date, error=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to analyze density: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to analyze density. Check server logs.")
 
 

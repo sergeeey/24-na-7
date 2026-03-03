@@ -462,6 +462,14 @@ class DigestGenerator:
         except Exception:
             pass
 
+        # Data lineage: записываем какие транскрипции вошли в этот дайджест.
+        # Fire-and-forget — ошибка не ломает уже готовый результат.
+        try:
+            from src.storage.digest_lineage import save_digest_sources
+            save_digest_sources(target_date.isoformat(), transcriptions)
+        except Exception:
+            pass
+
         return {
             "date": target_date.isoformat(),
             "summary_text": summary_text,
@@ -474,6 +482,7 @@ class DigestGenerator:
             "balance": balance_payload,
             "insights": insights,
             "acoustic_profile": acoustic_profile,
+            "sources_count": len(transcriptions),
         }
 
     def _get_density_level(self, score: float) -> str:

@@ -74,6 +74,12 @@ tests/
 # Docs (already excluding *.md but explicit)
 docs/
 
+# Generated digest files (пересоздаются на VPS)
+digests/
+
+# Scripts (migration scripts копируются отдельно при необходимости)
+scripts/
+
 
 
 

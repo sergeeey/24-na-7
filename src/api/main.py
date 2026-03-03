@@ -88,6 +88,17 @@ def _run_daily_digest_precompute() -> None:
         db.conn.commit()
         logger.info("digest_precompute_done", date=today, recordings=result.get("total_recordings", 0))
 
+        # Event log: фиксируем завершение дайджеста как lifecycle-событие дня
+        try:
+            from src.storage.event_log import log_event, STAGE_DIGEST_COMPUTED
+            log_event(
+                today,
+                STAGE_DIGEST_COMPUTED,
+                details={"recordings": result.get("total_recordings", 0), "sources": result.get("sources_count", 0)},
+            )
+        except Exception:
+            pass
+
     except Exception as e:
         logger.error("digest_precompute_failed", error=str(e))
         try:
