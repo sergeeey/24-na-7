@@ -59,9 +59,9 @@ def ensure_speaker_tables(db_path: Path) -> None:
                 f"ALTER TABLE transcriptions ADD COLUMN {col_name} {col_def}"
             )
             logger.info("speaker_column_added", column=col_name)
-        except sqlite3.OperationalError as e:
+        except Exception as e:
             if "duplicate column name" in str(e).lower():
-                pass  # Уже существует — ок
+                pass  # Уже существует — ок (sqlite3 или sqlcipher3)
             else:
                 logger.warning("alter_table_failed", column=col_name, error=str(e))
 

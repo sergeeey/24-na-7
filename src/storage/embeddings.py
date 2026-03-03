@@ -6,7 +6,9 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 import hashlib
 import json
+import math
 import os
+import sqlite3
 
 from src.utils.logging import get_logger
 
@@ -33,6 +35,64 @@ def _save_cache() -> None:
             json.dump(_embeddings_cache, f)
     except Exception as e:
         logger.warning("embeddings_cache_save_failed", error=str(e))
+
+
+def _ensure_text_entries_table(db_path: Path | None = None) -> None:
+    """Создаёт text_entries с колонкой metadata (если не существует).
+
+    ПОЧЕМУ здесь, а не в миграциях: migration 0001 — PostgreSQL DDL (UUID, vector).
+    SQLiteBackend создаёт таблицу лениво. Но schema не включает metadata →
+    store_embeddings() INSERT падает. Эта функция — idempotent ensure.
+    """
+    if db_path is None:
+        from src.utils.config import settings
+        db_path = settings.STORAGE_PATH / "reflexio.db"
+
+    from src.storage.db import get_connection
+    conn = get_connection(db_path)
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS text_entries (
+            id TEXT PRIMARY KEY,
+            mission_id TEXT,
+            content TEXT NOT NULL,
+            embedding TEXT,
+            metadata TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+
+    # ПОЧЕМУ ALTER TABLE: если таблица уже создана без metadata (старая миграция),
+    # добавляем колонку. OperationalError = колонка уже есть — безопасно.
+    try:
+        conn.execute("ALTER TABLE text_entries ADD COLUMN metadata TEXT")
+    except Exception:
+        pass  # колонка уже существует (sqlite3 или sqlcipher3)
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_text_entries_mission ON text_entries(mission_id)"
+    )
+    conn.commit()
+
+
+# ПОЧЕМУ копия из semantic_memory.py, а не import: semantic_memory уже
+# импортирует generate_embeddings из этого модуля → circular dependency.
+# Функция тривиальная (10 строк), дублирование оправдано.
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity между двумя векторами. Pure Python, без numpy."""
+    if not a or not b:
+        return 0.0
+    n = min(len(a), len(b))
+    if n == 0:
+        return 0.0
+    dot = sum(a[i] * b[i] for i in range(n))
+    na = math.sqrt(sum(a[i] * a[i] for i in range(n)))
+    nb = math.sqrt(sum(b[i] * b[i] for i in range(n)))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
 
 
 def _get_cache_key(text: str, model: str) -> str:
@@ -97,6 +157,8 @@ def generate_embeddings(text: str, model: str = "text-embedding-3-small", use_ca
 def store_embeddings(audio_id: str, segments: List[Dict[str, Any]], db_backend: Any = None) -> bool:
     """Сохраняет embeddings для сегментов аудио."""
     try:
+        _ensure_text_entries_table()
+
         if db_backend is None:
             from src.storage.db import get_db
 
@@ -131,32 +193,70 @@ def search_phrases(
     limit: int = 10,
     db_backend: Any = None,
 ) -> List[Dict[str, Any]]:
-    """Ищет фразы по semantic/lexical match (упрощённо)."""
+    """Гибридный semantic+lexical поиск фраз.
+
+    ПОЧЕМУ гибрид: чисто embedding-поиск может пропустить точные совпадения,
+    чисто lexical (Ctrl+F) не найдёт синонимы. Формула: 0.7*cosine + 0.3*lexical.
+    """
     try:
+        _ensure_text_entries_table()
+
         if db_backend is None:
             from src.storage.db import get_db
 
             db_backend = get_db()
 
-        generate_embeddings(query)
+        query_emb = generate_embeddings(query)
 
         filters = {"mission_id": audio_id} if audio_id else None
-        entries = db_backend.select("text_entries", filters=filters, limit=limit * 2)
+        # ПОЧЕМУ limit*5: берём больше кандидатов для ранжирования,
+        # потом отсекаем по score. При lexical-only limit*2 хватало,
+        # для semantic нужен больший pool.
+        entries = db_backend.select("text_entries", filters=filters, limit=limit * 5)
 
-        results = []
+        scored: List[tuple[float, Dict[str, Any]]] = []
         for entry in entries:
-            entry_text = entry.get("content", "")
-            if query.lower() in entry_text.lower():
-                results.append(
-                    {
-                        "text": entry_text,
-                        "start": entry.get("metadata", {}).get("start_time", 0.0),
-                        "end": entry.get("metadata", {}).get("end_time", 0.0),
-                        "confidence": entry.get("metadata", {}).get("confidence", 0.0),
-                    }
-                )
+            content = entry.get("content", "")
+            if not content:
+                continue
 
-        return results[:limit]
+            # Парсим embedding из JSON string (SQLiteBackend хранит как TEXT)
+            entry_emb: List[float] = []
+            raw_emb = entry.get("embedding", "")
+            if isinstance(raw_emb, str) and raw_emb:
+                try:
+                    entry_emb = json.loads(raw_emb)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            elif isinstance(raw_emb, list):
+                entry_emb = raw_emb
+
+            # Парсим metadata из JSON string
+            meta: Dict[str, Any] = {}
+            raw_meta = entry.get("metadata", "")
+            if isinstance(raw_meta, str) and raw_meta:
+                try:
+                    meta = json.loads(raw_meta)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            elif isinstance(raw_meta, dict):
+                meta = raw_meta
+
+            lexical = 1.0 if query.lower() in content.lower() else 0.0
+            semantic = _cosine(query_emb, entry_emb) if query_emb and entry_emb else 0.0
+            score = semantic * 0.7 + lexical * 0.3
+
+            item = {
+                "text": content,
+                "start": meta.get("start_time", 0.0),
+                "end": meta.get("end_time", 0.0),
+                "confidence": meta.get("confidence", 0.0),
+                "score": round(score, 4),
+            }
+            scored.append((score, item))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [item for _, item in scored[:limit]]
     except Exception as e:
         logger.error("phrase_search_failed", error=str(e))
         return []
