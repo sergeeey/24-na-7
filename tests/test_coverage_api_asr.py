@@ -135,10 +135,20 @@ def test_llm_anthropic_call_mock():
 def test_llm_google_no_api_key():
     """GoogleGeminiClient без API ключа — client не инициализирован."""
     from src.llm.providers import GoogleGeminiClient
-    with patch.dict(os.environ, {}, clear=True):
-        client = GoogleGeminiClient(model="gemini-pro", temperature=0.3)
-        out = client.call("test")
-    assert out.get("error") == "Gemini client not initialized"
+    from src.utils.config import settings
+
+    # ПОЧЕМУ object.__setattr__: pydantic Settings frozen/validated — обычный patch
+    # не работает (delattr кидает AttributeError при cleanup). object.__setattr__
+    # обходит pydantic validation, как в conftest.py для API_KEY.
+    original = settings.GOOGLE_API_KEY
+    try:
+        object.__setattr__(settings, "GOOGLE_API_KEY", None)
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "", "GEMINI_API_KEY": ""}, clear=False):
+            client = GoogleGeminiClient(model="gemini-pro", temperature=0.3)
+            out = client.call("test")
+        assert out.get("error") == "Gemini client not initialized"
+    finally:
+        object.__setattr__(settings, "GOOGLE_API_KEY", original)
 
 
 def test_asr_providers_get_asr_provider_distil():

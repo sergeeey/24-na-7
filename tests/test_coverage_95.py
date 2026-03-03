@@ -1007,11 +1007,13 @@ def test_summarizer_refiner_returns_original():
         from src.summarizer.refiner import refine_summary
     except ImportError:
         pytest.skip("summarizer not available")
-    with patch("src.summarizer.refiner.AnthropicClient") as MockAnthropic:
+    with (
+        patch("src.summarizer.refiner.AnthropicClient") as MockAnthropic,
+        patch("src.summarizer.refiner.OpenAIClient") as MockOpenAI,
+    ):
         MockAnthropic.return_value.client = None
-    with patch("src.summarizer.refiner.OpenAIClient") as MockOpenAI:
         MockOpenAI.return_value.client = None
-    out = refine_summary("Original summary.", "Long original text.")
+        out = refine_summary("Original summary.", "Long original text.")
     assert out == "Original summary."
 
 
@@ -2564,9 +2566,18 @@ def test_llm_google_gemini_client_no_key():
     """GoogleGeminiClient has client=None when GEMINI_API_KEY not set."""
     from src.llm.providers import GoogleGeminiClient
 
-    with patch.dict(os.environ, {}, clear=False):
-        c = GoogleGeminiClient(model="gemini-pro")
-    assert c.client is None
+    # ПОЧЕМУ object.__setattr__: pydantic Settings frozen/validated — обычный patch
+    # не работает (delattr кидает AttributeError). object.__setattr__ обходит
+    # pydantic validation, как в conftest.py для API_KEY.
+    from src.utils.config import settings
+    original = settings.GOOGLE_API_KEY
+    try:
+        object.__setattr__(settings, "GOOGLE_API_KEY", None)
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "", "GEMINI_API_KEY": ""}, clear=False):
+            c = GoogleGeminiClient(model="gemini-pro")
+        assert c.client is None
+    finally:
+        object.__setattr__(settings, "GOOGLE_API_KEY", original)
 
 
 def test_storage_retention_cleanup_digests_with_old_file(tmp_path):

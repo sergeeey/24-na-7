@@ -19,6 +19,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "redis>=5.0.0",
     "hvac>=2.0.0",
+    "apscheduler>=3.10.0",
 ]
 
 [project.optional-dependencies]

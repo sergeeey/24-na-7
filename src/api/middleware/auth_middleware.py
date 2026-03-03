@@ -71,5 +71,10 @@ def verify_websocket_token(websocket: WebSocket) -> bool:
             return True
 
     # Fallback: query param
+    # ПОЧЕМУ query param: некоторые WS-клиенты не поддерживают headers при handshake.
+    # Риск: токен попадает в access logs. Mitigation: логируем без query params (ниже).
     token = websocket.query_params.get("token")
+    if token and _verify_key(token):
+        logger.debug("ws_auth_via_query_param", hint="prefer Authorization header to avoid token in logs")
+        return True
     return _verify_key(token)

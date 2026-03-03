@@ -48,6 +48,17 @@ async def get_health_metrics(
     day_from: str | None = Query(None, alias="from"),
     day_to: str | None = Query(None, alias="to"),
 ):
+    # ПОЧЕМУ ограничение 31 день: без лимита можно выгрузить ВСЕ данные одним GET.
+    # Это и performance risk (тысячи строк), и information disclosure.
+    if day_from and day_to:
+        try:
+            d_from = datetime.strptime(day_from, "%Y-%m-%d")
+            d_to = datetime.strptime(day_to, "%Y-%m-%d")
+            if (d_to - d_from).days > 31:
+                raise HTTPException(status_code=400, detail="Date range exceeds 31 days. Use narrower range.")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
     db_path = settings.STORAGE_PATH / "reflexio.db"
     ensure_health_tables(db_path)
     if day:
