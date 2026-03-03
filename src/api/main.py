@@ -232,19 +232,19 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
             replace_existing=True,
             misfire_grace_time=3600,  # 1 час — если сервер был выключен
         )
-        # ПОЧЕМУ 18:00: пользователь хочет готовый дайджест к 18:30.
-        # Генерация занимает 2-5 мин → запускаем в 18:00, готово к 18:05.
+        # ПОЧЕМУ 12:00 UTC: пользователь в Алматы (UTC+6).
+        # 12:00 UTC = 18:00 Алматы. Генерация 2-5 мин → готово к 18:05 Алматы.
         scheduler.add_job(
             _run_daily_digest_precompute,
             trigger="cron",
-            hour=18,
+            hour=12,
             minute=0,
             id="digest_precompute",
             replace_existing=True,
             misfire_grace_time=7200,
         )
         scheduler.start()
-        logger.info("apscheduler_started", jobs="compliance_cleanup@03:00, digest_precompute@18:00")
+        logger.info("apscheduler_started", jobs="compliance_cleanup@03:00, digest_precompute@12:00UTC(18:00ALM)")
     except ImportError:
         logger.warning("apscheduler_not_installed", hint="pip install apscheduler")
     except Exception as e:

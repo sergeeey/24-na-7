@@ -13,10 +13,10 @@ from src.storage.db import get_reflexio_db
 logger = get_logger("api.digest")
 router = APIRouter(prefix="/digest", tags=["digest"])
 
-# ПОЧЕМУ 18:30: пользователь ожидает готовый дайджест к этому времени.
-# До 18:30 показываем предыдущий день, после — сегодняшний (из кеша).
-_DIGEST_READY_HOUR = 18
-_DIGEST_READY_MINUTE = 30
+# ПОЧЕМУ UTC: VPS и Docker контейнер в UTC. Алматы = UTC+6.
+# 18:30 Алматы = 12:30 UTC. Все сравнения datetime.now() в UTC.
+_DIGEST_READY_HOUR = 12   # 12:00 UTC = 18:00 Алматы
+_DIGEST_READY_MINUTE = 30  # 12:30 UTC = 18:30 Алматы
 
 
 def _get_cached_digest(target_date: str) -> dict | None:
@@ -97,11 +97,21 @@ def get_digest_daily(
                 prev_cached["_target_date"] = date
                 prev_cached["_status"] = "pending"
                 return prev_cached
-            # Нет кеша за вчера — генерируем вчера inline (обычно быстро — analyses есть)
+            # Нет кеша за вчера — генерируем вчера inline и кешируем
             try:
                 generator = DigestGenerator()
                 yesterday_date = today - timedelta(days=1)
                 result = generator.get_daily_digest_json(yesterday_date, user_id=user_id)
+                # Кешируем вчера чтобы следующий запрос был мгновенным
+                try:
+                    db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
+                    db.execute(
+                        "INSERT OR REPLACE INTO digest_cache (date, digest_json, generated_at, status) VALUES (?, ?, ?, ?)",
+                        (yesterday, _json.dumps(result, ensure_ascii=False), datetime.now().isoformat(), "ready"),
+                    )
+                    db.conn.commit()
+                except Exception:
+                    pass
                 result["_notice"] = "Сегодняшний дайджест будет готов к 18:30. Показан вчерашний."
                 result["_target_date"] = date
                 result["_status"] = "pending"
