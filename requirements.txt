@@ -59,7 +59,7 @@ cryptography>=41.0.0
 # Embeddings + Vector Search
 sentence-transformers>=2.2.0
 sqlite-vec>=0.1.6
-sqlcipher3>=2.6.0
+sqlcipher3>=0.5.0
 
 # Speaker Verification (voice diarization)
 # ПОЧЕМУ resemblyzer: GE2E LSTM 18MB, pip install без HuggingFace gating,
@@ -83,9 +83,9 @@ apscheduler>=3.10.0
 # Social Graph — speaker diarization
 # ПОЧЕМУ pyannote: DER ~5% на CPU, де-факто стандарт speaker diarization 2024.
 # Требует: HF_TOKEN в .env + принять лицензию на huggingface.co/pyannote
-pyannote.audio>=3.1.0
+# pyannote.audio>=3.1.0  # Раскомментировать после: принять лицензию HF + добавить HF_TOKEN
 
 # Embedded Graph DB для multi-hop запросов (Sprint 3)
 # ПОЧЕМУ kuzu: embedded как SQLite, Cypher, 15-188x быстрее NetworkX на graph traversal.
-kuzu>=0.7.0
+# kuzu>=0.7.0  # Раскомментировать после активации KùzuDB
 
