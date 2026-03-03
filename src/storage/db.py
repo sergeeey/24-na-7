@@ -281,7 +281,7 @@ def run_migrations(db_path: Union[str, Path]) -> list[str]:
             db.conn.executescript(content)
             with db.transaction():
                 db.execute(
-                    "INSERT INTO schema_migrations (name, applied_at, checksum) VALUES (?, ?, ?)",
+                    "INSERT OR IGNORE INTO schema_migrations (name, applied_at, checksum) VALUES (?, ?, ?)",
                     (name, datetime.now(timezone.utc).isoformat(), checksum),
                 )
             applied_now.append(name)

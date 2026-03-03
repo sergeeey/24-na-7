@@ -110,6 +110,16 @@ class Settings(BaseSettings):
     RATE_LIMIT_HEALTH: str = "200/minute"
     RATE_LIMIT_DEFAULT: str = "100/minute"
 
+    # SQLCipher — шифрование БД
+    SQLCIPHER_KEY: str | None = None
+
+    # Embeddings
+    ENABLE_LOCAL_EMBEDDINGS: bool = False
+    EMBEDDING_DIM: int = 1536  # 1536 для OpenAI text-embedding-3-small, 384 для MiniLM
+
+    # Ingest
+    INGEST_SYNC_PROCESS: bool = False
+
     # Hugging Face (pyannote.audio diarization)
     HF_TOKEN: str | None = None
 
