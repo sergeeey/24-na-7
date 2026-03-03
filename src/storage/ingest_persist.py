@@ -286,6 +286,15 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
             transcription_id=event.transcription_id,
             version=version,
         )
+        # ПОЧЕМУ async vec indexing: не блокируем pipeline если sqlite-vec недоступен.
+        # Graceful — при ошибке только warning, событие уже сохранено.
+        if event.text:
+            try:
+                from src.storage.vec_search import index_event, load_vec_extension
+                load_vec_extension(db.conn)
+                index_event(db.conn, event.id, event.text)
+            except Exception as _ve:
+                logger.warning("vec_index_skipped", event_id=event.id, error=str(_ve))
         return event.id
     except Exception as e:
         logger.exception("structured_event_persist_failed", event_id=getattr(event, "id", "?"), error=str(e))
