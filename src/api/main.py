@@ -365,7 +365,7 @@ class AskRequest(_BaseModel):
 
 @app.post("/ask")
 @limiter.limit("30/minute")
-async def ask(request: Request, body: AskRequest):
+async def ask(request: Request, response: Response, body: AskRequest):
     """
     One Interface — задай вопрос, получи ответ с confidence.
 
