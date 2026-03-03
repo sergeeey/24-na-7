@@ -41,17 +41,22 @@ def main() -> None:
     shutil.copy2(DB_PATH, BACKUP_PATH)
     print(f"[1/4] Бэкап сохранён: {BACKUP_PATH}")
 
-    # 2. Создаём зашифрованную копию через sqlcipher_export.
-    # ПОЧЕМУ sqlcipher_export вместо sqlite3.backup():
-    #   backup() ожидает sqlite3.Connection, несовместим с sqlcipher3.
-    #   sqlcipher_export — нативный метод SQLCipher: открываем plain (key=''),
-    #   attach encrypted, экспортируем. Атомарно, на уровне страниц.
-    plain_conn = sqlcipher3.connect(str(DB_PATH))
-    plain_conn.execute("PRAGMA key = ''")  # пустой ключ = plain SQLite режим
-    plain_conn.execute(f"ATTACH DATABASE '{ENCRYPTED_PATH}' AS encrypted KEY \"{key}\"")  # nosec B608
-    plain_conn.execute("SELECT sqlcipher_export('encrypted')")
-    plain_conn.execute("DETACH DATABASE encrypted")
+    # 2. Дамп из plain SQLite → восстановление в зашифрованную БД.
+    # ПОЧЕМУ iterdump(): SQLCipher не поддерживает пустой ключ для plain БД,
+    # поэтому нельзя открыть plain через sqlcipher3. Вместо этого:
+    # читаем через стандартный sqlite3, генерируем SQL dump,
+    # воспроизводим в зашифрованной БД через sqlcipher3.
+    plain_conn = sqlite3.connect(str(DB_PATH))
+    sql_dump = "\n".join(plain_conn.iterdump())
     plain_conn.close()
+
+    if ENCRYPTED_PATH.exists():
+        ENCRYPTED_PATH.unlink()
+
+    enc_conn = sqlcipher3.connect(str(ENCRYPTED_PATH))
+    enc_conn.execute(f'PRAGMA key = "{key}"')  # nosec B608
+    enc_conn.executescript(sql_dump)
+    enc_conn.close()
     print(f"[2/4] Зашифрованная копия создана: {ENCRYPTED_PATH}")
 
     # 3. Верификация — открываем зашифрованную и считаем строки
