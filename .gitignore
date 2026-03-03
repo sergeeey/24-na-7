@@ -126,3 +126,4 @@ tests/.report.json
 
 # Temp editor files
 src/utils/input_guard_tmp.py
+src/storage/.sqlcipher_key

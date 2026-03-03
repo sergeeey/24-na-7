@@ -52,6 +52,13 @@ def get_connection(db_path: Union[str, Path], *, check_same_thread: bool = False
     # после SELECT — данные невидимы между singleton connections в тестах.
     # С None — каждый statement auto-commits, а транзакции начинаем явно через BEGIN.
     sqlcipher_key = os.environ.get("SQLCIPHER_KEY", "")
+    if not sqlcipher_key:
+        # ПОЧЕМУ файловый fallback: docker restart не перечитывает .env,
+        # только docker compose up. Файл монтируется через ./src volume —
+        # доступен сразу без пересоздания контейнера.
+        _key_file = Path(__file__).parent / ".sqlcipher_key"
+        if _key_file.exists():
+            sqlcipher_key = _key_file.read_text(encoding="utf-8").strip()
     if _SQLCIPHER_AVAILABLE and sqlcipher_key:
         # ПОЧЕМУ sqlcipher3 вместо sqlite3: AES-256-CBC шифрование всего файла БД.
         # Без ключа — бинарный мусор. Блокер для App Store.
