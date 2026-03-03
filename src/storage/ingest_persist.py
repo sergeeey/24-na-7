@@ -170,8 +170,8 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
     ]:
         try:
             cursor.execute(f"ALTER TABLE structured_events ADD COLUMN {col_def}")
-        except sqlite3.OperationalError:
-            pass  # колонка уже существует
+        except Exception:
+            pass  # колонка уже существует (sqlite3 или sqlcipher3 OperationalError)
 
     # ПОЧЕМУ partial index: запросы всегда ищут is_current=1, partial index
     # покрывает только актуальные версии — меньше размер, быстрее поиск.
