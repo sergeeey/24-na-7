@@ -56,17 +56,10 @@ def get_digest_daily(
     today = datetime.now().date()
     now = datetime.now()
 
-    logger.info("digest_daily_request",
-                date=date, parsed=str(parsed_date), today=str(today),
-                now_hour=now.hour, ready_hour=_DIGEST_READY_HOUR,
-                is_today=(parsed_date == today), force=force)
-
     # 1. Проверяем кеш (если не force)
     if not force:
         cached = _get_cached_digest(date)
-        logger.info("digest_cache_check", date=date, cached_found=cached is not None)
         if cached and "_status" not in cached:
-            logger.info("digest_returning_cached", date=date)
             return cached
         if cached and cached.get("_status") == "generating":
             # Идёт генерация — показываем предыдущий день
@@ -96,8 +89,6 @@ def get_digest_daily(
             now.hour < _DIGEST_READY_HOUR
             or (now.hour == _DIGEST_READY_HOUR and now.minute < _DIGEST_READY_MINUTE)
         )
-        logger.info("digest_before_ready_check",
-                     is_before_ready=is_before_ready, hour=now.hour, minute=now.minute)
         if is_before_ready:
             yesterday = (today - timedelta(days=1)).isoformat()
             prev_cached = _get_cached_digest(yesterday)
