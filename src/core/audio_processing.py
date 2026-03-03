@@ -1,6 +1,7 @@
 """Core audio processing helpers shared by REST and WebSocket paths."""
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import threading
 import uuid
@@ -8,6 +9,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 import wave
+
+# ПОЧЕМУ semaphore(1): транскрипция через faster-whisper (ctranslate2) спавнит
+# CPU workers. Без лимита: 2 uvicorn workers × N одновременных записей = N*CPU_COUNT
+# процессов. Засоряют event loop, жрут 300-400% CPU, API не отвечает.
+# semaphore(1) = только 1 транскрипция одновременно. Записи встают в очередь,
+# API остаётся отзывчивым. Latency чуть выше, но стабильность гарантирована.
+_transcription_semaphore = asyncio.Semaphore(1)
 
 from fastapi import HTTPException
 import numpy as np
@@ -409,7 +417,17 @@ async def process_audio_bytes(
         import time as _time
         transcriber = transcribe_fn or transcribe_audio
         _asr_t0 = _time.monotonic()
-        result = transcriber(dest_path, language=settings.ASR_LANGUAGE)
+        # ПОЧЕМУ semaphore + run_in_executor:
+        # transcribe_audio() — синхронная блокирующая CPU операция.
+        # Прямой вызов из async → блокирует asyncio event loop → uvicorn не отвечает.
+        # run_in_executor → выполняется в отдельном потоке, event loop свободен.
+        # semaphore(1) → только 1 транскрипция одновременно, CPU не перегружается.
+        loop = asyncio.get_event_loop()
+        async with _transcription_semaphore:
+            result = await loop.run_in_executor(
+                None,
+                lambda: transcriber(dest_path, language=settings.ASR_LANGUAGE),
+            )
         _asr_latency_ms = int((_time.monotonic() - _asr_t0) * 1000)
         text = (result.get("text") or "").strip()
         lang_prob = result.get("language_probability", 1.0) or 1.0

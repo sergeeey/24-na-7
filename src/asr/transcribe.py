@@ -42,10 +42,18 @@ def get_model():
                 device=settings.ASR_DEVICE,
                 compute_type=settings.ASR_COMPUTE_TYPE,
             )
+            # ПОЧЕМУ cpu_threads=2, num_workers=1:
+            # ctranslate2 без лимита спавнит N*CPU_COUNT процессов (spawn_main).
+            # При 2 uvicorn workers × N записей → каждая транскрипция → N процессов.
+            # Накапливаются, жрут 200-400% CPU, блокируют event loop.
+            # cpu_threads=2: ctranslate2 использует 2 треда вместо всех ядер.
+            # num_workers=1: только один параллельный decode worker в модели.
             _model = WhisperModel(
                 settings.ASR_MODEL_SIZE,
                 device=settings.ASR_DEVICE,
                 compute_type=settings.ASR_COMPUTE_TYPE,
+                cpu_threads=2,
+                num_workers=1,
             )
             logger.info("model_loaded")
         except ImportError:
