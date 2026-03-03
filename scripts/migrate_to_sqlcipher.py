@@ -41,19 +41,18 @@ def main() -> None:
     shutil.copy2(DB_PATH, BACKUP_PATH)
     print(f"[1/4] Бэкап сохранён: {BACKUP_PATH}")
 
-    # 2. Создаём зашифрованную копию
-    # ПОЧЕМУ через ATTACH: самый надёжный способ — SQLite сам копирует данные
-    # на уровне страниц, без риска пропустить таблицы или триггеры.
-    plain_conn = sqlite3.connect(str(DB_PATH))
-    enc_conn = sqlcipher3.connect(str(ENCRYPTED_PATH))
-    enc_conn.execute(f'PRAGMA key = "{key}"')  # nosec B608
-
-    # Копируем через sqlite3 backup API
-    plain_conn.backup(enc_conn)
-    print(f"[2/4] Зашифрованная копия создана: {ENCRYPTED_PATH}")
-
+    # 2. Создаём зашифрованную копию через sqlcipher_export.
+    # ПОЧЕМУ sqlcipher_export вместо sqlite3.backup():
+    #   backup() ожидает sqlite3.Connection, несовместим с sqlcipher3.
+    #   sqlcipher_export — нативный метод SQLCipher: открываем plain (key=''),
+    #   attach encrypted, экспортируем. Атомарно, на уровне страниц.
+    plain_conn = sqlcipher3.connect(str(DB_PATH))
+    plain_conn.execute("PRAGMA key = ''")  # пустой ключ = plain SQLite режим
+    plain_conn.execute(f"ATTACH DATABASE '{ENCRYPTED_PATH}' AS encrypted KEY \"{key}\"")  # nosec B608
+    plain_conn.execute("SELECT sqlcipher_export('encrypted')")
+    plain_conn.execute("DETACH DATABASE encrypted")
     plain_conn.close()
-    enc_conn.close()
+    print(f"[2/4] Зашифрованная копия создана: {ENCRYPTED_PATH}")
 
     # 3. Верификация — открываем зашифрованную и считаем строки
     verify_conn = sqlcipher3.connect(str(ENCRYPTED_PATH))
