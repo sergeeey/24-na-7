@@ -527,7 +527,9 @@ class DigestGenerator:
             "verdict": wow_block.get("verdict") if wow_block else None,
             "day_map": (wow_block.get("day_map") if wow_block else None) or [],
             "micro_step": wow_block.get("micro_step") if wow_block else None,
-            "novelty": novelty_data.get("novel_topics", []),
+            # ПОЧЕМУ [:15]: novelty может содержать 100+ тем (каждый segment генерит topics),
+            # на экране телефона больше 15 чипов — нечитаемо.
+            "novelty": novelty_data.get("novel_topics", [])[:15],
         }
 
     def _get_topics_last_7_days(self, target_date: date) -> list[str]:
