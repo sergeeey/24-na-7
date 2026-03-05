@@ -155,7 +155,7 @@ async def _execute_tool(call: ToolCall) -> ToolResult:
                 emotions=call.params.get("emotions"),
                 min_confidence=0.0,
                 limit=call.params.get("limit", 20),
-                include_evidence=False,
+                include_evidence=True,
             )
             return _dict_to_tool_result(raw, "query_events")
 
@@ -163,7 +163,9 @@ async def _execute_tool(call: ToolCall) -> ToolResult:
             from src.api.routers.query import get_digest
             raw = await get_digest(
                 date=call.params.get("date"),
-                include_evidence=False,
+                # ПОЧЕМУ True: оркестратор внутренний — ему нужны evidence_ids
+                # для merge_confidence. Без них confidence всегда "low".
+                include_evidence=True,
             )
             return _dict_to_tool_result(raw, "get_digest")
 
@@ -185,9 +187,15 @@ async def _execute_tool(call: ToolCall) -> ToolResult:
 
 def _dict_to_tool_result(d: dict, tool_name: str) -> ToolResult:
     """Конвертирует API dict обратно в ToolResult для merge_confidence."""
+    # ПОЧЕМУ evidence_ids из dict: без них merge_confidence считает evidence=0
+    # и всегда возвращает "low" confidence, даже если данные есть.
+    evidence_ids = d.get("evidence_ids", [])
+    if not evidence_ids:
+        # Fallback: считаем по evidence_metadata
+        evidence_ids = [m.get("id", "") for m in d.get("evidence_metadata", []) if m.get("id")]
     return ToolResult(
         data=d.get("data"),
-        evidence_ids=[],  # evidence не возвращается в API dict
+        evidence_ids=evidence_ids,
         confidence=d.get("confidence", 0.0),
         tool_name=tool_name,
         db_query_ms=d.get("db_query_ms", 0.0),
