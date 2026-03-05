@@ -45,6 +45,24 @@ limiter = Limiter(key_func=get_remote_address)
 # APScheduler — ежедневный compliance cleanup
 # ──────────────────────────────────────────────
 
+
+def _run_audio_retention_cleanup() -> None:
+    """Удаляет WAV файлы старше AUDIO_RETENTION_HOURS."""
+    import os
+    import time
+    uploads_dir = Path("src/storage/uploads")
+    if not uploads_dir.exists():
+        return
+    cutoff = time.time() - settings.AUDIO_RETENTION_HOURS * 3600
+    removed = 0
+    for f in uploads_dir.glob("*.wav"):
+        if f.stat().st_mtime < cutoff:
+            f.unlink(missing_ok=True)
+            removed += 1
+    if removed:
+        logger.info("audio_retention_cleanup", removed=removed, retention_hours=settings.AUDIO_RETENTION_HOURS)
+
+
 def _run_daily_digest_precompute() -> None:
     """
     Pre-compute дневного дайджеста в фоне.
@@ -255,6 +273,15 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
             replace_existing=True,
             misfire_grace_time=7200,
         )
+        # Audio retention cleanup — удаляет WAV старше AUDIO_RETENTION_HOURS
+        if settings.AUDIO_RETENTION_HOURS > 0:
+            scheduler.add_job(
+                _run_audio_retention_cleanup,
+                trigger="interval",
+                hours=6,
+                id="audio_retention_cleanup",
+                replace_existing=True,
+            )
         scheduler.start()
         logger.info("apscheduler_started", jobs="compliance_cleanup@03:00, digest_precompute@12:00UTC(18:00ALM)")
     except ImportError:
@@ -399,6 +426,7 @@ async def ask(request: Request, response: Response, body: AskRequest):
         "total_ms": result.total_ms,
         "needs_clarification": result.needs_clarification,
         "data": result.data,
+        "primary_tool": result.primary_tool,
     }
     if result.warning:
         response["warning"] = result.warning

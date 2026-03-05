@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -208,19 +209,55 @@ def _dict_to_tool_result(d: dict, tool_name: str) -> ToolResult:
 # Response Synthesis
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _extract_top_topics(events: list[dict], limit: int = 3) -> list[str]:
+    """Извлекает top-N тем из списка событий (Counter по topics_json)."""
+    import json as _json
+    counter: Counter = Counter()
+    for ev in events:
+        raw = ev.get("topics_json", "")
+        if not raw:
+            continue
+        try:
+            topics = _json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(topics, list):
+                for t in topics:
+                    if isinstance(t, str) and t.strip():
+                        counter[t.strip()] += 1
+        except (ValueError, TypeError):
+            pass
+    return [t for t, _ in counter.most_common(limit)]
+
+
+def _dominant_sentiment(events: list[dict]) -> str | None:
+    """Определяет доминирующий sentiment из списка событий."""
+    counter: Counter = Counter()
+    for ev in events:
+        s = ev.get("sentiment", "")
+        if s:
+            counter[s] += 1
+    if not counter:
+        return None
+    return counter.most_common(1)[0][0]
+
+
 def synthesize_response(
     question: str,
     results: list[ToolResult],
     confidence: ConfidenceSummary,
-) -> str:
+) -> tuple[str, str | None]:
     """
-    Минимальный текстовый ответ из набора ToolResult.
+    Meaning-first текстовый ответ + primary_tool.
 
-    ПОЧЕМУ минимальный:
-      Пользователь видит data структурировано — текстовый ответ
-      только добавляет контекст и предупреждения.
+    ПОЧЕМУ meaning-first:
+      Старая версия показывала инфраструктуру ("Дайджест найден. Источников: 6.").
+      Пользователю нужен СМЫСЛ ("День прошёл спокойно, но с рабочим напряжением").
+      Все данные уже есть в data — извлекаем verdict/summary/top_topics.
+
+    Returns:
+        (answer_text, primary_tool)
     """
     parts: list[str] = []
+    primary_tool: str | None = None
 
     # Предупреждение при низкой уверенности
     if confidence.speculative_warning:
@@ -229,25 +266,54 @@ def synthesize_response(
     # Если нет данных
     valid = [r for r in results if r.data is not None and r.error is None]
     if not valid:
-        return "Данных по этому запросу не найдено. Попробуйте изменить период или формулировку."
+        return ("Данных по этому запросу не найдено. Попробуйте изменить период или формулировку.", None)
 
-    # Краткое резюме
+    # ПОЧЕМУ приоритет digest > person > events:
+    # Дайджест содержит осмысленный verdict от LLM, это самый rich ответ.
+    # Персона — конкретный запрос. Events — fallback.
     tool_names = [r.tool_name for r in valid]
+
     if "get_digest" in tool_names:
-        parts.append(f"Дайджест найден. Источников: {confidence.evidence_count}.")
-    if "query_events" in tool_names:
-        total = sum(
-            (r.data or {}).get("total", 0) for r in valid if r.tool_name == "query_events"
-        )
-        parts.append(f"Найдено {total} событий по запросу.")
-    if "get_person_insights" in tool_names:
+        primary_tool = "get_digest"
+        for r in valid:
+            if r.tool_name != "get_digest" or not r.data:
+                continue
+            data = r.data
+            # Извлекаем verdict.text → fallback summary_text → fallback мета
+            verdict = data.get("verdict")
+            if isinstance(verdict, dict) and verdict.get("text"):
+                parts.append(verdict["text"])
+            elif data.get("summary_text"):
+                parts.append(data["summary_text"])
+            else:
+                date_str = data.get("date", "")
+                parts.append(f"Дайджест за {date_str}." if date_str else "Дайджест найден.")
+            break
+
+    elif "get_person_insights" in tool_names:
+        primary_tool = "get_person_insights"
         for r in valid:
             if r.tool_name == "get_person_insights" and r.data:
                 name = (r.data.get("person") or {}).get("name", "")
                 count = r.data.get("interactions_count", 0)
                 parts.append(f"Персона {name}: {count} взаимодействий.")
+                break
 
-    return " ".join(parts) if parts else "Результат получен."
+    elif "query_events" in tool_names:
+        primary_tool = "query_events"
+        for r in valid:
+            if r.tool_name != "query_events" or not r.data:
+                continue
+            events = r.data.get("events", [])
+            total = r.data.get("total", len(events))
+            top = _extract_top_topics(events)
+            if top:
+                parts.append(f"Найдено {total} событий. Основные темы: {', '.join(top)}.")
+            else:
+                parts.append(f"Найдено {total} событий по запросу.")
+            break
+
+    return (" ".join(parts) if parts else "Результат получен.", primary_tool)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -266,6 +332,7 @@ class OrchestratorResponse:
     total_ms: float
     needs_clarification: bool
     warning: str | None
+    primary_tool: str | None   # какой тул дал основной ответ (для rich rendering)
 
 
 async def orchestrate(question: str) -> OrchestratorResponse:
@@ -288,14 +355,15 @@ async def orchestrate(question: str) -> OrchestratorResponse:
     # 3. Merge confidence
     conf_summary = merge_confidence(results)
 
-    # 4. Синтез ответа
-    answer = synthesize_response(question, results, conf_summary)
+    # 4. Синтез ответа (meaning-first)
+    answer, primary_tool = synthesize_response(question, results, conf_summary)
 
     total_ms = (time.perf_counter() - t0) * 1000
 
     logger.info(
         "orchestrator_done",
         tools_used=[c.tool for c in calls],
+        primary_tool=primary_tool,
         confidence=conf_summary.score,
         evidence=conf_summary.evidence_count,
         total_ms=round(total_ms, 1),
@@ -311,4 +379,5 @@ async def orchestrate(question: str) -> OrchestratorResponse:
         total_ms=round(total_ms, 1),
         needs_clarification=conf_summary.needs_clarification,
         warning=conf_summary.speculative_warning,
+        primary_tool=primary_tool,
     )
