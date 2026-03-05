@@ -6,6 +6,7 @@ import json
 
 from src.storage.db import get_reflexio_db
 from src.utils.config import settings
+from src.utils.date_utils import resolve_date_range
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics
 from src.storage.ingest_persist import ensure_ingest_tables
@@ -22,6 +23,13 @@ except ImportError:
     SUMMARIZER_AVAILABLE = False
     logger = get_logger("digest")
     logger.warning("summarizer_modules_not_available", using_basic_summary=True)
+
+# WOW digest prompt (один LLM-вызов для verdict + day_map + micro_step)
+try:
+    from src.summarizer.prompts import get_wow_digest_prompt
+    WOW_PROMPT_AVAILABLE = True
+except ImportError:
+    WOW_PROMPT_AVAILABLE = False
 
 setup_logging()
 logger = get_logger("digest")
@@ -195,7 +203,11 @@ class DigestGenerator:
             else ""
         )
 
-        # Получаем транскрипции за день
+        # ПОЧЕМУ BETWEEN вместо DATE(): DATE() сравнивает по UTC-дню,
+        # а пользователь в UTC+6. Запись в 02:00 Алматы = 20:00 UTC предыдущего дня.
+        # resolve_date_range конвертирует "день Алматы" → UTC-диапазон.
+        dr = resolve_date_range(target_date.isoformat())
+        start_utc, end_utc = dr.sql_range()
         rows = db.fetchall(f"""
             SELECT
                 t.id,
@@ -210,9 +222,9 @@ class DigestGenerator:
                 i.file_size
             FROM transcriptions t
             LEFT JOIN ingest_queue i ON t.ingest_id = i.id
-            WHERE DATE(t.created_at) = ? {speaker_filter}
+            WHERE t.created_at BETWEEN ? AND ? {speaker_filter}
             ORDER BY t.created_at ASC
-        """, (target_date.isoformat(),))  # nosec B608 — speaker_filter is a hardcoded literal string, date is parameterized
+        """, (start_utc, end_utc))  # nosec B608 — speaker_filter is a hardcoded literal string
 
         transcriptions = [dict(row) for row in rows]
 
@@ -329,13 +341,15 @@ class DigestGenerator:
             return []
         db = get_reflexio_db(self.db_path)
         try:
+            dr = resolve_date_range(target_date.isoformat())
+            start_utc, end_utc = dr.sql_range()
             rows = db.fetchall("""
                 SELECT ra.id, ra.transcription_id, ra.summary, ra.emotions, ra.actions, ra.topics, ra.urgency
                 FROM recording_analyses ra
                 INNER JOIN transcriptions t ON ra.transcription_id = t.id
-                WHERE DATE(t.created_at) = ?
+                WHERE t.created_at BETWEEN ? AND ?
                 ORDER BY t.created_at ASC
-            """, (target_date.isoformat(),))
+            """, (start_utc, end_utc))
             out = []
             for row in rows:
                 d = dict(row)
@@ -381,11 +395,20 @@ class DigestGenerator:
                 for e in (a.get("emotions") or []):
                     if e and e not in emotions:
                         emotions.append(e)
+                # ПОЧЕМУ urgency: recording_analyses хранит urgency per-analysis,
+                # пробрасываем в actions чтобы Android мог показать приоритет
+                analysis_urgency = a.get("urgency")
                 for act in (a.get("actions") or []):
                     if isinstance(act, str) and act and self._has_cyrillic(act):
-                        actions.append({"text": act, "done": False})
+                        action_item = {"text": act, "done": False}
+                        if analysis_urgency:
+                            action_item["urgency"] = analysis_urgency
+                        actions.append(action_item)
                     elif isinstance(act, dict) and act.get("text") and self._has_cyrillic(act["text"]):
-                        actions.append({"text": act["text"], "done": act.get("done", False)})
+                        action_item = {"text": act["text"], "done": act.get("done", False)}
+                        if analysis_urgency:
+                            action_item["urgency"] = analysis_urgency
+                        actions.append(action_item)
             summary_text = " ".join(p for p in summary_parts if p).strip() or "Нет итога за день."
         else:
             facts = self.extract_facts(transcriptions)
@@ -470,6 +493,20 @@ class DigestGenerator:
         except Exception:
             pass
 
+        # === WOW Digest: verdict, day_map, micro_step, novelty/repetitions ===
+        # ПОЧЕМУ backward compatible: все новые поля nullable, старые клиенты их игнорируют.
+        wow_block = None
+        novelty_data = {"novel_topics": [], "repeated_topics": []}
+        if transcriptions:
+            try:
+                wow_block = self._generate_wow_block(transcriptions, target_date)
+            except Exception as e:
+                logger.warning("wow_block_failed", error=str(e))
+            try:
+                novelty_data = self._detect_novelty_repetition(target_date)
+            except Exception as e:
+                logger.warning("novelty_detection_failed", error=str(e))
+
         return {
             "date": target_date.isoformat(),
             "summary_text": summary_text,
@@ -478,12 +515,211 @@ class DigestGenerator:
             "actions": actions,
             "total_recordings": total_recordings,
             "total_duration": total_duration_str,
-            "repetitions": [],
+            "repetitions": novelty_data.get("repeated_topics", []),
             "balance": balance_payload,
             "insights": insights,
             "acoustic_profile": acoustic_profile,
             "sources_count": len(transcriptions),
+            # WOW fields (nullable — backward compatible)
+            # ПОЧЕМУ `or []` для day_map: Kotlin DailyDigestData.day_map = List<DayMapPoint>
+            # (non-null). JSON null → optJSONArray возвращает null → emptyList(), но лучше
+            # явно отдавать [] для консистентности при смене JSON-библиотеки.
+            "verdict": wow_block.get("verdict") if wow_block else None,
+            "day_map": (wow_block.get("day_map") if wow_block else None) or [],
+            "micro_step": wow_block.get("micro_step") if wow_block else None,
+            "novelty": novelty_data.get("novel_topics", []),
         }
+
+    def _get_topics_last_7_days(self, target_date: date) -> list[str]:
+        """Возвращает плоский список topics из structured_events за 7 дней до target_date.
+
+        ПОЧЕМУ SQL, а не LLM: zero token cost, мгновенно. Topics уже извлечены при enrichment.
+        """
+        if not self.db_path.exists():
+            return []
+        db = get_reflexio_db(self.db_path)
+        try:
+            from datetime import timedelta
+            end_date = target_date - timedelta(days=1)
+            start_date = target_date - timedelta(days=7)
+            dr_start = resolve_date_range(start_date.isoformat())
+            dr_end = resolve_date_range(end_date.isoformat())
+            start_utc = dr_start.sql_range()[0]
+            end_utc = dr_end.sql_range()[1]
+            rows = db.fetchall("""
+                SELECT topics FROM structured_events
+                WHERE created_at BETWEEN ? AND ? AND is_current = 1
+            """, (start_utc, end_utc))
+            all_topics: list[str] = []
+            for row in rows:
+                raw = row["topics"] if isinstance(row, dict) else row[0]
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw) if raw else []
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = []
+                else:
+                    parsed = raw or []
+                for t in parsed:
+                    if t and isinstance(t, str):
+                        all_topics.append(t)
+            return all_topics
+        except Exception as e:
+            logger.warning("get_topics_last_7_days_failed", error=str(e))
+            return []
+
+    def _detect_novelty_repetition(self, target_date: date) -> dict:
+        """Детектирует новые и повторяющиеся темы — чистый SQL, zero LLM cost.
+
+        Returns:
+            {
+                "novel_topics": ["тема1", ...],
+                "repeated_topics": [{"topic": "работа", "streak_days": 4}, ...]
+            }
+        """
+        if not self.db_path.exists():
+            return {"novel_topics": [], "repeated_topics": []}
+        db = get_reflexio_db(self.db_path)
+        try:
+            # Темы сегодня
+            dr = resolve_date_range(target_date.isoformat())
+            start_utc, end_utc = dr.sql_range()
+            rows = db.fetchall("""
+                SELECT topics FROM structured_events
+                WHERE created_at BETWEEN ? AND ? AND is_current = 1
+            """, (start_utc, end_utc))
+            today_topics: set[str] = set()
+            for row in rows:
+                raw = row["topics"] if isinstance(row, dict) else row[0]
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw) if raw else []
+                    except (json.JSONDecodeError, TypeError):
+                        parsed = []
+                else:
+                    parsed = raw or []
+                for t in parsed:
+                    if t and isinstance(t, str):
+                        today_topics.add(t.lower().strip())
+
+            if not today_topics:
+                return {"novel_topics": [], "repeated_topics": []}
+
+            # Темы за предыдущие 7 дней
+            history_topics = self._get_topics_last_7_days(target_date)
+            history_set = {t.lower().strip() for t in history_topics}
+
+            # Новые = сегодня есть, в истории нет
+            novel = [t for t in today_topics if t not in history_set]
+
+            # Повторы = подсчёт streak (сколько дней подряд тема встречалась)
+            from datetime import timedelta
+            repeated = []
+            history_by_day: dict[str, set[str]] = {}
+            for days_ago in range(1, 8):
+                d = target_date - timedelta(days=days_ago)
+                dr_d = resolve_date_range(d.isoformat())
+                s, e = dr_d.sql_range()
+                day_rows = db.fetchall("""
+                    SELECT topics FROM structured_events
+                    WHERE created_at BETWEEN ? AND ? AND is_current = 1
+                """, (s, e))
+                day_topics: set[str] = set()
+                for row in day_rows:
+                    raw = row["topics"] if isinstance(row, dict) else row[0]
+                    if isinstance(raw, str):
+                        try:
+                            parsed = json.loads(raw) if raw else []
+                        except (json.JSONDecodeError, TypeError):
+                            parsed = []
+                    else:
+                        parsed = raw or []
+                    for t in parsed:
+                        if t and isinstance(t, str):
+                            day_topics.add(t.lower().strip())
+                history_by_day[d.isoformat()] = day_topics
+
+            for topic in today_topics:
+                streak = 1  # сегодня = 1
+                for days_ago in range(1, 8):
+                    d = target_date - timedelta(days=days_ago)
+                    if topic in history_by_day.get(d.isoformat(), set()):
+                        streak += 1
+                    else:
+                        break
+                if streak >= 3:
+                    repeated.append({"topic": topic, "streak_days": streak})
+
+            repeated.sort(key=lambda x: x["streak_days"], reverse=True)
+            return {"novel_topics": sorted(novel), "repeated_topics": repeated}
+        except Exception as e:
+            logger.warning("detect_novelty_repetition_failed", error=str(e))
+            return {"novel_topics": [], "repeated_topics": []}
+
+    def _generate_wow_block(self, transcriptions: list[dict], target_date: date) -> dict | None:
+        """Генерирует WOW-блок (verdict, day_map, micro_step) через один LLM-вызов.
+
+        Returns None если недостаточно данных или LLM недоступен.
+        """
+        if not WOW_PROMPT_AVAILABLE or not SUMMARIZER_AVAILABLE:
+            return None
+
+        full_text = self._build_tiered_digest_input(transcriptions)
+        if not full_text or len(full_text.strip()) < 50:
+            return None
+
+        try:
+            from src.llm.providers import get_llm_client
+            history_topics = self._get_topics_last_7_days(target_date)
+            unique_history = list(dict.fromkeys(history_topics))[:20]
+
+            prompt = get_wow_digest_prompt(full_text, unique_history or None)
+            client = get_llm_client()
+            result = client.call(prompt, max_tokens=1500)
+
+            if result.get("error") or not result.get("text"):
+                logger.warning("wow_llm_call_failed", error=result.get("error"))
+                return None
+
+            raw_text = result["text"].strip()
+            # ПОЧЕМУ strip markdown fences: некоторые модели оборачивают JSON в ```json
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[-1]
+            if raw_text.endswith("```"):
+                raw_text = raw_text.rsplit("```", 1)[0]
+            raw_text = raw_text.strip()
+
+            parsed = json.loads(raw_text)
+            # Валидация структуры
+            wow = {}
+            if "verdict" in parsed and isinstance(parsed["verdict"], dict):
+                wow["verdict"] = {
+                    "text": parsed["verdict"].get("text", ""),
+                    "evidence_quotes": parsed["verdict"].get("evidence_quotes", [])[:2],
+                }
+            if "day_map" in parsed and isinstance(parsed["day_map"], list):
+                wow["day_map"] = [
+                    {
+                        "type": p.get("type", "peak"),
+                        "time": p.get("time", ""),
+                        "description": p.get("description", ""),
+                        "emotion": p.get("emotion", ""),
+                    }
+                    for p in parsed["day_map"][:3]
+                ]
+            if "micro_step" in parsed and isinstance(parsed["micro_step"], dict):
+                wow["micro_step"] = {
+                    "action": parsed["micro_step"].get("action", ""),
+                    "why": parsed["micro_step"].get("why", ""),
+                    "domain": parsed["micro_step"].get("domain", "growth"),
+                }
+            return wow if wow else None
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning("wow_json_parse_failed", error=str(e))
+            return None
+        except Exception as e:
+            logger.warning("wow_generation_failed", error=str(e))
+            return None
 
     def _get_density_level(self, score: float) -> str:
         """Определяет уровень информационной плотности."""

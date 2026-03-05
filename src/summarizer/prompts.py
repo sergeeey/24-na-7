@@ -120,6 +120,64 @@ def get_few_shot_actions_prompt(text: str, examples: List[Dict[str, Any]] = None
     return prompt
 
 
+def get_wow_digest_prompt(events_text: str, history_topics: list[str] | None = None) -> str:
+    """
+    WOW-дайджест: verdict + day_map + micro_step в ОДНОМ LLM-вызове.
+
+    ПОЧЕМУ один вызов: заменяет extract_tasks + analyze_emotions = net -1 LLM call.
+    Промпт структурирован для JSON-ответа с тремя блоками.
+
+    Args:
+        events_text: Объединённый текст транскрипций дня (уже отфильтрован от шума)
+        history_topics: Темы за предыдущие 7 дней (для контекста micro_step)
+
+    Returns:
+        Промпт для LLM, ожидающий JSON-ответ
+    """
+    # ПОЧЕМУ обрезка: аналогично CoD — защита от token overflow
+    truncated = events_text[:8000] + "…" if len(events_text) > 8000 else events_text
+
+    history_section = ""
+    if history_topics:
+        history_section = f"\nТемы за последние 7 дней (для контекста): {', '.join(history_topics[:20])}\n"
+
+    return f"""Ты — персональный аналитик дня. Проанализируй записи пользователя и создай WOW-дайджест на РУССКОМ языке.
+
+Записи дня:
+{truncated}
+{history_section}
+Создай JSON с тремя блоками:
+
+1. **verdict** — одно яркое предложение-вердикт дня (не "день прошёл нормально", а что-то с характером). Добавь 2 короткие цитаты из текста как evidence.
+
+2. **day_map** — карта дня из 3 ключевых точек:
+   - peak: момент максимальной энергии/радости
+   - valley: момент спада/тревоги/усталости
+   - fork: момент выбора или решения
+   Для каждой: время (примерное HH:MM), описание, эмоция.
+   Если нет явного valley/fork — используй нейтральные моменты.
+
+3. **micro_step** — ОДИН конкретный микро-шаг на завтра. Не "улучшить здоровье", а "выпить стакан воды до 10:00". Укажи domain (health/work/relationships/growth/rest).
+
+Формат ответа (строго JSON, без markdown):
+{{
+    "verdict": {{
+        "text": "яркий вердикт дня",
+        "evidence_quotes": ["цитата 1 из записей", "цитата 2 из записей"]
+    }},
+    "day_map": [
+        {{"type": "peak", "time": "14:30", "description": "описание момента", "emotion": "радость"}},
+        {{"type": "valley", "time": "09:00", "description": "описание момента", "emotion": "усталость"}},
+        {{"type": "fork", "time": "18:00", "description": "описание решения", "emotion": "решительность"}}
+    ],
+    "micro_step": {{
+        "action": "конкретное действие на завтра",
+        "why": "почему именно это",
+        "domain": "health"
+    }}
+}}"""
+
+
 def get_critic_prompt(summary: str, original_text: str) -> str:
     """
     Промпт для Critic (DeepConf валидация).
