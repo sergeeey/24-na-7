@@ -38,7 +38,7 @@ logger = get_logger("core.orchestrator")
 # ─────────────────────────────────────────────────────────────────────────────
 
 _DIGEST_KEYWORDS = re.compile(
-    r"дайджест|итог|summary|за день|сегодня|вчера|что было|recap|обзор",
+    r"дайджест|итог|summary|за день|сегодня|вчера|что было|recap|обзор|как прошёл|как прошел|мой день",
     re.IGNORECASE,
 )
 _PERSON_KEYWORDS = re.compile(
