@@ -56,6 +56,32 @@ _digest_precompute_dict_lock = threading.Lock()
 # ──────────────────────────────────────────────
 
 
+def _run_ingest_watchdog() -> None:
+    """Помечает зависшие ingest_queue записи (pending > 30 мин) как error.
+
+    ПОЧЕМУ: Закон исключённого третьего — запись либо обработана, либо нет.
+    Без watchdog запись может навсегда застрять в 'pending' если worker упал
+    посередине (OOM, перезапуск контейнера). 30 мин — с запасом: ASR + enrichment
+    занимают 10-60 секунд. Если за 30 мин не обработано — точно зависло.
+    """
+    try:
+        from src.storage.db import get_reflexio_db
+
+        db_path = settings.STORAGE_PATH / "reflexio.db"
+        db = get_reflexio_db(db_path)
+        cutoff = (datetime.now() - timedelta(minutes=30)).isoformat()
+        with db.transaction():
+            result = db.execute(
+                "UPDATE ingest_queue SET status='error', error_message='watchdog: stuck in pending > 30min', processed_at=? WHERE status='pending' AND created_at < ?",
+                (datetime.now().isoformat(), cutoff),
+            )
+        affected = result.rowcount if hasattr(result, "rowcount") else 0
+        if affected:
+            logger.warning("ingest_watchdog_reaped", stuck_records=affected)
+    except Exception as e:
+        logger.error("ingest_watchdog_failed", error=str(e))
+
+
 def _run_audio_retention_cleanup() -> None:
     """Удаляет WAV файлы старше AUDIO_RETENTION_HOURS."""
     import time
@@ -317,6 +343,14 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
             id="digest_precompute",
             replace_existing=True,
             misfire_grace_time=7200,
+        )
+        # Ingest watchdog — помечает зависшие pending записи как error
+        scheduler.add_job(
+            _run_ingest_watchdog,
+            trigger="interval",
+            minutes=15,
+            id="ingest_watchdog",
+            replace_existing=True,
         )
         # Audio retention cleanup — удаляет WAV старше AUDIO_RETENTION_HOURS
         if settings.AUDIO_RETENTION_HOURS > 0:
