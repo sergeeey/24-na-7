@@ -5,6 +5,8 @@ Reflexio 24/7 — November 2025 Integration Sprint
 
 from typing import List, Dict, Any
 
+from src.context.optimizer import compress_for_llm
+
 
 def get_chain_of_density_prompt(text: str, iterations: int = 5) -> str:
     """
@@ -17,9 +19,10 @@ def get_chain_of_density_prompt(text: str, iterations: int = 5) -> str:
     Returns:
         Промпт для LLM
     """
-    # ПОЧЕМУ обрезка: без лимита 10 000+ записей → сотни тысяч токенов → LLM сломается.
-    # 4000 символов ≈ 1000 токенов — безопасно для любой модели.
-    truncated_text = text[:4000] + "…" if len(text) > 4000 else text
+    # ПОЧЕМУ compress_for_llm: вместо наивной обрезки text[:4000] CCBM классифицирует
+    # спаны по важности (L1-L4) и сжимает только контекстное наполнение,
+    # сохраняя числа, имена, решения. Fallback на text[:4000] если CCBM недоступен.
+    truncated_text = compress_for_llm(text, budget=4000)
 
     base_prompt = f"""Ты — эксперт по созданию информационно-плотных саммари.
 
@@ -106,8 +109,8 @@ def get_few_shot_actions_prompt(text: str, examples: List[Dict[str, Any]] = None
     {"person": "кому", "action": "что сделать", "deadline": "когда (или null)", "context": "почему важно (или null)"}
 ]"""
 
-    # Лимит текста для few-shot (аналогично CoD)
-    truncated_text = text[:4000] + "…" if len(text) > 4000 else text
+    # Лимит текста для few-shot (аналогично CoD — через CCBM)
+    truncated_text = compress_for_llm(text, budget=4000)
 
     prompt = f"""Ты — AI-ассистент для анализа текста и генерации структурированного вывода.
 Отвечай на русском языке. Игнорируй бессмысленные повторы.
@@ -149,8 +152,9 @@ def get_wow_digest_prompt(events_text: str, history_topics: list[str] | None = N
     Returns:
         Промпт для LLM, ожидающий JSON-ответ
     """
-    # ПОЧЕМУ обрезка: аналогично CoD — защита от token overflow
-    truncated = events_text[:8000] + "…" if len(events_text) > 8000 else events_text
+    # ПОЧЕМУ compress_for_llm: WOW-дайджест получает больший бюджет (8000),
+    # т.к. нужен полный контекст дня для verdict + day_map.
+    truncated = compress_for_llm(events_text, budget=8000)
 
     history_section = ""
     if history_topics:
