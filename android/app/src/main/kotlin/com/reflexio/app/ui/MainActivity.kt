@@ -11,12 +11,19 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
@@ -45,16 +52,19 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.reflexio.app.BuildConfig
 import com.reflexio.app.data.db.RecordingDatabase
 import com.reflexio.app.domain.services.AudioRecordingService
+import com.reflexio.app.ui.components.AmbientBackdrop
 import com.reflexio.app.ui.components.BalanceWheelVisualizer
 import com.reflexio.app.ui.components.PipelineStatusStrip
 import com.reflexio.app.ui.components.RecordingFab
-import com.reflexio.app.ui.screens.AnalyticsScreen
 import com.reflexio.app.ui.screens.AskScreen
 import com.reflexio.app.ui.screens.CommitmentsScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
@@ -196,77 +206,82 @@ fun RecordingApp(
 
     val screens = Screen.entries
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = screens[selectedTab].title,
-                        style = MaterialTheme.typography.titleLarge
+    Box(modifier = Modifier.fillMaxSize()) {
+        AmbientBackdrop()
+
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = screens[selectedTab].title,
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent,
+                        titleContentColor = MaterialTheme.colorScheme.onBackground,
+                    ),
+                )
+            },
+            bottomBar = {
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                    tonalElevation = 0.dp,
+                ) {
+                    screens.forEachIndexed { index, screen ->
+                        NavigationBarItem(
+                            selected = selectedTab == index,
+                            onClick = { selectedTab = index },
+                            icon = { Icon(screen.icon, contentDescription = screen.title) },
+                            label = { Text(screen.title) },
+                        )
+                    }
+                }
+            },
+            containerColor = Color.Transparent,
+        ) { padding ->
+            // ПОЧЕМУ Crossfade а не AnimatedContent: Crossfade проще (только fade in/out),
+            // не требует AnimatedContentScope. Для 3 табов без shared element transitions — идеально.
+            // 300ms — быстрый но заметный переход (< 200ms резко, > 500ms тормозно).
+            Crossfade(
+                targetState = selectedTab,
+                animationSpec = tween(300),
+                label = "tabCrossfade",
+            ) { tab ->
+                when (tab) {
+                    0 -> AskScreen(
+                        baseHttpUrl = baseHttpUrl,
+                        modifier = Modifier.padding(padding),
                     )
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    titleContentColor = MaterialTheme.colorScheme.onBackground,
-                ),
-            )
-        },
-        bottomBar = {
-            NavigationBar(
-                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
-            ) {
-                screens.forEachIndexed { index, screen ->
-                    NavigationBarItem(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        icon = { Icon(screen.icon, contentDescription = screen.title) },
-                        label = { Text(screen.title) },
+                    1 -> HomeScreen(
+                        hasPermission = hasPermission,
+                        recordingActive = recordingActive,
+                        baseHttpUrl = baseHttpUrl,
+                        onRequestPermission = onRequestPermission,
+                        onToggleRecording = {
+                            if (recordingActive) {
+                                onStopRecording(); recordingActive = false
+                            } else {
+                                onStartRecording(); recordingActive = true
+                            }
+                        },
+                        modifier = Modifier.padding(padding),
+                    )
+                    2 -> DailySummaryScreen(
+                        onBack = { selectedTab = 1 },
+                        baseHttpUrl = baseHttpUrl,
+                        modifier = Modifier.padding(padding),
+                    )
+                    3 -> CommitmentsScreen(
+                        baseHttpUrl = baseHttpUrl,
+                        modifier = Modifier.padding(padding),
+                    )
+                    4 -> VoiceEnrollmentScreen(
+                        baseHttpUrl = baseHttpUrl,
+                        modifier = Modifier.padding(padding),
                     )
                 }
-            }
-        },
-        containerColor = MaterialTheme.colorScheme.background,
-    ) { padding ->
-        // ПОЧЕМУ Crossfade а не AnimatedContent: Crossfade проще (только fade in/out),
-        // не требует AnimatedContentScope. Для 3 табов без shared element transitions — идеально.
-        // 300ms — быстрый но заметный переход (< 200ms резко, > 500ms тормозно).
-        Crossfade(
-            targetState = selectedTab,
-            animationSpec = tween(300),
-            label = "tabCrossfade",
-        ) { tab ->
-            when (tab) {
-                0 -> AskScreen(
-                    baseHttpUrl = baseHttpUrl,
-                    modifier = Modifier.padding(padding),
-                )
-                1 -> HomeScreen(
-                    hasPermission = hasPermission,
-                    recordingActive = recordingActive,
-                    baseHttpUrl = baseHttpUrl,
-                    onRequestPermission = onRequestPermission,
-                    onToggleRecording = {
-                        if (recordingActive) {
-                            onStopRecording(); recordingActive = false
-                        } else {
-                            onStartRecording(); recordingActive = true
-                        }
-                    },
-                    modifier = Modifier.padding(padding),
-                )
-                2 -> DailySummaryScreen(
-                    onBack = { selectedTab = 1 },
-                    baseHttpUrl = baseHttpUrl,
-                    modifier = Modifier.padding(padding),
-                )
-                3 -> CommitmentsScreen(
-                    baseHttpUrl = baseHttpUrl,
-                    modifier = Modifier.padding(padding),
-                )
-                4 -> VoiceEnrollmentScreen(
-                    baseHttpUrl = baseHttpUrl,
-                    modifier = Modifier.padding(padding),
-                )
             }
         }
     }
@@ -305,7 +320,7 @@ private fun HomeScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Spacer(modifier = Modifier.height(8.dp))
-        WelcomeBlock()
+        RecordingHeroPanel(recordingActive = recordingActive)
         Spacer(modifier = Modifier.height(12.dp))
 
         // Колесо баланса — главный визуальный элемент
@@ -363,7 +378,7 @@ private fun HomeScreen(
 // ──────────────────────────────────────────────
 
 @Composable
-private fun WelcomeBlock() {
+private fun RecordingHeroPanel(recordingActive: Boolean) {
     val greeting = remember {
         val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
         when {
@@ -375,22 +390,110 @@ private fun WelcomeBlock() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
         ),
-        shape = MaterialTheme.shapes.medium,
+        shape = RoundedCornerShape(28.dp),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Column(
+            modifier = Modifier
+                .background(
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f),
+                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.18f),
+                        ),
+                    ),
+                )
+                .padding(horizontal = 18.dp, vertical = 18.dp),
+        ) {
+            StatusPill(
+                text = if (recordingActive) "Live memory" else "Ready to capture",
+                active = recordingActive,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = greeting,
-                style = MaterialTheme.typography.titleLarge,
+                text = "$greeting, Reflexio держит ритм дня",
+                style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
-            Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Колесо баланса — как распределяется твой день",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
+                text = if (recordingActive)
+                    "Запись уже идёт: система собирает голосовые фрагменты дня и превращает их в опору для вечернего осмысления."
+                else
+                    "Один взгляд на этот экран должен напоминать: важное можно поймать сразу, а не потерять в потоке дня.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.86f),
             )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row {
+                HeroMetric(
+                    label = "Состояние",
+                    value = if (recordingActive) "Listening" else "Standby",
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                HeroMetric(
+                    label = "Фокус",
+                    value = if (recordingActive) "Capture" else "Memory",
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun HeroMetric(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.22f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+@Composable
+private fun StatusPill(text: String, active: Boolean) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(
+                if (active) MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+            )
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(
+                    color = if (active) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline,
+                    shape = CircleShape,
+                ),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (active) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

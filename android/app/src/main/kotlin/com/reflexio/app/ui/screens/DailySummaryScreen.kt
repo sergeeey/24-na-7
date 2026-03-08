@@ -1,6 +1,7 @@
 package com.reflexio.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -107,14 +109,23 @@ fun DailySummaryScreen(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize().padding(16.dp)) {
-        // Header
+    Column(
+        modifier = modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("Итог дня", style = MaterialTheme.typography.titleLarge)
+            Column {
+                Text(
+                    text = "Daily digest",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = ColorTeal,
+                )
+                Text("Итог дня", style = MaterialTheme.typography.headlineMedium)
+            }
             IconButton(onClick = { retryCount++ }) {
                 Icon(
                     Icons.Default.Refresh,
@@ -123,7 +134,8 @@ fun DailySummaryScreen(
                 )
             }
         }
-        Spacer(modifier = Modifier.height(8.dp))
+
+        DailyDigestHeroCard(today = today)
 
         when {
             loading -> {
@@ -193,6 +205,9 @@ private fun DailySummaryContent(data: DailyDigestData) {
     Column(modifier = Modifier.verticalScroll(scroll)) {
         val sourcesCount = data.sources_count
         val totalRecordings = data.total_recordings
+
+        DigestOverviewCard(data = data)
+        Spacer(modifier = Modifier.height(16.dp))
 
         // === Пустое состояние: записей нет (согласовано с бэкендом _status=empty, _notice) ===
         if (totalRecordings == 0 || sourcesCount == 0) {
@@ -383,6 +398,103 @@ private fun DailySummaryContent(data: DailyDigestData) {
 }
 
 @Composable
+private fun DailyDigestHeroCard(today: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+        ),
+        shape = RoundedCornerShape(26.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .background(
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            ColorIndigo.copy(alpha = 0.22f),
+                            ColorTeal.copy(alpha = 0.08f),
+                        ),
+                    ),
+                )
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            DigestPill(text = "Story of the day", accent = ColorTeal)
+            Text(
+                text = "Reflexio собирает день в одну траекторию: что было главным, где был пик, что повторялось и какой шаг стоит сделать дальше.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "Дата: $today",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DigestOverviewCard(data: DailyDigestData) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(22.dp),
+            ),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+        ),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = "Snapshot",
+                style = MaterialTheme.typography.labelLarge,
+                color = ColorTeal,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                DigestMetric(
+                    label = "Записей",
+                    value = data.total_recordings.toString(),
+                    accent = ColorTeal,
+                    modifier = Modifier.weight(1f),
+                )
+                DigestMetric(
+                    label = "Источников",
+                    value = data.sources_count.toString(),
+                    accent = ColorIndigo,
+                    modifier = Modifier.weight(1f),
+                )
+                DigestMetric(
+                    label = "Длительность",
+                    value = data.total_duration,
+                    accent = ColorAmber,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            data.verdict?.let { verdict ->
+                Text(
+                    text = verdict.text,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SectionHeader(title: String) {
     Text(
         text = title,
@@ -405,6 +517,52 @@ private fun StatItem(label: String, value: String) {
             text = label,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.outline,
+        )
+    }
+}
+
+@Composable
+private fun DigestMetric(
+    label: String,
+    value: String,
+    accent: Color,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.68f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleMedium,
+            color = accent,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun DigestPill(text: String, accent: Color) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(accent.copy(alpha = 0.14f))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = accent,
         )
     }
 }

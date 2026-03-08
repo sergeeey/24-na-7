@@ -6,50 +6,50 @@ import androidx.compose.ui.graphics.Color
 // с яркими свечениями. Дизайн "Digital Memory" — тёмная база + акценты.
 
 // === Dark theme — основной для Reflexio ===
-val DarkPrimary = Color(0xFF7C6CFF)              // Мягкий индиго
+val DarkPrimary = Color(0xFF8ED8F8)              // Ледяной cyan
 val DarkOnPrimary = Color(0xFFFFFFFF)
-val DarkPrimaryContainer = Color(0xFF2D2566)
-val DarkOnPrimaryContainer = Color(0xFFCDC4FF)
+val DarkPrimaryContainer = Color(0xFF143647)
+val DarkOnPrimaryContainer = Color(0xFFD5F5FF)
 
-val DarkSecondary = Color(0xFF00E5CC)             // Тёплый teal
-val DarkOnSecondary = Color(0xFF003730)
-val DarkSecondaryContainer = Color(0xFF004D44)
-val DarkOnSecondaryContainer = Color(0xFF7CF8E4)
+val DarkSecondary = Color(0xFF42E5C2)             // Живой mint
+val DarkOnSecondary = Color(0xFF06271F)
+val DarkSecondaryContainer = Color(0xFF113E35)
+val DarkOnSecondaryContainer = Color(0xFFC5FFF1)
 
-val DarkTertiary = Color(0xFFFFB74D)              // Тёплый amber для акцентов
-val DarkOnTertiary = Color(0xFF462A00)
-val DarkTertiaryContainer = Color(0xFF633F00)
-val DarkOnTertiaryContainer = Color(0xFFFFDDB3)
+val DarkTertiary = Color(0xFFFF9B6A)              // Тёплый ember
+val DarkOnTertiary = Color(0xFF3A1400)
+val DarkTertiaryContainer = Color(0xFF5A2410)
+val DarkOnTertiaryContainer = Color(0xFFFFDBC8)
 
-val DarkBackground = Color(0xFF0D1117)
-val DarkOnBackground = Color(0xFFE6EDF3)
-val DarkSurface = Color(0xFF161B22)
-val DarkOnSurface = Color(0xFFE6EDF3)
-val DarkSurfaceVariant = Color(0xFF1C2333)
-val DarkOnSurfaceVariant = Color(0xFFB0BAC5)
+val DarkBackground = Color(0xFF071018)
+val DarkOnBackground = Color(0xFFE9F2F7)
+val DarkSurface = Color(0xFF0E1922)
+val DarkOnSurface = Color(0xFFE9F2F7)
+val DarkSurfaceVariant = Color(0xFF162634)
+val DarkOnSurfaceVariant = Color(0xFF9FB2BE)
 
-val DarkError = Color(0xFFFF6B6B)
+val DarkError = Color(0xFFFF7A6A)
 val DarkOnError = Color(0xFF690000)
 val DarkErrorContainer = Color(0xFF93000A)
 val DarkOnErrorContainer = Color(0xFFFFDAD6)
 
-val DarkOutline = Color(0xFF3D4450)
+val DarkOutline = Color(0xFF314555)
 
 // === Light theme — fallback ===
-val LightPrimary = Color(0xFF5B4FC4)
+val LightPrimary = Color(0xFF006A8E)
 val LightOnPrimary = Color(0xFFFFFFFF)
-val LightPrimaryContainer = Color(0xFFE8E0FF)
-val LightOnPrimaryContainer = Color(0xFF1A0066)
+val LightPrimaryContainer = Color(0xFFCBEFFF)
+val LightOnPrimaryContainer = Color(0xFF001E2A)
 
-val LightSecondary = Color(0xFF00A389)
+val LightSecondary = Color(0xFF006C57)
 val LightOnSecondary = Color(0xFFFFFFFF)
-val LightSecondaryContainer = Color(0xFFB2F5E8)
-val LightOnSecondaryContainer = Color(0xFF002E25)
+val LightSecondaryContainer = Color(0xFF96F8DE)
+val LightOnSecondaryContainer = Color(0xFF002019)
 
-val LightTertiary = Color(0xFFFF8F00)
+val LightTertiary = Color(0xFF9B4320)
 val LightOnTertiary = Color(0xFFFFFFFF)
-val LightTertiaryContainer = Color(0xFFFFE0B2)
-val LightOnTertiaryContainer = Color(0xFF2E1500)
+val LightTertiaryContainer = Color(0xFFFFDBCF)
+val LightOnTertiaryContainer = Color(0xFF351000)
 
 val LightBackground = Color(0xFFF8F9FA)
 val LightOnBackground = Color(0xFF1B1B1F)

@@ -61,6 +61,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
@@ -594,6 +595,14 @@ fun AskScreen(
     var state by remember { mutableStateOf<AskState>(AskState.Idle) }
     var showDetails by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val suggestedPrompts = remember {
+        listOf(
+            "О чём я сегодня обещал?",
+            "Какие темы повторялись?",
+            "Что стоит сделать завтра?",
+            "Где начался спад энергии?",
+        )
+    }
 
     fun submit() {
         val q = question.trim()
@@ -616,26 +625,65 @@ fun AskScreen(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        // ── Input ──────────────────────────────
-        OutlinedTextField(
-            value = question,
-            onValueChange = { question = it },
-            placeholder = { Text("Спроси что угодно о своём дне...") },
+        AskIntroHero()
+        Spacer(modifier = Modifier.height(14.dp))
+
+        Card(
             modifier = Modifier.fillMaxWidth(),
-            minLines = 2,
-            maxLines = 4,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { submit() }),
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Button(
-            onClick = { submit() },
-            modifier = Modifier.align(Alignment.End),
-            enabled = question.isNotBlank() && state !is AskState.Loading,
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+            ),
         ) {
-            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Спросить")
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Сформулируйте вопрос так, как будто говорите с внимательным аналитиком вашей жизни.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                OutlinedTextField(
+                    value = question,
+                    onValueChange = { question = it },
+                    placeholder = { Text("Спроси что угодно о своём дне...") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 5,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { submit() }),
+                    shape = RoundedCornerShape(20.dp),
+                )
+
+                AskPromptSuggestions(
+                    prompts = suggestedPrompts,
+                    onPromptClick = { prompt -> question = prompt },
+                )
+
+                AskQueryStateCard(state = state)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Ответ придёт с уверенностью и доказательствами",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    Button(
+                        onClick = { submit() },
+                        enabled = question.isNotBlank() && state !is AskState.Loading,
+                    ) {
+                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Спросить")
+                    }
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -643,11 +691,9 @@ fun AskScreen(
         // ── Result ─────────────────────────────
         when (val s = state) {
             is AskState.Idle -> {
-                Text(
-                    text = "Задай вопрос на естественном языке — система сама найдёт нужные данные.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontStyle = FontStyle.Italic,
+                AskIdlePanel(
+                    prompts = suggestedPrompts,
+                    onPromptClick = { prompt -> question = prompt },
                 )
             }
 
@@ -673,6 +719,9 @@ fun AskScreen(
 
             is AskState.Success -> {
                 val r = s.result
+
+                AskResponseOverview(result = r)
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // 1. Пустое состояние при 0 источников (смысл + действие); иначе — баннер предупреждения
                 if (r.evidenceCount == 0) {
@@ -719,6 +768,12 @@ fun AskScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
+
+                AskFollowupActions(
+                    hasEvidence = r.evidenceMetadata.isNotEmpty(),
+                    hasDigest = r.digestData != null,
+                )
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // 2. EmotionalPulseRing (only for digest with acoustic data)
                 r.digestData?.let { digest ->
@@ -874,6 +929,272 @@ fun AskScreen(
 // ──────────────────────────────────────────────
 // New composables: Emotional Mirror sections
 // ──────────────────────────────────────────────
+
+@Composable
+private fun AskIntroHero() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.78f),
+        ),
+        shape = RoundedCornerShape(24.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .background(
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            ColorIndigo.copy(alpha = 0.22f),
+                            ColorTeal.copy(alpha = 0.08f),
+                        ),
+                    ),
+                )
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = "One interface for your day",
+                style = MaterialTheme.typography.labelLarge,
+                color = ColorTeal,
+            )
+            Text(
+                text = "Спросите о дне обычным языком, а Reflexio соберёт ответ из событий, эмоций и доказательств.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AskSignalChip("Уверенность")
+                AskSignalChip("Улики")
+                AskSignalChip("Следующий шаг")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AskSignalChip(text: String) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AskPromptSuggestions(
+    prompts: List<String>,
+    onPromptClick: (String) -> Unit,
+) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        prompts.forEach { prompt ->
+            SuggestionChip(
+                onClick = { onPromptClick(prompt) },
+                label = {
+                    Text(
+                        text = prompt,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
+                colors = SuggestionChipDefaults.suggestionChipColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.66f),
+                    labelColor = MaterialTheme.colorScheme.onSurface,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AskIdlePanel(
+    prompts: List<String>,
+    onPromptClick: (String) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.74f),
+        ),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = "Попробуйте начать с одного из этих запросов",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "Лучше всего работают вопросы про напряжение, повторяющиеся темы, решения и людей вокруг вас.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontStyle = FontStyle.Italic,
+            )
+            AskPromptSuggestions(prompts = prompts, onPromptClick = onPromptClick)
+        }
+    }
+}
+
+@Composable
+private fun AskQueryStateCard(state: AskState) {
+    val title = when (state) {
+        is AskState.Idle -> "Память готова"
+        is AskState.Loading -> "Ищу релевантные моменты"
+        is AskState.Success -> "Ответ собран"
+        is AskState.Error -> "Сигнал не удалось собрать"
+    }
+    val copy = when (state) {
+        is AskState.Idle -> "Reflexio сильнее всего там, где нужно вернуть важное из шума дня."
+        is AskState.Loading -> "Сначала ищутся события и связи, затем формируется ответ и confidence layer."
+        is AskState.Success -> "Теперь важнее не длина текста, а насколько ясно видны смысл, уверенность и доказательства."
+        is AskState.Error -> state.message
+    }
+    val accent = when (state) {
+        is AskState.Error -> ColorSpeculative
+        is AskState.Loading -> ColorAmber
+        else -> ColorTeal
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = accent.copy(alpha = 0.10f),
+        ),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                color = accent,
+            )
+            Text(
+                text = copy,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AskResponseOverview(result: AskResult) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+        ),
+        shape = RoundedCornerShape(22.dp),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Краткая сводка ответа",
+                style = MaterialTheme.typography.labelLarge,
+                color = ColorTeal,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = result.answer,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                AskMetricPill(
+                    title = "Уверенность",
+                    value = "${(result.confidence * 100).toInt()}%",
+                    modifier = Modifier.weight(1f),
+                )
+                AskMetricPill(
+                    title = "Улики",
+                    value = result.evidenceCount.toString(),
+                    modifier = Modifier.weight(1f),
+                )
+                AskMetricPill(
+                    title = "Время",
+                    value = "${result.totalMs.toInt()}мс",
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AskFollowupActions(
+    hasEvidence: Boolean,
+    hasDigest: Boolean,
+) {
+    val actions = buildList {
+        if (hasEvidence) add("Открыть моменты")
+        add("Уточнить вопрос")
+        if (hasDigest) add("Перейти к ритуалу дня")
+        add("Спросить глубже")
+    }
+
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        actions.forEach { action ->
+            SuggestionChip(
+                onClick = { },
+                label = { Text(action) },
+                colors = SuggestionChipDefaults.suggestionChipColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.60f),
+                    labelColor = MaterialTheme.colorScheme.onSurface,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AskMetricPill(
+    title: String,
+    value: String,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.height(2.dp))
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
 
 /**
  * AskShimmerSkeleton — shimmer loading вместо spinner.
