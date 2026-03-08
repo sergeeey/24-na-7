@@ -1,0 +1,113 @@
+{
+  "date": "2026-03-07",
+  "generated_at": "2026-03-07T16:43:23.557927",
+  "metrics": {
+    "transcriptions_count": 8,
+    "facts_count": 0,
+    "total_duration_minutes": 0,
+    "total_characters": 154,
+    "total_words": 20,
+    "average_words_per_transcription": 2.5,
+    "information_density_score": 0.0,
+    "density_level": "⚪ Очень низкая"
+  },
+  "facts": [],
+  "transcriptions": [
+    {
+      "id": "c7b5dbae-62d2-4846-928f-046236ddb4da",
+      "ingest_id": "fa271ac6-cb8a-4e7a-86fb-86df369f6559",
+      "text": "WebSocket транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": null,
+      "created_at": "2026-03-07T05:27:11.587901+00:00",
+      "filename": "20260307_102711_fa271ac6-cb8a-4e7a-86fb-86df369f6559.wav",
+      "file_size": 44
+    },
+    {
+      "id": "d4f64fd1-585b-46aa-a621-1a822b895af1",
+      "ingest_id": "587c5100-3ae9-464c-82b4-e20a593c7ec5",
+      "text": "hello team meeting",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": null,
+      "created_at": "2026-03-07T05:27:26.443112+00:00",
+      "filename": "20260307_102726_587c5100-3ae9-464c-82b4-e20a593c7ec5.wav",
+      "file_size": 364
+    },
+    {
+      "id": "c4f31519-dd18-4eb0-bed9-5bbb9dbfeb70",
+      "ingest_id": "62466e26-51e8-4633-bc2b-3f5346468b3a",
+      "text": "test project update",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": null,
+      "created_at": "2026-03-07T05:27:26.480673+00:00",
+      "filename": "20260307_102726_62466e26-51e8-4633-bc2b-3f5346468b3a.wav",
+      "file_size": 364
+    },
+    {
+      "id": "b9ad3d24-8474-4270-adc7-8a797e96df07",
+      "ingest_id": "47ff655f-5183-418b-bdfd-90ab9c3a6956",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-07T10:27:11.503289",
+      "filename": "20260307_102711_47ff655f-5183-418b-bdfd-90ab9c3a6956.wav",
+      "file_size": 44
+    },
+    {
+      "id": "83b2c263-ff5e-456a-8aba-a27800e8ee61",
+      "ingest_id": "abc12345-0000-0000-0000-000000000001",
+      "text": "Hello world test",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-07T10:27:23.002540",
+      "filename": null,
+      "file_size": null
+    },
+    {
+      "id": "7642bd88-a037-46ac-aa7c-818a6e68eca7",
+      "ingest_id": "12499c1d-da2c-43ca-b05d-1fd6d9a5739f",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-07T16:32:44.699932",
+      "filename": "20260307_163244_12499c1d-da2c-43ca-b05d-1fd6d9a5739f.wav",
+      "file_size": 44
+    },
+    {
+      "id": "a67ee6c7-871f-496c-9ec3-24c3e5886f3f",
+      "ingest_id": "abc12345-0000-0000-0000-000000000001",
+      "text": "Hello world test",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-07T16:32:48.090649",
+      "filename": null,
+      "file_size": null
+    },
+    {
+      "id": "634f6aeb-36e6-4029-a80f-2efcf0305459",
+      "ingest_id": "b9b3c802-0f64-4a73-accc-bc9f7651a4fa",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-07T16:43:23.375913",
+      "filename": "20260307_164323_b9b3c802-0f64-4a73-accc-bc9f7651a4fa.wav",
+      "file_size": 44
+    }
+  ]
+}

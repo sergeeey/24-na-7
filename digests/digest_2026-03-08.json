@@ -1,0 +1,137 @@
+{
+  "date": "2026-03-08",
+  "generated_at": "2026-03-08T19:50:06.472807",
+  "metrics": {
+    "transcriptions_count": 10,
+    "facts_count": 0,
+    "total_duration_minutes": 0,
+    "total_characters": 185,
+    "total_words": 25,
+    "average_words_per_transcription": 2.5,
+    "information_density_score": 0.0,
+    "density_level": "⚪ Очень низкая"
+  },
+  "facts": [],
+  "transcriptions": [
+    {
+      "id": "6c6c2230-3084-48bf-8cb1-fa11a99df962",
+      "ingest_id": "6b8a93fa-64ff-4e7f-a444-a8e19f8347ea",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T12:39:16.213109",
+      "filename": "20260308_123916_6b8a93fa-64ff-4e7f-a444-a8e19f8347ea.wav",
+      "file_size": 44
+    },
+    {
+      "id": "a056e21c-d340-41f5-b5fe-078bd0ce0568",
+      "ingest_id": "abc12345-0000-0000-0000-000000000001",
+      "text": "Hello world test",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T12:39:21.756610",
+      "filename": null,
+      "file_size": null
+    },
+    {
+      "id": "af26ed5c-71bb-40a0-a8a9-959d5e7b43cc",
+      "ingest_id": "84126ce2-e8eb-4e0c-9308-767851682763",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T14:12:21.107097",
+      "filename": "20260308_141221_84126ce2-e8eb-4e0c-9308-767851682763.wav",
+      "file_size": 44
+    },
+    {
+      "id": "05f53ab6-6e24-489f-8d96-7af613c496fe",
+      "ingest_id": "abc12345-0000-0000-0000-000000000001",
+      "text": "Hello world test",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T14:12:32.088486",
+      "filename": null,
+      "file_size": null
+    },
+    {
+      "id": "e930309e-266a-4964-8349-cd62e4bfe891",
+      "ingest_id": "87af461c-6181-44af-bc3f-f590c08d8184",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T14:13:54.573507",
+      "filename": "20260308_141354_87af461c-6181-44af-bc3f-f590c08d8184.wav",
+      "file_size": 44
+    },
+    {
+      "id": "56196cce-1efd-4cfd-a519-a122a76dab0c",
+      "ingest_id": "abc12345-0000-0000-0000-000000000001",
+      "text": "Hello world test",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T14:14:11.562561",
+      "filename": null,
+      "file_size": null
+    },
+    {
+      "id": "df1c24b4-cafc-44b6-a7ca-2e53feef2514",
+      "ingest_id": "f4a466a2-7a78-4464-928b-e332bb3c15d2",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T14:14:26.193697",
+      "filename": "20260308_141426_f4a466a2-7a78-4464-928b-e332bb3c15d2.wav",
+      "file_size": 44
+    },
+    {
+      "id": "bf4cf042-43c2-4a25-9d78-b44346037128",
+      "ingest_id": "abc12345-0000-0000-0000-000000000001",
+      "text": "Hello world test",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T14:14:39.560593",
+      "filename": null,
+      "file_size": null
+    },
+    {
+      "id": "214014bb-6443-4199-b69b-d9f76427577b",
+      "ingest_id": "277b4267-ec89-41ec-b7e2-ac5de24fda81",
+      "text": "Тестовая транскрипция",
+      "language": "ru",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T14:41:03.364974",
+      "filename": "20260308_144103_277b4267-ec89-41ec-b7e2-ac5de24fda81.wav",
+      "file_size": 44
+    },
+    {
+      "id": "679e2c2e-252f-4ed4-985d-ce04c993e00c",
+      "ingest_id": "abc12345-0000-0000-0000-000000000001",
+      "text": "Hello world test",
+      "language": "en",
+      "language_probability": null,
+      "duration": null,
+      "segments": "[]",
+      "created_at": "2026-03-08T14:41:19.194873",
+      "filename": null,
+      "file_size": null
+    }
+  ]
+}
