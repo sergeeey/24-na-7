@@ -16,6 +16,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY requirements.txt .
 
+# ПОЧЕМУ torch CPU-only ПЕРВЫМ: pyannote.audio тянет torch с CUDA (~5GB).
+# На VPS нет GPU → ставим CPU-only torch (~300MB) ДО requirements.txt,
+# pip увидит что torch уже есть и не скачает CUDA-версию.
+RUN pip install --no-cache-dir --prefix=/install \
+    torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
 # ПОЧЕМУ --prefix=/install: изолируем пакеты в отдельный prefix-dir
 # чтобы скопировать в runtime stage без лишнего мусора
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
