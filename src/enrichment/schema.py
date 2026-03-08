@@ -1,6 +1,7 @@
 """StructuredEvent — единица цифровой памяти.
 Каждый аудио-сегмент -> один StructuredEvent.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -15,6 +16,20 @@ class TaskExtracted(BaseModel):
     text: str
     priority: str = "medium"  # low | medium | high
     deadline: Optional[str] = None
+
+
+class CommitmentExtracted(BaseModel):
+    """Обязательство/обещание, извлечённое из речи.
+
+    ПОЧЕМУ отдельно от TaskExtracted: задача = "надо сделать" (для себя).
+    Обязательство = "обещал кому-то" (relationship-aware).
+    Это разные сущности: задача без person, обязательство всегда с person.
+    """
+
+    person: str  # кому обещано ("мама", "Марат", "жена", "себе")
+    action: str  # что именно обещано
+    deadline: Optional[str] = None  # когда (если упомянуто)
+    context: Optional[str] = None  # почему это важно
 
 
 class StructuredEvent(BaseModel):
@@ -37,6 +52,7 @@ class StructuredEvent(BaseModel):
     topics: list[str] = Field(default_factory=list)
     domains: list[str] = Field(default_factory=list)
     tasks: list[TaskExtracted] = Field(default_factory=list)
+    commitments: list[CommitmentExtracted] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)
     speakers: list[str] = Field(default_factory=list)
     urgency: str = "medium"  # low | medium | high

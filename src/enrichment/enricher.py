@@ -1,4 +1,5 @@
 """Enricher — обогащает транскрипцию в StructuredEvent через LLM."""
+
 from __future__ import annotations
 
 import hashlib
@@ -10,7 +11,7 @@ from typing import Any
 from tenacity import retry, stop_after_attempt, wait_exponential, before_sleep_log
 
 from src.enrichment.domain_classifier import classify_domains
-from src.enrichment.schema import StructuredEvent, TaskExtracted
+from src.enrichment.schema import CommitmentExtracted, StructuredEvent, TaskExtracted
 from src.utils.logging import get_logger
 
 logger = get_logger("enrichment")
@@ -109,6 +110,7 @@ def _call_llm_analysis(clean_text: str) -> dict[str, Any]:
     tenacity — декларативный retry с logging hooks из коробки.
     """
     from src.summarizer.few_shot import analyze_recording_text
+
     return analyze_recording_text(clean_text)
 
 
@@ -183,9 +185,9 @@ def enrich_transcription(
 
         # ПОЧЕМУ hash промпта: через 3 месяца другой промпт даст другие
         # эмоции. Hash позволяет детектировать момент drift.
-        prompt_hash = hashlib.sha256(
-            enrichment_input.encode("utf-8", errors="ignore")
-        ).hexdigest()[:12]
+        prompt_hash = hashlib.sha256(enrichment_input.encode("utf-8", errors="ignore")).hexdigest()[
+            :12
+        ]
 
         analysis, latency_ms = _run_analysis_with_retry(enrichment_input)
 
@@ -213,13 +215,30 @@ def enrich_transcription(
 
         model_name = getattr(settings, "LLM_MODEL_ACTOR", "unknown")
         topics = analysis.get("topics", [])
-        domains = classify_domains(clean_text, topics=topics, db_path=settings.STORAGE_PATH / "reflexio.db")
+        domains = classify_domains(
+            clean_text, topics=topics, db_path=settings.STORAGE_PATH / "reflexio.db"
+        )
+
+        # ПОЧЕМУ commitments отдельно от tasks: task = "для себя",
+        # commitment = "обещал кому-то" (person-aware). Разные сущности.
+        commitments = []
+        for c in analysis.get("commitments", []):
+            if isinstance(c, dict) and c.get("person") and c.get("action"):
+                commitments.append(
+                    CommitmentExtracted(
+                        person=c["person"].strip(),
+                        action=c["action"].strip(),
+                        deadline=c.get("deadline"),
+                        context=c.get("context"),
+                    )
+                )
 
         base_event.summary = analysis.get("summary", "")
         base_event.emotions = emotions
         base_event.topics = topics
         base_event.domains = domains
         base_event.tasks = tasks
+        base_event.commitments = commitments
         base_event.urgency = analysis.get("urgency", "medium")
         base_event.sentiment = sentiment
         base_event.enrichment_confidence = _compute_enrichment_confidence(analysis)
@@ -234,6 +253,7 @@ def enrich_transcription(
             topics=base_event.topics,
             domains=base_event.domains,
             tasks_count=len(tasks),
+            commitments_count=len(commitments),
             latency_ms=round(latency_ms),
         )
 
@@ -241,4 +261,3 @@ def enrich_transcription(
         logger.warning("enrichment_failed", error=str(e), event_id=event_id)
 
     return base_event
-

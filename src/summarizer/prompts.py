@@ -2,17 +2,18 @@
 Промпты для summarization с Chain of Density и Few-Shot Actions.
 Reflexio 24/7 — November 2025 Integration Sprint
 """
+
 from typing import List, Dict, Any
 
 
 def get_chain_of_density_prompt(text: str, iterations: int = 5) -> str:
     """
     Chain of Density (CoD) промпт для постепенного уплотнения саммари.
-    
+
     Args:
         text: Исходный текст для саммаризации
         iterations: Количество итераций уплотнения
-        
+
     Returns:
         Промпт для LLM
     """
@@ -53,11 +54,11 @@ def get_chain_of_density_prompt(text: str, iterations: int = 5) -> str:
 def get_few_shot_actions_prompt(text: str, examples: List[Dict[str, Any]] = None) -> str:
     """
     Few-Shot Actions промпт с примерами JSON-вывода.
-    
+
     Args:
         text: Исходный текст
         examples: Список примеров (минимум 3)
-        
+
     Returns:
         Промпт для LLM
     """
@@ -68,8 +69,8 @@ def get_few_shot_actions_prompt(text: str, examples: List[Dict[str, Any]] = None
                 "output": {
                     "summary": "Краткое саммари",
                     "key_points": ["пункт 1", "пункт 2"],
-                    "sentiment": "neutral"
-                }
+                    "sentiment": "neutral",
+                },
             },
             {
                 "action": "extract_tasks",
@@ -77,27 +78,40 @@ def get_few_shot_actions_prompt(text: str, examples: List[Dict[str, Any]] = None
                     "tasks": [
                         {"task": "Описание задачи", "priority": "high", "deadline": "2025-11-10"}
                     ]
-                }
+                },
             },
             {
                 "action": "analyze_emotions",
-                "output": {
-                    "emotions": ["радость", "уверенность"],
-                    "intensity": 0.7
-                }
-            }
+                "output": {"emotions": ["радость", "уверенность"], "intensity": 0.7},
+            },
         ]
-    
-    examples_text = "\n\n".join([
-        f"Пример {i+1}:\n{example['action']}\n{example['output']}"
-        for i, example in enumerate(examples)
-    ])
-    
+
+    examples_text = "\n\n".join(
+        [
+            f"Пример {i + 1}:\n{example['action']}\n{example['output']}"
+            for i, example in enumerate(examples)
+        ]
+    )
+
+    # ПОЧЕМУ commitments в промпте: извлекаем обещания и обязательства из речи.
+    # person + action + deadline = основа для Relationship Guardian и Nudges.
+    commitments_instruction = """
+ВАЖНО: Если в тексте есть обещания, обязательства или намерения (явные или неявные) —
+извлеки их в поле "commitments". Обещание = действие, направленное на конкретного человека.
+Примеры: "надо маме позвонить", "обещал жене цветы", "скину Марату отчёт".
+Если обещаний нет — верни пустой массив.
+
+Формат commitments:
+"commitments": [
+    {"person": "кому", "action": "что сделать", "deadline": "когда (или null)", "context": "почему важно (или null)"}
+]"""
+
     # Лимит текста для few-shot (аналогично CoD)
     truncated_text = text[:4000] + "…" if len(text) > 4000 else text
 
     prompt = f"""Ты — AI-ассистент для анализа текста и генерации структурированного вывода.
 Отвечай на русском языке. Игнорируй бессмысленные повторы.
+{commitments_instruction}
 
 Исходный текст:
 {truncated_text}
@@ -113,6 +127,7 @@ def get_few_shot_actions_prompt(text: str, examples: List[Dict[str, Any]] = None
     "action": "тип действия",
     "output": {{
         // структура зависит от типа действия
+        // + "commitments": [...] если есть обещания/обязательства
     }},
     "confidence": 0.0-1.0
 }}
@@ -139,7 +154,9 @@ def get_wow_digest_prompt(events_text: str, history_topics: list[str] | None = N
 
     history_section = ""
     if history_topics:
-        history_section = f"\nТемы за последние 7 дней (для контекста): {', '.join(history_topics[:20])}\n"
+        history_section = (
+            f"\nТемы за последние 7 дней (для контекста): {', '.join(history_topics[:20])}\n"
+        )
 
     return f"""Ты — персональный аналитик дня. Проанализируй записи пользователя и создай WOW-дайджест на РУССКОМ языке.
 
@@ -181,11 +198,11 @@ def get_wow_digest_prompt(events_text: str, history_topics: list[str] | None = N
 def get_critic_prompt(summary: str, original_text: str) -> str:
     """
     Промпт для Critic (DeepConf валидация).
-    
+
     Args:
         summary: Сгенерированное саммари
         original_text: Исходный текст
-        
+
     Returns:
         Промпт для Critic
     """
@@ -221,8 +238,3 @@ def get_critic_prompt(summary: str, original_text: str) -> str:
 }}
 """
     return prompt
-
-
-
-
-

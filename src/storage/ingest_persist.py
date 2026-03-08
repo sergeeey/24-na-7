@@ -2,6 +2,7 @@
 Сохранение транскрипций из WebSocket в SQLite (ingest_queue + transcriptions).
 Схема совместима с DigestGenerator.get_transcriptions().
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -19,6 +20,7 @@ except Exception:
 
     def get_logger(x):  # noqa: A001
         return logging.getLogger(x)
+
 
 logger = get_logger("storage.ingest_persist")
 
@@ -113,10 +115,14 @@ def save_recording_analysis(
                     now,
                 ),
             )
-        logger.info("recording_analysis_saved", transcription_id=transcription_id, analysis_id=analysis_id)
+        logger.info(
+            "recording_analysis_saved", transcription_id=transcription_id, analysis_id=analysis_id
+        )
         return analysis_id
     except Exception as e:
-        logger.exception("recording_analysis_save_failed", transcription_id=transcription_id, error=str(e))
+        logger.exception(
+            "recording_analysis_save_failed", transcription_id=transcription_id, error=str(e)
+        )
         return None
 
 
@@ -167,6 +173,7 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
         "acoustic_arousal TEXT",
         "enrichment_prompt_hash TEXT",
         "enrichment_version TEXT DEFAULT ''",
+        "commitments TEXT DEFAULT '[]'",
     ]:
         try:
             cursor.execute(f"ALTER TABLE structured_events ADD COLUMN {col_def}")
@@ -207,7 +214,10 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
         import json
 
         tasks_json = json.dumps(
-            [t.model_dump() if hasattr(t, "model_dump") else {"text": str(t)} for t in (event.tasks or [])]
+            [
+                t.model_dump() if hasattr(t, "model_dump") else {"text": str(t)}
+                for t in (event.tasks or [])
+            ]
         )
 
         with db.transaction():
@@ -235,7 +245,8 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                 """
                 INSERT INTO structured_events (
                     id, transcription_id, timestamp, duration_sec, text, language,
-                    summary, emotions, topics, domains, tasks, decisions, speakers,
+                    summary, emotions, topics, domains, tasks, commitments,
+                    decisions, speakers,
                     urgency, sentiment, location,
                     asr_confidence, enrichment_confidence, enrichment_model,
                     enrichment_tokens, enrichment_latency_ms, created_at,
@@ -243,7 +254,7 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                     pitch_hz_mean, pitch_variance, energy_mean,
                     spectral_centroid_mean, acoustic_arousal,
                     enrichment_prompt_hash, enrichment_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
@@ -255,8 +266,18 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                     event.summary,
                     json.dumps(event.emotions) if event.emotions else "[]",
                     json.dumps(event.topics) if event.topics else "[]",
-                    json.dumps(getattr(event, "domains", [])) if getattr(event, "domains", None) else "[]",
+                    json.dumps(getattr(event, "domains", []))
+                    if getattr(event, "domains", None)
+                    else "[]",
                     tasks_json,
+                    json.dumps(
+                        [
+                            c.model_dump() if hasattr(c, "model_dump") else c
+                            for c in (event.commitments or [])
+                        ]
+                    )
+                    if event.commitments
+                    else "[]",
                     json.dumps(event.decisions) if event.decisions else "[]",
                     json.dumps(event.speakers) if event.speakers else "[]",
                     event.urgency,
@@ -291,13 +312,16 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
         if event.text:
             try:
                 from src.storage.vec_search import index_event, load_vec_extension
+
                 load_vec_extension(db.conn)
                 index_event(db.conn, event.id, event.text)
             except Exception as _ve:
                 logger.warning("vec_index_skipped", event_id=event.id, error=str(_ve))
         return event.id
     except Exception as e:
-        logger.exception("structured_event_persist_failed", event_id=getattr(event, "id", "?"), error=str(e))
+        logger.exception(
+            "structured_event_persist_failed", event_id=getattr(event, "id", "?"), error=str(e)
+        )
         return None
 
 
@@ -316,7 +340,10 @@ def transcription_exists(db_path: Path, transcription_id: str) -> bool:
     if not db_path.exists():
         return False
     db = get_reflexio_db(db_path)
-    return db.fetchone("SELECT 1 FROM transcriptions WHERE id = ? LIMIT 1", (transcription_id,)) is not None
+    return (
+        db.fetchone("SELECT 1 FROM transcriptions WHERE id = ? LIMIT 1", (transcription_id,))
+        is not None
+    )
 
 
 def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[str, Any]]:
@@ -368,7 +395,11 @@ def persist_ws_transcription(
 ) -> Optional[str]:
     """Сохраняет результат транскрипции WebSocket в ingest_queue и transcriptions."""
     if not result or not isinstance(result, dict):
-        logger.warning("persist_ws_transcription_invalid_result", file_id=file_id, result_type=type(result).__name__)
+        logger.warning(
+            "persist_ws_transcription_invalid_result",
+            file_id=file_id,
+            result_type=type(result).__name__,
+        )
         return None
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -393,9 +424,13 @@ def persist_ws_transcription(
                     (datetime.now(timezone.utc).isoformat(), file_id),
                 )
 
-            existing = db.fetchone("SELECT id FROM transcriptions WHERE ingest_id = ? LIMIT 1", (file_id,))
+            existing = db.fetchone(
+                "SELECT id FROM transcriptions WHERE ingest_id = ? LIMIT 1", (file_id,)
+            )
             if existing:
-                logger.debug("transcription_already_persisted", file_id=file_id, transcription_id=existing[0])
+                logger.debug(
+                    "transcription_already_persisted", file_id=file_id, transcription_id=existing[0]
+                )
                 return existing[0]
 
             transcription_id = str(uuid.uuid4())
@@ -410,7 +445,9 @@ def persist_ws_transcription(
                 import json
 
                 try:
-                    segments_str = json.dumps(segments) if not isinstance(segments, str) else segments
+                    segments_str = (
+                        json.dumps(segments) if not isinstance(segments, str) else segments
+                    )
                 except (TypeError, ValueError):
                     segments_str = None
 
@@ -430,7 +467,9 @@ def persist_ws_transcription(
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
-        logger.info("ws_transcription_persisted", file_id=file_id, transcription_id=transcription_id)
+        logger.info(
+            "ws_transcription_persisted", file_id=file_id, transcription_id=transcription_id
+        )
         return transcription_id
     except Exception as e:
         logger.exception("ws_transcription_persist_failed", file_id=file_id, error=str(e))

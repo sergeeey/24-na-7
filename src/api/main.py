@@ -1,4 +1,5 @@
 """FastAPI приложение Reflexio 24/7."""
+
 import asyncio
 import os
 import threading
@@ -33,6 +34,7 @@ from src.api.routers import search
 from src.api.routers import voice
 from src.api.routers import websocket
 from src.api.routers import query
+from src.api.routers import commitments
 from src.storage.db import ReflexioDB, ensure_all_tables, get_reflexio_db, run_migrations
 from src.utils.config import settings
 from src.utils.logging import get_logger, setup_logging
@@ -57,6 +59,7 @@ _digest_precompute_dict_lock = threading.Lock()
 def _run_audio_retention_cleanup() -> None:
     """Удаляет WAV файлы старше AUDIO_RETENTION_HOURS."""
     import time
+
     uploads_dir = Path("src/storage/uploads")
     if not uploads_dir.exists():
         return
@@ -67,7 +70,11 @@ def _run_audio_retention_cleanup() -> None:
             f.unlink(missing_ok=True)
             removed += 1
     if removed:
-        logger.info("audio_retention_cleanup", removed=removed, retention_hours=settings.AUDIO_RETENTION_HOURS)
+        logger.info(
+            "audio_retention_cleanup",
+            removed=removed,
+            retention_hours=settings.AUDIO_RETENTION_HOURS,
+        )
 
 
 def _run_daily_digest_precompute() -> None:
@@ -116,24 +123,28 @@ def _run_digest_precompute_body(today: str) -> None:
         logger.info("digest_precompute_started", date=today)
 
         generator = DigestGenerator(db_path=db_path)
-        result = generator.get_daily_digest_json(
-            datetime.strptime(today, "%Y-%m-%d").date()
-        )
+        result = generator.get_daily_digest_json(datetime.strptime(today, "%Y-%m-%d").date())
 
         db.execute(
             "INSERT OR REPLACE INTO digest_cache (date, digest_json, generated_at, status) VALUES (?, ?, ?, ?)",
             (today, _json.dumps(result, ensure_ascii=False), datetime.now().isoformat(), "ready"),
         )
         db.conn.commit()
-        logger.info("digest_precompute_done", date=today, recordings=result.get("total_recordings", 0))
+        logger.info(
+            "digest_precompute_done", date=today, recordings=result.get("total_recordings", 0)
+        )
 
         # Event log: фиксируем завершение дайджеста как lifecycle-событие дня
         try:
             from src.storage.event_log import log_event, STAGE_DIGEST_COMPUTED
+
             log_event(
                 today,
                 STAGE_DIGEST_COMPUTED,
-                details={"recordings": result.get("total_recordings", 0), "sources": result.get("sources_count", 0)},
+                details={
+                    "recordings": result.get("total_recordings", 0),
+                    "sources": result.get("sources_count", 0),
+                },
             )
         except Exception:
             pass
@@ -161,6 +172,7 @@ def _run_compliance_cleanup() -> None:
     """
     try:
         from src.persongraph.compliance import BiometricComplianceManager
+
         db_path = settings.STORAGE_PATH / "reflexio.db"
         mgr = BiometricComplianceManager(db_path)
         report = mgr.run_cleanup()
@@ -177,6 +189,7 @@ def _run_compliance_cleanup() -> None:
 # ──────────────────────────────────────────────
 # Orphan WAV sweep — zero-retention compliance
 # ──────────────────────────────────────────────
+
 
 async def _orphan_sweep(storage_path: Path, interval: int = 300, max_age_hours: int = 1) -> None:
     """
@@ -222,6 +235,7 @@ async def _orphan_sweep(storage_path: Path, interval: int = 300, max_age_hours: 
 #   Позволяет корректно остановить APScheduler при shutdown.
 # ──────────────────────────────────────────────
 
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):  # noqa: ARG001
     """Lifecycle: startup → yield → shutdown."""
@@ -247,6 +261,7 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
         logger.error("wal_verification_failed", error=str(e))
 
     from src.api.middleware.safe_middleware import get_safe_checker
+
     safe_checker = get_safe_checker()
     if safe_checker:
         logger.info("SAFE validation enabled", mode=os.getenv("SAFE_MODE", "audit"))
@@ -254,6 +269,7 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
     # Health monitor
     try:
         from src.monitor.health import periodic_check
+
         asyncio.create_task(periodic_check(interval=300))
         logger.info("health_monitor_started")
     except Exception as e:
@@ -265,12 +281,14 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
 
     # Enrichment workers: async queue для LLM-обогащения
     from src.enrichment.worker import get_enrichment_worker
+
     enrichment_worker = get_enrichment_worker()
     await enrichment_worker.start()
 
     # Ingest workers: принятый по WebSocket аудио обрабатывается в фоне (ASR + enrichment).
     from src.api.routers.websocket import get_ingest_result_registry
     from src.ingest.worker import get_ingest_worker
+
     ingest_worker = get_ingest_worker(get_ingest_result_registry())
     await ingest_worker.start()
 
@@ -310,7 +328,10 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
                 replace_existing=True,
             )
         scheduler.start()
-        logger.info("apscheduler_started", jobs="compliance_cleanup@03:00, digest_precompute@12:00UTC(18:00ALM)")
+        logger.info(
+            "apscheduler_started",
+            jobs="compliance_cleanup@03:00, digest_precompute@12:00UTC(18:00ALM)",
+        )
     except ImportError:
         logger.warning("apscheduler_not_installed", hint="pip install apscheduler")
     except Exception as e:
@@ -372,9 +393,10 @@ app.include_router(memory.router)
 app.include_router(audit.router)
 app.include_router(balance.router)
 app.include_router(health_metrics.router)
-app.include_router(graph.router)       # Sprint 2: Social Graph
+app.include_router(graph.router)  # Sprint 2: Social Graph
 app.include_router(compliance.router)  # Sprint 2: KZ GDPR Compliance
-app.include_router(query.router)       # v1.0: Query Engine (5 unified tools)
+app.include_router(query.router)  # v1.0: Query Engine (5 unified tools)
+app.include_router(commitments.router)  # v0.5: Commitment Extraction (Relationship Guardian)
 
 
 # ── Global Exception Handler ──────────────────
