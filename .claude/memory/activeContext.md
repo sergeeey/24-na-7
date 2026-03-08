@@ -1,13 +1,68 @@
 # Active Context — Reflexio 24/7
 
 ## Последнее обновление
-2026-03-04 (Session: v0.4.0 Visual Memory — DONE)
+2026-03-08 (Session: Commitment Extraction — DONE)
 
 ## Текущая фаза
-**v0.4.0 Visual Memory отправлен** ✅ (commit 318fc22)
-- UIHint + evidence_metadata ✅ | /graph/neighborhood ✅ | EvidenceTraceRow Android ✅
-- Voice enrollment (3 сэмпла) ✅ | SPEAKER_VERIFICATION_ENABLED=true ✅
-- Следующее: Docker health check fix, Whisper memory leak watchdog, v0.5.0 (EWMA adaptation)
+**v0.4.3 Commitment Extraction** ✅ (commits 36edf7d, 6158fa7, 5d97d23, 8cd6f81)
+- IngestWorker (async via asyncio.to_thread) — убрал 502 на WebSocket ✅
+- Speech filter: пороги 0.40→0.35 / 0.30→0.45 для мобильных микрофонов ✅
+- 1 uvicorn worker (2 workers OOM: Whisper 2GB + resemblyzer 0.5GB × 2 > 4GB) ✅
+- PipelineStatusStrip UI компонент для Android ✅
+- **Commitment Extraction**: LLM извлекает обещания (person+action+deadline+context) ✅
+- **Pipeline verified**: speaker→acoustic→transcription→enrichment(+commitments)→persist ✅
+- **WebSocket leak fix**: wsClient.disconnect() в onDestroy() ✅
+- Следующее: тест live commitment extraction, install google-genai на VPS
+
+## Сессия 2026-03-08: Commitment Extraction + Pipeline Fix
+
+### Commitment Extraction (коммит `8cd6f81`):
+Полный pipeline извлечения обещаний из речи:
+- `CommitmentExtracted` модель в schema.py (person, action, deadline, context)
+- Prompt instruction в prompts.py с примерами ("надо маме позвонить")
+- Парсинг commitments в few_shot.py и enricher.py
+- `commitments TEXT` колонка в structured_events (ingest_persist.py)
+- **NEW** `src/api/routers/commitments.py`: `GET /commitments` + `GET /commitments/people`
+- Задеплоен на VPS, endpoints отвечают 200
+
+### Другие исправления:
+- WebSocket disconnect в Android onDestroy() (утечка соединения)
+- Очистка телефона: удалены 2115 старых WAV (545MB) + Room DB
+- APK переустановлен
+- Фундамент оценён: 7/10 (Android 7, Server 8, Data 7, Infra 6, Edge 7)
+
+### Коммиты сессии:
+- `36edf7d` — feat: async ingest pipeline + pipeline status UI + config fixes
+- `6158fa7` — fix: relax speech filter thresholds for mobile microphones
+- `5d97d23` — fix: switch to 1 uvicorn worker to prevent OOM crashes
+- `8cd6f81` — feat: commitment extraction — извлечение обещаний из речи
+
+### Ожидают теста:
+- Произнести в телефон обещание → проверить что LLM извлечёт commitment end-to-end
+
+## Сессия 2026-03-05: WOW Digest + Speaker Fix
+
+### Что сделано (commit 63b2a8f):
+- **WOW Digest** — 3 файла, 663 строк:
+  - `src/summarizer/prompts.py`: `get_wow_digest_prompt()` — один LLM-вызов → verdict + day_map + micro_step
+  - `src/digest/generator.py`: `_detect_novelty_repetition()` (pure SQL), `_generate_wow_block()`, urgency forwarding
+  - `DailySummaryScreen.kt`: VerdictCard, DayMapSection, NoveltyRepetitionChips, MicroStepCard + Confidence UX
+- **Speaker verification fix**: порог 0.65→0.60, re-enrollment 3→13 samples (similarity 0.6→0.87)
+  - profile_id=1f5b2cb6-4ed8-46f0-86e7-521decac8691
+- **DB cleanup**: удалены 286 TV noise recordings (speaker_confidence=0)
+- **Деплой**: git push → VPS git pull → container restart → verified WOW fields in /digest/daily
+- **APK**: собран, установлен на телефон (uninstall + install)
+
+### Ключевые решения:
+- Один LLM-вызов для WOW (вместо отдельных extract_tasks + analyze_emotions) = -1 LLM call
+- Novelty/repetition = pure SQL (zero LLM cost): topics today vs 7-day history
+- Все WOW-поля nullable → backward compatible
+- Auth на VPS = `Authorization: Bearer <key>` (не X-API-Key)
+
+### Незакрытые задачи:
+- Docker health check timeout (cosmetic)
+- v0.5.0: EWMA voice profile adaptation, quarantine mode
+- E2E тесты для WOW digest
 
 ## Сессия 2026-03-04: v0.4.0 Visual Memory
 
@@ -352,7 +407,7 @@ Pixel 9 Pro → VAD (3-сек сегменты) → WebSocket binary
   → SQLite persist + integrity chain
   → P2: WAV удалён на сервере
   → "transcription" + delete_audio:true → P3: WAV удалён на телефоне
-  → Enrichment (Claude Haiku) → topics, emotions, tasks
+  → Enrichment (Claude Haiku) → topics, emotions, tasks, commitments
   → Semantic memory consolidation
   → Digest: CoD (confidence_threshold=0.70, auto_refine=False) + Critic
 ```
@@ -368,6 +423,10 @@ Pixel 9 Pro → VAD (3-сек сегменты) → WebSocket binary
 - `GET /compliance/status` — KZ GDPR TTL статус
 - `DELETE /compliance/erase/{person}` — право забытым
 - `POST /compliance/run-cleanup` — ручная очистка
+
+### Commitments (v0.4.3)
+- `GET /commitments` — обещания/обязательства (фильтр: person, days_back)
+- `GET /commitments/people` — список людей с количеством обещаний
 
 ### Social Graph
 - `GET /graph/persons` — список персон окружения
@@ -432,3 +491,9 @@ Pixel 9 Pro → VAD (3-сек сегменты) → WebSocket binary
 3. **Graph API**: endpoint `/graph/paths` и `/graph/clusters` (нужен kuzu)
 4. **v1.1 features**: English language, Slack integration, team edition
 5. **Docker rebuild**: включить apscheduler в образ + ssl/tls config
+
+## Auto-commit log
+- [2026-03-08 15:42] `8cd6f81`: feat: commitment extraction — извлечение обещаний из речи
+- [2026-03-08 14:47] `5d97d23`: fix: switch to 1 uvicorn worker to prevent OOM crashes
+- [2026-03-08 14:41] `6158fa7`: fix: relax speech filter thresholds for mobile microphones
+- [2026-03-08 14:34] `36edf7d`: feat: async ingest pipeline + pipeline status UI + config fixes

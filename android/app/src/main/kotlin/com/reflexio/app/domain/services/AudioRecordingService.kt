@@ -58,6 +58,9 @@ class AudioRecordingService : Service() {
     // AudioRecord.read() перестаёт получать данные. PARTIAL_WAKE_LOCK держит CPU,
     // но позволяет экрану выключиться — минимальный расход батареи.
     private var wakeLock: PowerManager.WakeLock? = null
+    // ПОЧЕМУ один wsClient на весь сервис: persistent WebSocket — один TCP+TLS handshake
+    // вместо нового на каждый 3-секундный сегмент. Sequential sending через Mutex внутри.
+    private var wsClient: IngestWebSocketClient? = null
 
     companion object {
         private const val SAMPLE_RATE = 16000
@@ -101,7 +104,10 @@ class AudioRecordingService : Service() {
         }
         startForeground(NOTIFICATION_ID, createForegroundNotification())
         acquireWakeLock()
+        val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
+        wsClient = IngestWebSocketClient(baseUrl = baseUrl, apiKey = BuildConfig.SERVER_API_KEY)
         startRecording()
+        // UploadWorker — fallback для offline: подберёт pending записи при появлении сети
         UploadWorker.enqueue(this)
         return START_STICKY
     }
@@ -236,8 +242,11 @@ class AudioRecordingService : Service() {
                 pendingUploadDao?.upsert(PendingUpload(recordingId = id, filePath = file.absolutePath))
                 PipelineDiagnostics.setStage(this@AudioRecordingService, "queued")
             }
-            UploadWorker.enqueue(this)
-            scope.launch { sendAudioToServer(file, id) }
+            // ПОЧЕМУ sendAudioToServer напрямую (не scope.launch):
+            // IngestWebSocketClient внутри использует Mutex — sequential отправка.
+            // scope.launch создавал 10+ параллельных WebSocket → timeout → потеря данных.
+            // UploadWorker подберёт pending записи если онлайн-отправка не прошла.
+            sendAudioToServer(file, id)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to insert recording", e)
         }
@@ -292,10 +301,9 @@ class AudioRecordingService : Service() {
     }
 
     private suspend fun sendAudioToServer(file: File, recordingId: Long) {
-        val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
-        val wsClient = IngestWebSocketClient(baseUrl = baseUrl, apiKey = BuildConfig.SERVER_API_KEY)
+        val client = wsClient ?: return
         PipelineDiagnostics.setStage(this, "uploaded")
-        val result = wsClient.sendSegment(file) { stage ->
+        val result = client.sendSegment(file) { stage ->
             PipelineDiagnostics.setStage(this@AudioRecordingService, stage)
         }
         withContext(Dispatchers.IO) {
@@ -389,6 +397,10 @@ class AudioRecordingService : Service() {
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+        // ПОЧЕМУ disconnect здесь: без этого WebSocket висит после остановки сервиса,
+        // OkHttp thread pool не завершается, утекает TCP соединение.
+        wsClient?.disconnect()
+        wsClient = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         scope.coroutineContext[Job]?.cancel()
