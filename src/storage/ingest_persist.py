@@ -451,10 +451,15 @@ def persist_ws_transcription(
                 except (TypeError, ValueError):
                     segments_str = None
 
+            # ПОЧЕМУ speaker_* в INSERT: до этого фикса verification логировалась,
+            # но не сохранялась — все записи имели speaker_confidence=0, is_user=1.
+            speaker_confidence = result.get("speaker_confidence", 0.0)
+            is_user = 1 if result.get("is_user", True) else 0
+            speaker_id = result.get("speaker_id", 0)
             db.execute(
                 """
-                INSERT INTO transcriptions (id, ingest_id, text, language, language_probability, duration, segments, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO transcriptions (id, ingest_id, text, language, language_probability, duration, segments, created_at, speaker_id, is_user, speaker_confidence)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     transcription_id,
@@ -465,6 +470,9 @@ def persist_ws_transcription(
                     duration,
                     segments_str,
                     datetime.now(timezone.utc).isoformat(),
+                    speaker_id,
+                    is_user,
+                    speaker_confidence,
                 ),
             )
         logger.info(
