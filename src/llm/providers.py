@@ -1,6 +1,7 @@
 """
 LLM Providers — интеграция с OpenAI и Anthropic.
 """
+
 import os
 import time
 from typing import Dict, Any, Optional
@@ -8,10 +9,12 @@ from enum import Enum
 
 try:
     from src.utils.logging import setup_logging, get_logger
+
     setup_logging()
     logger = get_logger("llm.providers")
 except Exception:
     import logging
+
     logger = logging.getLogger("llm.providers")
 
 from src.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
@@ -41,6 +44,7 @@ _google_circuit_breaker = CircuitBreaker(
 
 class LLMProvider(str, Enum):
     """Доступные LLM провайдеры."""
+
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GOOGLE = "google"  # Gemini
@@ -48,18 +52,18 @@ class LLMProvider(str, Enum):
 
 class LLMClient:
     """Базовый клиент для LLM."""
-    
+
     def __init__(self, provider: LLMProvider, model: str, temperature: float = 0.3):
         self.provider = provider
         self.model = model
         self.temperature = temperature
         self.api_key = None
         self.client = None
-    
+
     def call(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """
         Вызывает LLM с промптом.
-        
+
         Returns:
             Ответ с text, tokens_used, latency_ms
         """
@@ -74,21 +78,25 @@ class OpenAIClient(LLMClient):
         # ПОЧЕМУ: pydantic-settings не экспортирует в os.environ
         try:
             from src.utils.config import settings as _s
+
             self.api_key = getattr(_s, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY")
         except Exception:
             self.api_key = os.getenv("OPENAI_API_KEY")
-        
+
         if not self.api_key:
             logger.warning("OPENAI_API_KEY not set")
             return
-        
+
         try:
             import openai
+
             self.client = openai.OpenAI(api_key=self.api_key)
         except ImportError:
             logger.error("openai library not installed. Run: pip install openai")
-    
-    def call(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1000, **kwargs) -> Dict[str, Any]:
+
+    def call(
+        self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1000, **kwargs
+    ) -> Dict[str, Any]:
         """Вызывает OpenAI API через circuit breaker."""
         if not self.client:
             return {
@@ -97,10 +105,10 @@ class OpenAIClient(LLMClient):
                 "tokens_used": 0,
                 "latency_ms": 0,
             }
-        
+
         def _call_openai() -> Dict[str, Any]:
             start_time = time.time()
-            
+
             # Логирование reasoning-трассировки (без дублирования event — structlog использует первый аргумент как event)
             reasoning_trace = {
                 "provider": "openai",
@@ -112,13 +120,14 @@ class OpenAIClient(LLMClient):
                 "timestamp": time.time(),
             }
             logger.info("llm_call_started", **reasoning_trace)
-            
+
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
             try:
                 from src.utils.config import settings as _cfg
+
                 timeout = kwargs.pop("timeout", getattr(_cfg, "LLM_TIMEOUT_SEC", 120.0))
             except Exception:
                 timeout = kwargs.pop("timeout", 120.0)
@@ -128,26 +137,28 @@ class OpenAIClient(LLMClient):
                 temperature=self.temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
-                **kwargs
+                **kwargs,
             )
-            
+
             latency_ms = (time.time() - start_time) * 1000
             response_text = response.choices[0].message.content
-            
+
             # Логирование reasoning-трассировки (ответ)
-            reasoning_trace.update({
-                "response_length": len(response_text),
-                "tokens_used": response.usage.total_tokens if response.usage else 0,
-                "latency_ms": round(latency_ms, 2),
-                "status": "success",
-            })
-            
+            reasoning_trace.update(
+                {
+                    "response_length": len(response_text),
+                    "tokens_used": response.usage.total_tokens if response.usage else 0,
+                    "latency_ms": round(latency_ms, 2),
+                    "status": "success",
+                }
+            )
+
             logger.info(
                 "llm_call_completed",
                 **reasoning_trace,
-                response_preview=response_text[:200] if response_text else ""
+                response_preview=response_text[:200] if response_text else "",
             )
-            
+
             return {
                 "text": response_text,
                 "tokens_used": response.usage.total_tokens if response.usage else 0,
@@ -155,7 +166,7 @@ class OpenAIClient(LLMClient):
                 "model": self.model,
                 "reasoning_trace": reasoning_trace,  # Добавляем reasoning trace в ответ
             }
-        
+
         try:
             return _openai_circuit_breaker.call(_call_openai)
         except CircuitBreakerError as e:
@@ -183,21 +194,25 @@ class AnthropicClient(LLMClient):
         super().__init__(LLMProvider.ANTHROPIC, model, temperature)
         try:
             from src.utils.config import settings as _s
+
             self.api_key = getattr(_s, "ANTHROPIC_API_KEY", None) or os.getenv("ANTHROPIC_API_KEY")
         except Exception:
             self.api_key = os.getenv("ANTHROPIC_API_KEY")
-        
+
         if not self.api_key:
             logger.warning("ANTHROPIC_API_KEY not set")
             return
-        
+
         try:
             import anthropic
+
             self.client = anthropic.Anthropic(api_key=self.api_key)
         except ImportError:
             logger.error("anthropic library not installed. Run: pip install anthropic")
-    
-    def call(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1000, **kwargs) -> Dict[str, Any]:
+
+    def call(
+        self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1000, **kwargs
+    ) -> Dict[str, Any]:
         """Вызывает Anthropic API."""
         if not self.client:
             return {
@@ -206,9 +221,9 @@ class AnthropicClient(LLMClient):
                 "tokens_used": 0,
                 "latency_ms": 0,
             }
-        
+
         start_time = time.time()
-        
+
         # Логирование reasoning-трассировки
         reasoning_trace = {
             "provider": "anthropic",
@@ -219,12 +234,13 @@ class AnthropicClient(LLMClient):
             "max_tokens": max_tokens,
             "timestamp": time.time(),
         }
-        
+
         logger.info("llm_call_started", **reasoning_trace)
 
         try:
             try:
                 from src.utils.config import settings as _cfg
+
                 timeout = kwargs.pop("timeout", getattr(_cfg, "LLM_TIMEOUT_SEC", 120.0))
             except Exception:
                 timeout = kwargs.pop("timeout", 120.0)
@@ -235,30 +251,34 @@ class AnthropicClient(LLMClient):
                 system=system_prompt or "",
                 messages=[{"role": "user", "content": prompt}],
                 timeout=timeout,
-                **kwargs
+                **kwargs,
             )
-            
+
             latency_ms = (time.time() - start_time) * 1000
-            
+
             text = response.content[0].text if response.content else ""
-            
+
             # Логирование reasoning-трассировки (ответ)
-            reasoning_trace.update({
-                "response_length": len(text),
-                "tokens_used": response.usage.input_tokens + response.usage.output_tokens if response.usage else 0,
-                "latency_ms": round(latency_ms, 2),
-                "status": "success",
-            })
-            
-            logger.info(
-                "llm_call_completed",
-                **reasoning_trace,
-                response_preview=text[:200] if text else ""
+            reasoning_trace.update(
+                {
+                    "response_length": len(text),
+                    "tokens_used": response.usage.input_tokens + response.usage.output_tokens
+                    if response.usage
+                    else 0,
+                    "latency_ms": round(latency_ms, 2),
+                    "status": "success",
+                }
             )
-            
+
+            logger.info(
+                "llm_call_completed", **reasoning_trace, response_preview=text[:200] if text else ""
+            )
+
             return {
                 "text": text,
-                "tokens_used": response.usage.input_tokens + response.usage.output_tokens if response.usage else 0,
+                "tokens_used": response.usage.input_tokens + response.usage.output_tokens
+                if response.usage
+                else 0,
                 "latency_ms": round(latency_ms, 2),
                 "model": self.model,
                 "reasoning_trace": reasoning_trace,
@@ -289,7 +309,13 @@ class GoogleGeminiClient(LLMClient):
         super().__init__(LLMProvider.GOOGLE, model, temperature)
         try:
             from src.utils.config import settings as _s
-            self.api_key = getattr(_s, "GOOGLE_API_KEY", None) or getattr(_s, "GEMINI_API_KEY", None) or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+
+            self.api_key = (
+                getattr(_s, "GOOGLE_API_KEY", None)
+                or getattr(_s, "GEMINI_API_KEY", None)
+                or os.getenv("GOOGLE_API_KEY")
+                or os.getenv("GEMINI_API_KEY")
+            )
         except Exception:
             self.api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 
@@ -301,11 +327,14 @@ class GoogleGeminiClient(LLMClient):
             # ПОЧЕМУ google.genai: старый google.generativeai задепрекейтен Google (2025).
             # Новый SDK: from google import genai → client = genai.Client(api_key=...).
             from google import genai
+
             self.client = genai.Client(api_key=self.api_key)
         except ImportError:
             logger.error("google-genai library not installed. Run: pip install google-genai")
 
-    def call(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1000, **kwargs) -> Dict[str, Any]:
+    def call(
+        self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1000, **kwargs
+    ) -> Dict[str, Any]:
         """Вызывает Google Gemini API через новый google.genai SDK."""
         if not self.client:
             return {
@@ -325,6 +354,7 @@ class GoogleGeminiClient(LLMClient):
             # ПОЧЕМУ contents=full_prompt: новый SDK принимает строку напрямую,
             # generation_config через types.GenerateContentConfig.
             from google.genai import types
+
             response = self.client.models.generate_content(
                 model=self.model,
                 contents=full_prompt,
@@ -378,8 +408,15 @@ class CascadeLLMClient(LLMClient):
         self.clients = clients
 
     def call(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Dict[str, Any]:
-        """Перебирает провайдеров: первый успешный ответ — победитель."""
+        """Перебирает провайдеров: первый успешный ответ — победитель.
+
+        validate_fn (kwargs): опциональная функция валидации ответа.
+        Если validate_fn(text) выбрасывает исключение — провайдер считается
+        неудачным и cascade пробует следующего. Это позволяет отсеивать
+        невалидный JSON от Gemini без хардкода в cascade.
+        """
         errors = []
+        validate_fn = kwargs.pop("validate_fn", None)
 
         for client in self.clients:
             provider_name = client.provider.value
@@ -396,6 +433,22 @@ class CascadeLLMClient(LLMClient):
                     )
                     errors.append(f"{provider_name}: {err_msg}")
                     continue
+
+                # ПОЧЕМУ validate_fn здесь: cascade не знает про JSON,
+                # но вызывающий код может передать валидатор.
+                # Невалидный ответ → пробуем следующего провайдера вместо
+                # молчаливого возврата пустышки.
+                if validate_fn:
+                    try:
+                        validate_fn(result["text"])
+                    except Exception as ve:
+                        logger.warning(
+                            "cascade_provider_validation_failed",
+                            provider=provider_name,
+                            error=str(ve),
+                        )
+                        errors.append(f"{provider_name}: validation failed: {ve}")
+                        continue
 
                 # Успех — логируем кто ответил
                 logger.info(
@@ -442,7 +495,10 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
     # Теперь читаем из settings (pydantic) с fallback на os.getenv.
     try:
         from src.utils.config import settings as _settings
-        provider_name = getattr(_settings, "LLM_PROVIDER", None) or os.getenv("LLM_PROVIDER", "openai")
+
+        provider_name = getattr(_settings, "LLM_PROVIDER", None) or os.getenv(
+            "LLM_PROVIDER", "openai"
+        )
         provider_name = provider_name.lower()
 
         model_attr = f"LLM_MODEL_{role.upper()}"
@@ -464,7 +520,9 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
 
         temp_attr = f"LLM_TEMPERATURE_{role.upper()}"
         default_temp = 0.3 if role == "actor" else 0.0
-        temperature = float(getattr(_settings, temp_attr, None) or os.getenv(temp_attr, str(default_temp)))
+        temperature = float(
+            getattr(_settings, temp_attr, None) or os.getenv(temp_attr, str(default_temp))
+        )
     except Exception:
         # Fallback если settings недоступны
         provider_name = os.getenv("LLM_PROVIDER", "openai").lower()
@@ -473,9 +531,13 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
             "anthropic": "claude-haiku-4-5-20251001" if role == "actor" else "claude-sonnet-4-6",
             "google": "gemini-2.5-flash" if role == "actor" else "gemini-2.5-flash",
         }
-        model = os.getenv(f"LLM_MODEL_{role.upper()}", default_models.get(provider_name, "gpt-4o-mini"))
-        temperature = float(os.getenv(f"LLM_TEMPERATURE_{role.upper()}", "0.3" if role == "actor" else "0.0"))
-    
+        model = os.getenv(
+            f"LLM_MODEL_{role.upper()}", default_models.get(provider_name, "gpt-4o-mini")
+        )
+        temperature = float(
+            os.getenv(f"LLM_TEMPERATURE_{role.upper()}", "0.3" if role == "actor" else "0.0")
+        )
+
     try:
         if provider_name == "openai":
             return OpenAIClient(model=model, temperature=temperature)
@@ -489,10 +551,13 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
             cascade_order_str = ""
             try:
                 from src.utils.config import settings as _cascade_settings
+
                 cascade_order_str = getattr(_cascade_settings, "LLM_CASCADE_ORDER", "") or ""
             except Exception:
                 pass
-            cascade_order_str = cascade_order_str or os.getenv("LLM_CASCADE_ORDER", "google,anthropic,openai")
+            cascade_order_str = cascade_order_str or os.getenv(
+                "LLM_CASCADE_ORDER", "google,anthropic,openai"
+            )
 
             cascade_defaults = {
                 "google": ("gemini-2.5-flash", GoogleGeminiClient),
@@ -518,10 +583,3 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
     except Exception as e:
         logger.error("failed_to_create_llm_client", error=str(e))
         return None
-
-
-
-
-
-
-

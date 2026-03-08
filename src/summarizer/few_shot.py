@@ -120,9 +120,22 @@ def generate_structured_output(
         f"\n\nТип действия: {action_type}\nСоздай структурированный вывод для этого типа действия."
     )
 
+    # ПОЧЕМУ validate_fn: Gemini часто возвращает обрезанный JSON (Unterminated string).
+    # Cascade считает это "success" (текст непустой), но enrichment получает пустышку.
+    # validate_fn заставляет cascade попробовать следующего провайдера (Haiku) при битом JSON.
+    def _validate_json_response(text: str) -> None:
+        """Проверяет что LLM вернул парсируемый JSON."""
+        clean = text
+        if "```json" in clean:
+            clean = clean.split("```json")[1].split("```")[0].strip()
+        elif "```" in clean:
+            clean = clean.split("```")[1].split("```")[0].strip()
+        json.loads(clean)
+
     response = client.call(
         prompt,
         system_prompt="Ты — AI-ассистент для анализа текста и генерации структурированного вывода.",
+        validate_fn=_validate_json_response,
     )
 
     if response.get("error"):
