@@ -17,10 +17,10 @@ services:
       context: .
       dockerfile: Dockerfile.api
     container_name: reflexio-api
-    # ПОЧЕМУ 2 workers: 1 worker → Whisper занимает весь event loop; 2 → REST отвечает.
-    # ПОЧЕМУ semaphore(1) в audio_processing.py: только 1 транскрипция одновременно.
-    # cpu_threads=2 в WhisperModel → ctranslate2 max 2 CPU потока.
-    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    # ПОЧЕМУ 1 worker: IngestWorker обрабатывает аудио через asyncio.to_thread(),
+    # event loop не блокируется. 2 workers × (Whisper 2GB + resemblyzer 0.5GB) = 5GB > 4GB лимит → OOM.
+    # С 1 worker всё помещается в 4GB и async pipeline отвечает мгновенно.
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-keep-alive", "120"]
     # ПОЧЕМУ только localhost: Caddy стоит снаружи и проксирует HTTPS→HTTP.
     # Открывать 8000 наружу не нужно — только Caddy должен видеть API.
     ports:
