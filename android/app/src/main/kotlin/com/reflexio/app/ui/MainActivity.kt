@@ -56,6 +56,7 @@ import com.reflexio.app.ui.components.PipelineStatusStrip
 import com.reflexio.app.ui.components.RecordingFab
 import com.reflexio.app.ui.screens.AnalyticsScreen
 import com.reflexio.app.ui.screens.AskScreen
+import com.reflexio.app.ui.screens.CommitmentsScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
 import com.reflexio.app.ui.screens.VoiceEnrollmentScreen
 import com.reflexio.app.ui.screens.SplashScreen
@@ -66,7 +67,7 @@ private enum class Screen(val title: String, val icon: ImageVector) {
     ASK("Спросить", Icons.Default.Search),        // One Interface — первый таб
     HOME("Запись", Icons.Default.Home),
     DIGEST("Итог дня", Icons.Default.DateRange),
-    ANALYTICS("Аналитика", Icons.Default.Insights),
+    COMMITMENTS("Обещания", Icons.Default.Insights),
     VOICE("Голос", Icons.Default.RecordVoiceOver),
 }
 
@@ -258,9 +259,8 @@ fun RecordingApp(
                     baseHttpUrl = baseHttpUrl,
                     modifier = Modifier.padding(padding),
                 )
-                3 -> AnalyticsScreen(
-                    onBack = { selectedTab = 1 },
-                    onOpenDailySummary = { selectedTab = 2 },
+                3 -> CommitmentsScreen(
+                    baseHttpUrl = baseHttpUrl,
                     modifier = Modifier.padding(padding),
                 )
                 4 -> VoiceEnrollmentScreen(
