@@ -1,7 +1,7 @@
 """Tests for WebSocket /ws/ingest endpoint."""
 import base64
 from io import BytesIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import wave
 
 from fastapi.testclient import TestClient
@@ -19,11 +19,25 @@ def _valid_wav_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def _mock_worker_that_emits_transcription(registry, text: str):
+    """Возвращает мок IngestWorker, который сразу кладёт результат в очередь соединения."""
+    def submit(task):
+        q = registry.get(task.connection_id)
+        if q:
+            q.put_nowait({"type": "transcription", "text": text, "language": "en"})
+
+    worker = MagicMock()
+    worker.submit = submit
+    return worker
+
+
 def test_websocket_ingest_accept_and_receive_binary():
     """WebSocket /ws/ingest accepts connection and responds to binary WAV."""
     client = TestClient(app)
-    with patch("src.api.routers.websocket.transcribe_audio") as mock_transcribe:
-        mock_transcribe.return_value = {"text": "hello team meeting", "language": "en"}
+    with patch("src.api.routers.websocket.get_ingest_worker") as m:
+        m.side_effect = lambda registry: _mock_worker_that_emits_transcription(
+            registry, "hello team meeting"
+        )
         with client.websocket_connect("/ws/ingest") as websocket:
             websocket.send_bytes(_valid_wav_bytes())
             msg = websocket.receive_json()
@@ -38,8 +52,10 @@ def test_websocket_ingest_accept_and_receive_binary():
 def test_websocket_ingest_json_audio():
     """WebSocket /ws/ingest accepts JSON with type audio and base64 data."""
     client = TestClient(app)
-    with patch("src.api.routers.websocket.transcribe_audio") as mock_transcribe:
-        mock_transcribe.return_value = {"text": "test project update", "language": "en"}
+    with patch("src.api.routers.websocket.get_ingest_worker") as m:
+        m.side_effect = lambda registry: _mock_worker_that_emits_transcription(
+            registry, "test project update"
+        )
         with client.websocket_connect("/ws/ingest") as websocket:
             payload = base64.b64encode(_valid_wav_bytes()).decode()
             websocket.send_text('{"type": "audio", "data": "' + payload + '"}')

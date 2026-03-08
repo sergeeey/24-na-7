@@ -1052,10 +1052,12 @@ def test_llm_providers_anthropic_client_no_key():
     import os
     try:
         from src.llm.providers import AnthropicClient
+        from src.utils.config import settings
     except ImportError:
         pytest.skip("llm not available")
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}, clear=False):
-        client = AnthropicClient(model="claude-3-haiku-20240307")
+        with patch.object(settings, "ANTHROPIC_API_KEY", None):
+            client = AnthropicClient(model="claude-3-haiku-20240307")
     assert client is not None
     assert client.client is None or hasattr(client, "call")
 

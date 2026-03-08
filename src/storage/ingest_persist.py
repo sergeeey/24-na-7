@@ -367,6 +367,9 @@ def persist_ws_transcription(
     result: dict[str, Any],
 ) -> Optional[str]:
     """Сохраняет результат транскрипции WebSocket в ingest_queue и transcriptions."""
+    if not result or not isinstance(result, dict):
+        logger.warning("persist_ws_transcription_invalid_result", file_id=file_id, result_type=type(result).__name__)
+        return None
     if not db_path.parent.exists():
         db_path.parent.mkdir(parents=True, exist_ok=True)
     db = get_reflexio_db(db_path)

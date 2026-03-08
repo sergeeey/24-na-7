@@ -32,6 +32,17 @@ from src.api.middleware.permission_gate import (
 from src.utils.date_utils import resolve_date_range
 from src.utils.logging import get_logger
 
+
+def _safe_json_list(value: Optional[str], default: Optional[list] = None) -> list:
+    """Парсит JSON-массив из БД. При битых данных возвращает default ([]), не ломает запрос."""
+    default = default if default is not None else []
+    try:
+        parsed = json.loads(value or "[]")
+        return parsed if isinstance(parsed, list) else default
+    except json.JSONDecodeError:
+        return default
+
+
 logger = get_logger("api.query")
 router = APIRouter(prefix="/query", tags=["query"])
 
@@ -106,6 +117,11 @@ async def query_events(
                     if any(e in str(r.get("emotions_json", "")).lower() for e in emotion_list)
                 ]
 
+            # Fallback: за сегодня без событий — показать сырые транскрипции
+            # (пока обогащение не отработало или vec недоступен)
+            if not results and dr.contains_now():
+                results = _transcriptions_fallback(db, start_iso, end_iso, limit)
+
             # Ограничиваем
             results = results[:limit]
             evidence_ids = [str(r.get("id", "")) for r in results]
@@ -117,21 +133,21 @@ async def query_events(
             #   enrichment_confidence — насколько LLM уверена в обогащении (качество данных)
             #   Пользователь должен видеть цвет настроения, не уверенность модели.
             _sentiment_to_score = {"positive": 1.0, "neutral": 0.5, "negative": 0.0}
-            evidence_metadata = [
-                {
+            evidence_metadata = []
+            for r in results:
+                topics_list = _safe_json_list(r.get("topics_json"), [""])
+                evidence_metadata.append({
                     "id": str(r.get("id", "")),
                     "timestamp": r.get("created_at", ""),
                     "sentiment_score": _sentiment_to_score.get(
                         r.get("sentiment", "neutral"), 0.5
                     ),
-                    "top_topic": (json.loads(r.get("topics_json") or "[]") or [""])[0],
-                }
-                for r in results
-            ]
+                    "top_topic": (topics_list or [""])[0],
+                })
 
             # UIHint: если есть задачи — ACTION_LIST, иначе TIMELINE
             any_tasks = any(
-                json.loads(r.get("tasks", "[]") or "[]") for r in results
+                _safe_json_list(r.get("tasks")) for r in results
             )
             ui_hint = UIHint.ACTION_LIST if any_tasks else UIHint.TIMELINE
 
@@ -185,24 +201,45 @@ async def get_digest(
             )
 
             if not row or row["status"] != "ready":
-                return ToolResult.empty(
-                    "get_digest", f"No digest for {target_date}"
-                ).to_api_dict()
-
-            digest_data = _json.loads(row["digest_json"])
-
-            # Lineage — source events
-            sources = db.fetchall(
-                "SELECT transcription_id, ingest_id FROM digest_sources WHERE date = ?",
-                (target_date,),
-            )
-            evidence_ids = [s["transcription_id"] for s in sources if s["transcription_id"]]
-            conf = single_confidence(len(evidence_ids), base_score=0.92)
-
-            digest_data["_lineage"] = {
-                "source_count": len(evidence_ids),
-                "date": target_date,
-            }
+                # Генерация на лету: кеш пуст или ещё не готов (до 18:00)
+                try:
+                    from pathlib import Path
+                    from src.digest.generator import DigestGenerator
+                    db_path = Path(settings.STORAGE_PATH) / "reflexio.db"
+                    generator = DigestGenerator(db_path)
+                    target_date_obj = dr.start.date()
+                    digest_data = generator.get_daily_digest_json(target_date_obj)
+                    if not digest_data.get("total_recordings") and not digest_data.get("summary_text"):
+                        return ToolResult.empty(
+                            "get_digest", f"Нет записей за {target_date}."
+                        ).to_api_dict()
+                    evidence_ids = []
+                    conf = single_confidence(
+                        digest_data.get("total_recordings", 0), base_score=0.92
+                    )
+                    digest_data["_lineage"] = {
+                        "source_count": digest_data.get("total_recordings", 0),
+                        "date": target_date,
+                        "live": True,
+                    }
+                except Exception as live_err:
+                    logger.warning("get_digest_live_failed", error=str(live_err))
+                    return ToolResult.empty(
+                        "get_digest", f"Нет записей за {target_date}."
+                    ).to_api_dict()
+            else:
+                digest_data = _json.loads(row["digest_json"])
+                # Lineage — source events из кеша
+                sources = db.fetchall(
+                    "SELECT transcription_id, ingest_id FROM digest_sources WHERE date = ?",
+                    (target_date,),
+                )
+                evidence_ids = [s["transcription_id"] for s in sources if s["transcription_id"]]
+                conf = single_confidence(len(evidence_ids), base_score=0.92)
+                digest_data["_lineage"] = {
+                    "source_count": len(evidence_ids),
+                    "date": target_date,
+                }
 
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -442,3 +479,35 @@ def _lexical_search(db, q: str, limit: int) -> list[dict]:
         (f"%{q}%", f"%{q}%", limit),
     )
     return [dict(r) for r in rows]
+
+
+def _transcriptions_fallback(db, start_iso: str, end_iso: str, limit: int) -> list[dict]:
+    """
+    Fallback: записи из transcriptions за период, когда structured_events пуст
+    (например до обогащения или при отключённом vec). Формат как у событий.
+    """
+    try:
+        rows = db.fetchall(
+            """
+            SELECT id, text, created_at
+            FROM transcriptions
+            WHERE created_at BETWEEN ? AND ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (start_iso, end_iso, limit),
+        )
+        return [
+            {
+                "id": r["id"],
+                "text": r["text"] or "",
+                "created_at": r["created_at"] or "",
+                "topics_json": "[]",
+                "emotions_json": "[]",
+                "sentiment": "neutral",
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.debug("transcriptions_fallback_failed", error=str(e))
+        return []

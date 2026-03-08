@@ -52,6 +52,7 @@ import com.reflexio.app.BuildConfig
 import com.reflexio.app.data.db.RecordingDatabase
 import com.reflexio.app.domain.services.AudioRecordingService
 import com.reflexio.app.ui.components.BalanceWheelVisualizer
+import com.reflexio.app.ui.components.PipelineStatusStrip
 import com.reflexio.app.ui.components.RecordingFab
 import com.reflexio.app.ui.screens.AnalyticsScreen
 import com.reflexio.app.ui.screens.AskScreen
@@ -317,6 +318,14 @@ private fun HomeScreen(
                 .fillMaxWidth()
                 .weight(1f),
         )
+        Text(
+            text = "Оценка по вашим записям за день (0–10). Чем выше — тем чаще тема звучала.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+
+        PipelineStatusStrip(baseHttpUrl = baseHttpUrl)
 
         Spacer(modifier = Modifier.height(8.dp))
 

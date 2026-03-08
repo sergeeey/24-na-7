@@ -91,6 +91,65 @@ async def get_ingest_status(file_id: str):
     }
 
 
+@router.get("/pipeline-status")
+async def get_pipeline_status():
+    """
+    Диагностика пайплайна: запись → отправка → сервер → события.
+    Для контролируемого теста: после одной записи проверить, вырос ли transcriptions_today.
+    """
+    from src.utils.date_utils import resolve_date_range
+    from src.storage.db import get_reflexio_db
+
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    if not db_path.exists():
+        return {
+            "server_ok": True,
+            "transcriptions_today": 0,
+            "transcriptions_total": 0,
+            "last_transcription_at": None,
+            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0},
+        }
+
+    db = get_reflexio_db(db_path)
+    dr = resolve_date_range()
+    start_iso, end_iso = dr.sql_range()
+
+    try:
+        today_count = db.fetchone(
+            "SELECT COUNT(*) FROM transcriptions WHERE created_at BETWEEN ? AND ?",
+            (start_iso, end_iso),
+        )[0]
+        total = db.fetchone("SELECT COUNT(*) FROM transcriptions")[0]
+        last_row = db.fetchone(
+            "SELECT created_at FROM transcriptions ORDER BY created_at DESC LIMIT 1"
+        )
+        last_at = last_row[0] if last_row and last_row[0] else None
+        q = {
+            "pending": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'pending'")[0],
+            "processed": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'processed'")[0],
+            "error": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'error'")[0],
+            "filtered": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'filtered'")[0],
+        }
+    except Exception as e:
+        logger.warning("pipeline_status_failed", error=str(e))
+        return {
+            "server_ok": True,
+            "transcriptions_today": 0,
+            "transcriptions_total": 0,
+            "last_transcription_at": None,
+            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0},
+            "_error": str(e),
+        }
+
+    return {
+        "server_ok": True,
+        "transcriptions_today": today_count,
+        "transcriptions_total": total,
+        "last_transcription_at": last_at,
+        "ingest_queue": q,
+    }
+
+
 
 
 

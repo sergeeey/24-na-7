@@ -79,10 +79,19 @@ async def get_metrics(request: Request, response: Response):
             db = get_reflexio_db(db_path)
             transcriptions_count = db.fetchone("SELECT COUNT(*) FROM transcriptions")[0]
             facts_count = db.fetchone("SELECT COUNT(*) FROM facts")[0]
+            # Статусы очереди: почему 0 транскрипций при наличии WAV в uploads
+            queue_pending = db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'pending'")[0]
+            queue_processed = db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'processed'")[0]
+            queue_error = db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'error'")[0]
+            queue_filtered = db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'filtered'")[0]
 
             metrics["database"] = {
                 "transcriptions_count": transcriptions_count,
                 "facts_count": facts_count,
+                "ingest_queue_pending": queue_pending,
+                "ingest_queue_processed": queue_processed,
+                "ingest_queue_error": queue_error,
+                "ingest_queue_filtered": queue_filtered,
             }
         except Exception:
             metrics["database"] = {"status": "error"}

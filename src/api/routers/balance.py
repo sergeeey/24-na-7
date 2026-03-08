@@ -1,6 +1,4 @@
 """Balance wheel API."""
-from __future__ import annotations
-
 from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response

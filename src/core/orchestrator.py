@@ -263,10 +263,14 @@ def synthesize_response(
     if confidence.speculative_warning:
         parts.append(f"⚠️ {confidence.speculative_warning}")
 
-    # Если нет данных
+    # Если нет данных — единое сообщение с confidence.speculative_warning
     valid = [r for r in results if r.data is not None and r.error is None]
     if not valid:
-        return ("Данных по этому запросу не найдено. Попробуйте изменить период или формулировку.", None)
+        return (
+            confidence.speculative_warning
+            or "Данных по этому запросу не найдено. Попробуйте изменить период или формулировку.",
+            None,
+        )
 
     # ПОЧЕМУ приоритет digest > person > events:
     # Дайджест содержит осмысленный verdict от LLM, это самый rich ответ.

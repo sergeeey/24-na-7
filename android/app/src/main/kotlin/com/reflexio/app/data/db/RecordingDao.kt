@@ -25,4 +25,10 @@ interface RecordingDao {
 
     @Query("SELECT * FROM recordings WHERE id = :id LIMIT 1")
     suspend fun getById(id: Long): Recording?
+
+    @Query("SELECT COUNT(*) FROM recordings WHERE status = :status")
+    suspend fun getCountByStatus(status: String): Int
+
+    @Query("SELECT createdAt FROM recordings WHERE status = 'processed' ORDER BY createdAt DESC LIMIT 1")
+    suspend fun getLastProcessedCreatedAt(): Long?
 }

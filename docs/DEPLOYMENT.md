@@ -254,6 +254,26 @@ docker compose up -d --build
 docker compose exec api python -c "import requests; requests.get('http://localhost:8000/health')"
 ```
 
+### Обновление Caddy на VPS (исправление 404 для reflexio247.duckdns.org)
+
+Если приложение показывает «сервер 404», обновите Caddyfile на сервере (в нём должны быть оба домена: `reflexio.duckdns.org` и `reflexio247.duckdns.org`).
+
+**С ПК (PowerShell, Windows):**
+```powershell
+cd "D:\24 na 7"
+$env:REFLEXIO_SERVER = "root@reflexio247.duckdns.org"   # или root@IP_СЕРВЕРА
+.\scripts\update_caddy_on_server.ps1
+```
+
+**С ПК (Bash / WSL / Linux):**
+```bash
+cd /path/to/project
+export REFLEXIO_SERVER=root@reflexio247.duckdns.org
+./scripts/update_caddy_on_server.sh
+```
+
+Требуется SSH-доступ к серверу (ключ или пароль).
+
 ---
 
 ## 🌍 Альтернативные платформы
@@ -327,6 +347,37 @@ DB_BACKEND=sqlite docker compose up -d
 # Или проверка Supabase
 python src/storage/supabase_client.py
 ```
+
+---
+
+## ⏱ Чеклист: приложение и сервер работают «как часики»
+
+Если приложение на телефоне показывает 404 или «сервер недоступен», пройди по шагам ниже.
+
+### 1. Сервер (VPS)
+
+- **Код:** на VPS задеплоена актуальная версия бэкенда (с маршрутом `GET /ingest/pipeline-status` и async ingest).
+- **Caddy:** в Caddyfile должны быть оба домена: `reflexio.duckdns.org` и `reflexio247.duckdns.org`. Применить:
+  ```powershell
+  $env:REFLEXIO_SERVER = "root@reflexio247.duckdns.org"
+  .\scripts\update_caddy_on_server.ps1
+  ```
+  При первом SSH ввести `yes` при запросе ключа.
+- **Проверка:**  
+  `curl -s -o /dev/null -w "%{http_code}" https://reflexio247.duckdns.org/health` → 200.  
+  С заголовцем Authorization (если требуется):  
+  `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer YOUR_KEY" https://reflexio247.duckdns.org/ingest/pipeline-status` → 200.
+
+### 2. Телефон
+
+- Установить последнюю сборку: из корня проекта `cd android && .\gradlew installDebug` (устройство по USB) или скрипт из `scripts/`.
+- В настройках приложения: URL сервера = `https://reflexio247.duckdns.org`, указан API key (PROD_API_KEY в `local.properties` при сборке).
+- Открыть приложение → полоска пайплайна: после «Проверить» или после отправки записи статус «сервер» должен стать зелёным.
+
+### 3. Проверка цикла
+
+- Сделать одну тестовую запись, дождаться этапа «received» и обработки.
+- В «Итог дня» или «Спроси» должны появиться данные (если есть записи за сегодня и бэкенд пишет в ту же БД).
 
 ---
 

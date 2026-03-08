@@ -46,33 +46,45 @@ def test_full_ingest_pipeline(client, test_db):
             assert "transcription" in transcribe_data
 
 
+def _mock_worker_emit(registry, text: str):
+    from unittest.mock import MagicMock
+    def submit(task):
+        q = registry.get(task.connection_id)
+        if q:
+            q.put_nowait({
+                "type": "transcription",
+                "file_id": task.ingest_id,
+                "text": text,
+                "language": "ru",
+            })
+    w = MagicMock()
+    w.submit = submit
+    return w
+
+
 def test_websocket_ingest_flow(client, test_db):
     """E2E тест WebSocket потока данных."""
-    with client.websocket_connect("/ws/ingest") as ws:
-        # Отправляем бинарный WAV
-        wav_content = b'RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00'
-        
-        with patch("src.api.routers.websocket.transcribe_audio") as mock_transcribe:
-            mock_transcribe.return_value = {
-                "text": "WebSocket транскрипция",
-                "language": "ru"
-            }
-            
+    with patch("src.api.routers.websocket.get_ingest_worker") as m:
+        m.side_effect = lambda registry: _mock_worker_emit(registry, "WebSocket транскрипция")
+        with client.websocket_connect("/ws/ingest") as ws:
+            # Отправляем бинарный WAV
+            wav_content = b'RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x44\xac\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00data\x00\x00\x00\x00'
+
             ws.send_bytes(wav_content)
-            
+
             # Получаем подтверждение
             response1 = ws.receive_json()
             assert response1["type"] in ("received", "error")
-            
+
             if response1["type"] == "received":
                 file_id = response1["file_id"]
-                
+
                 # Получаем транскрипцию
                 response2 = ws.receive_json()
                 assert response2["type"] in ("transcription", "error")
-                
+
                 if response2["type"] == "transcription":
-                    assert response2["file_id"] == file_id
+                    assert response2.get("file_id") == file_id
                     assert "text" in response2
 
 

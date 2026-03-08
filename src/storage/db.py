@@ -171,6 +171,23 @@ class ReflexioDB:
         """Выполняет SELECT и возвращает все строки."""
         return self.conn.execute(sql, params).fetchall()
 
+    def close_conn(self) -> None:
+        """Закрывает thread-local соединение (для shutdown). В других потоках соединения не трогает."""
+        c = getattr(self._local, "conn", None)
+        if c is not None:
+            try:
+                c.close()
+            except Exception as e:
+                logger.debug("db_conn_close_error", db_path=self.db_path, error=str(e))
+            self._local.conn = None
+
+    @classmethod
+    def close_all_instances(cls) -> None:
+        """Закрывает соединения текущего потока у всех синглтонов. Вызывать при shutdown приложения."""
+        with cls._instances_lock:
+            for inst in list(cls._instances.values()):
+                inst.close_conn()
+
     @contextmanager
     def transaction(self) -> Generator[sqlite3.Connection, None, None]:
         """

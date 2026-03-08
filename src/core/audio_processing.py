@@ -5,17 +5,10 @@ import asyncio
 import tempfile
 import threading
 import uuid
+import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-import wave
-
-# ПОЧЕМУ semaphore(1): транскрипция через faster-whisper (ctranslate2) спавнит
-# CPU workers. Без лимита: 2 uvicorn workers × N одновременных записей = N*CPU_COUNT
-# процессов. Засоряют event loop, жрут 300-400% CPU, API не отвечает.
-# semaphore(1) = только 1 транскрипция одновременно. Записи встают в очередь,
-# API остаётся отзывчивым. Latency чуть выше, но стабильность гарантирована.
-_transcription_semaphore = asyncio.Semaphore(1)
 
 from fastapi import HTTPException
 import numpy as np
@@ -33,12 +26,19 @@ from src.storage.event_log import (
     STAGE_AUDIO_RECEIVED,
     STAGE_ASR_DONE,
     STAGE_ENRICHED,
-    STATUS_OK,
-    STATUS_ERROR,
 )
 from src.utils.config import settings
 from src.utils.logging import get_logger
 from src.speaker.storage import ensure_speaker_tables
+
+# ПОЧЕМУ semaphore(1): транскрипция через faster-whisper (ctranslate2) спавнит
+# CPU workers. Без лимита: 2 uvicorn workers × N одновременных записей = N*CPU_COUNT
+# процессов. Засоряют event loop, жрут 300-400% CPU, API не отвечает.
+# semaphore(1) = только 1 транскрипция одновременно. Записи встают в очередь,
+# API остаётся отзывчивым. Latency чуть выше, но стабильность гарантирована.
+_transcription_semaphore = asyncio.Semaphore(1)
+# Для синхронного пути (process_audio_from_artifact_sync) — лимит 1 ASR одновременно.
+_transcription_sync_semaphore = threading.Semaphore(1)
 
 logger = get_logger("core.audio_processing")
 _speech_filter: SpeechFilter | None = None
@@ -313,6 +313,189 @@ def create_ingest_artifact(
     }
 
 
+def process_audio_from_artifact_sync(
+    ingest_id: str,
+    file_path: Path,
+    *,
+    enrichment_prefix: str | None = None,
+    transcription_stage: str = "ws_transcription_saved",
+    delete_audio_after: bool | None = None,
+    run_enrichment: bool = True,
+) -> dict[str, Any]:
+    """Обработка уже сохранённого артефакта (WAV + запись в ingest_queue).
+
+    Синхронная версия для вызова из IngestWorker через asyncio.to_thread.
+    Выполняет: speech gate → speaker verification → acoustic → ASR → persist → enrichment.
+    Не создаёт артефакт — вызывающий код уже вызвал create_ingest_artifact.
+    """
+    import time as _time
+
+    if delete_audio_after is None:
+        delete_audio_after = settings.AUDIO_RETENTION_HOURS == 0
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    filename = file_path.name
+    file_size = file_path.stat().st_size if file_path.exists() else 0
+
+    ensure_ingest_tables(db_path)
+    ensure_integrity_tables(db_path)
+    ensure_semantic_memory_tables(db_path)
+    ensure_speaker_tables(db_path)
+
+    try:
+        allowed_speech, speech_reason = _check_speech_gate(file_path)
+        if not allowed_speech:
+            _mark_ingest_status(db_path, ingest_id, "filtered", speech_reason)
+            if delete_audio_after:
+                file_path.unlink(missing_ok=True)
+            return {
+                "status": "filtered",
+                "reason": speech_reason or "not_speech",
+                "ingest_id": ingest_id,
+                "filename": filename,
+            }
+
+        if settings.SPEAKER_VERIFICATION_ENABLED:
+            audio_data = _read_wav_as_numpy(file_path)
+            if audio_data is not None:
+                from src.speaker import verify_speaker
+
+                verification = verify_speaker(
+                    audio=audio_data / 32768.0,
+                    db_path=db_path,
+                    sample_rate=settings.AUDIO_SAMPLE_RATE,
+                    amplitude_threshold=settings.SPEAKER_AMPLITUDE_THRESHOLD,
+                    similarity_threshold=settings.SPEAKER_SIMILARITY_THRESHOLD,
+                )
+                logger.info(
+                    "speaker_verification",
+                    ingest_id=ingest_id,
+                    is_user=verification.is_user,
+                    confidence=verification.confidence,
+                    method=verification.method,
+                )
+                if not verification.is_user:
+                    _mark_ingest_status(db_path, ingest_id, "filtered", "not_user_speaker")
+                    if delete_audio_after:
+                        file_path.unlink(missing_ok=True)
+                    return {
+                        "status": "filtered",
+                        "reason": "not_user_speaker",
+                        "ingest_id": ingest_id,
+                        "filename": filename,
+                        "speaker_confidence": verification.confidence,
+                    }
+
+        acoustic_metadata = extract_acoustic_features(file_path)
+        if acoustic_metadata:
+            logger.info(
+                "acoustic_features",
+                ingest_id=ingest_id,
+                arousal=acoustic_metadata.get("acoustic_arousal"),
+                pitch_var=acoustic_metadata.get("pitch_variance"),
+            )
+
+        _asr_t0 = _time.monotonic()
+        with _transcription_sync_semaphore:
+            result = transcribe_audio(file_path, language=settings.ASR_LANGUAGE)
+
+        text = (result.get("text") or "").strip()
+        lang_prob = result.get("language_probability", 1.0) or 1.0
+        detected_lang = (result.get("language") or "").lower()
+
+        if not is_allowed_language(detected_lang):
+            _mark_ingest_status(db_path, ingest_id, "filtered", f"unsupported_language:{detected_lang or 'unknown'}")
+            if delete_audio_after:
+                file_path.unlink(missing_ok=True)
+            return {
+                "status": "filtered",
+                "reason": "unsupported_language",
+                "language": detected_lang or "unknown",
+                "ingest_id": ingest_id,
+                "filename": filename,
+            }
+
+        if not is_meaningful_transcription(text, lang_prob):
+            _mark_ingest_status(db_path, ingest_id, "filtered", "noise")
+            if delete_audio_after:
+                file_path.unlink(missing_ok=True)
+            return {
+                "status": "filtered",
+                "reason": "noise",
+                "ingest_id": ingest_id,
+                "filename": filename,
+            }
+
+        privacy = apply_privacy_mode(text, mode=settings.PRIVACY_MODE)
+        if not privacy.allowed:
+            _mark_ingest_status(db_path, ingest_id, "filtered", "pii_blocked")
+            if delete_audio_after:
+                file_path.unlink(missing_ok=True)
+            return {
+                "status": "filtered",
+                "reason": "pii_blocked",
+                "ingest_id": ingest_id,
+                "filename": filename,
+            }
+
+        result["text"] = privacy.text
+        result["privacy_mode"] = privacy.mode
+        result["pii_count"] = privacy.pii_count
+        result["ingest_id"] = ingest_id
+
+        transcription_id = persist_ws_transcription(
+            db_path=db_path,
+            file_id=ingest_id,
+            filename=filename,
+            file_path=str(file_path),
+            file_size=file_size,
+            result=result,
+        )
+
+        if settings.INTEGRITY_CHAIN_ENABLED:
+            append_integrity_event(
+                db_path=db_path,
+                ingest_id=ingest_id,
+                stage=transcription_stage,
+                payload_text=result.get("text", ""),
+                metadata={"language": result.get("language", ""), "privacy_mode": privacy.mode},
+            )
+
+        _mark_ingest_status(db_path, ingest_id, "processed")
+        _asr_latency_ms = int((_time.monotonic() - _asr_t0) * 1000)
+        log_event(
+            ingest_id,
+            STAGE_ASR_DONE,
+            latency_ms=_asr_latency_ms,
+            details={"words": len(text.split()), "lang": detected_lang, "transcription_id": transcription_id},
+        )
+        if delete_audio_after:
+            file_path.unlink(missing_ok=True)
+
+        if run_enrichment and transcription_id:
+            text_for_enrichment = f"{(enrichment_prefix or '').strip()} {result.get('text', '').strip()}".strip()
+            _run_enrichment_sync(
+                db_path=db_path,
+                transcription_id=transcription_id,
+                result=result,
+                enrichment_text=text_for_enrichment,
+                acoustic_metadata=acoustic_metadata,
+            )
+
+        return {
+            "status": "transcribed",
+            "ingest_id": ingest_id,
+            "filename": filename,
+            "transcription_id": transcription_id,
+            "result": result,
+        }
+    except Exception as e:
+        _mark_ingest_status(db_path, ingest_id, "error", str(e))
+        if delete_audio_after:
+            file_path.unlink(missing_ok=True)
+        logger.warning("process_audio_from_artifact_failed", ingest_id=ingest_id, error=str(e))
+        raise
+
+
 async def process_audio_bytes(
     content: bytes,
     content_type: str | None,
@@ -321,7 +504,7 @@ async def process_audio_bytes(
     file_id: str | None = None,
     ingest_stage: str = "audio_received",
     transcription_stage: str = "transcription_saved",
-    delete_audio_after: bool = True,
+    delete_audio_after: bool | None = None,  # None = читать из settings.AUDIO_RETENTION_HOURS
     run_enrichment: bool = True,
     enrichment_text: str | None = None,
     enrichment_prefix: str | None = None,
@@ -330,6 +513,8 @@ async def process_audio_bytes(
     transcribe_now: bool = True,
 ) -> dict[str, Any]:
     """Unified production processing for REST and WebSocket audio ingest."""
+    if delete_audio_after is None:
+        delete_audio_after = settings.AUDIO_RETENTION_HOURS == 0
     artifact = create_ingest_artifact(
         content=content,
         content_type=content_type,

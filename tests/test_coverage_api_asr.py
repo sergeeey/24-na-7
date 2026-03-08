@@ -37,6 +37,9 @@ def test_api_metrics_with_db(tmp_path):
     conn = sqlite3.connect(str(db_path))
     conn.execute("CREATE TABLE transcriptions (id TEXT)")
     conn.execute("CREATE TABLE facts (id TEXT)")
+    conn.execute(
+        "CREATE TABLE ingest_queue (id TEXT, filename TEXT, file_path TEXT, file_size INTEGER, status TEXT)"
+    )
     conn.execute("INSERT INTO transcriptions (id) VALUES ('1')")
     conn.execute("INSERT INTO facts (id) VALUES ('1')")
     conn.commit()

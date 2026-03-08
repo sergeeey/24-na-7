@@ -13,6 +13,7 @@ import com.reflexio.app.BuildConfig
 import com.reflexio.app.data.db.RecordingDatabase
 import com.reflexio.app.data.model.RecordingStatus
 import com.reflexio.app.domain.network.IngestWebSocketClient
+import com.reflexio.app.domain.pipeline.PipelineDiagnostics
 import java.io.File
 
 class UploadWorker(
@@ -42,7 +43,10 @@ class UploadWorker(
                 continue
             }
 
-            val result = wsClient.sendSegment(file)
+            PipelineDiagnostics.setStage(applicationContext, "uploaded")
+            val result = wsClient.sendSegment(file) { stage ->
+                PipelineDiagnostics.setStage(applicationContext, stage)
+            }
             if (result.isSuccess) {
                 val ingest = result.getOrNull()
                 recordingDao.update(
@@ -53,10 +57,15 @@ class UploadWorker(
                     )
                 )
                 pendingDao.deleteByRecordingId(item.recordingId)
+                PipelineDiagnostics.setStage(applicationContext, "transcribed")
+                PipelineDiagnostics.clearError(applicationContext)
                 runCatching { if (file.exists()) file.delete() }
+                PipelineDiagnostics.setStage(applicationContext, "deleted")
             } else {
                 val nextRetries = item.retryCount + 1
                 val err = result.exceptionOrNull()?.message
+                PipelineDiagnostics.setStage(applicationContext, "error")
+                PipelineDiagnostics.setError(applicationContext, err)
                 if (nextRetries >= 3) {
                     recordingDao.update(rec.copy(status = RecordingStatus.FAILED))
                     pendingDao.update(item.copy(retryCount = nextRetries, lastError = err, status = "failed"))

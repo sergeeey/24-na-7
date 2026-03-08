@@ -2,6 +2,10 @@
 import os
 from typing import Optional, Dict, Any
 
+from src.utils.logging import get_logger
+
+logger = get_logger("storage.supabase_client")
+
 try:
     from supabase import create_client, Client
     HAS_SUPABASE = True
@@ -28,7 +32,8 @@ def get_supabase_client() -> Optional[Client]:
     
     try:
         return create_client(supabase_url, supabase_key)
-    except Exception:
+    except Exception as e:
+        logger.warning("supabase_client_create_failed", error=str(e))
         return None
 
 

@@ -1,19 +1,30 @@
 """Роутер для WebSocket endpoints."""
+import asyncio
 import base64
 import json
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from src.api.middleware.auth_middleware import verify_websocket_token
 from src.api.middleware.safe_middleware import get_safe_checker
-from src.asr.transcribe import transcribe_audio
-from src.core.audio_processing import process_audio_bytes
+from src.core.audio_processing import create_ingest_artifact
+from src.ingest.worker import IngestTask, get_ingest_worker
 from src.utils.logging import get_logger
 
 logger = get_logger("api.websocket")
 router = APIRouter(tags=["websocket"])
+
+# Реестр соединений: connection_id -> Queue для доставки результатов фоновой обработки.
+_ingest_result_registry: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
+
+
+def get_ingest_result_registry() -> dict[str, asyncio.Queue[dict[str, Any] | None]]:
+    """Реестр для доставки результатов IngestWorker в WebSocket. Передаётся в get_ingest_worker при старте."""
+    return _ingest_result_registry
 
 class _ConnectionState:
     """Кэш последней транскрипции per WebSocket connection.
@@ -51,77 +62,55 @@ class _ConnectionState:
 _conn_state = _ConnectionState()
 
 
-async def _process_audio_segment(websocket: WebSocket, audio_bytes: bytes, file_id: str, connection_id: str) -> None:
-    """Process one audio segment via shared unified pipeline."""
-    try:
-        result = await process_audio_bytes(
-            content=audio_bytes,
-            content_type="audio/wav",
-            original_filename=f"{file_id}.wav",
-            file_id=file_id,
-            ingest_stage="ws_audio_received",
-            transcription_stage="ws_transcription_saved",
-            run_enrichment=True,
-            enrichment_prefix=_conn_state.recent_text(connection_id),
-            transcribe_fn=transcribe_audio,
-        )
-    except Exception as e:
-        logger.warning("audio_processing_failed", file_id=file_id, error=str(e))
-        # ПОЧЕМУ: str(e) не отдаём клиенту — может содержать пути, модели, внутренние детали.
-        await websocket.send_json({"type": "error", "file_id": file_id, "message": "Audio processing error"})
-        return
+async def _result_reader(
+    websocket: WebSocket,
+    connection_id: str,
+    queue: asyncio.Queue[dict[str, Any] | None],
+) -> None:
+    """Читает результаты из очереди и отправляет клиенту. Выход по None (shutdown)."""
+    while True:
+        msg = await queue.get()
+        if msg is None:
+            break
+        try:
+            await websocket.send_json(msg)
+            if msg.get("type") == "transcription" and msg.get("text"):
+                _conn_state.remember(connection_id, msg.get("text", ""))
+        except Exception as e:
+            logger.warning("result_reader_send_failed", connection_id=connection_id, error=str(e))
+            break
 
-    await websocket.send_json(
-        {
-            "type": "received",
-            "file_id": file_id,
-            "status": "queued",
-        }
+
+def _enqueue_audio_segment(
+    audio_bytes: bytes,
+    file_id: str,
+    connection_id: str,
+) -> None:
+    """Сохранить артефакт (WAV + ingest_queue), поставить задачу в IngestWorker. «received» шлёт вызывающий."""
+    artifact = create_ingest_artifact(
+        content=audio_bytes,
+        content_type="audio/wav",
+        original_filename=f"{file_id}.wav",
+        stage="ws_audio_received",
+        file_id=file_id,
+        queue_status="pending",
     )
-
-    status = result.get("status")
-    if status == "filtered":
-        await websocket.send_json(
-            {
-                "type": "filtered",
-                "file_id": file_id,
-                "reason": result.get("reason", "filtered"),
-                "language": result.get("language"),
-                "delete_audio": True,
-            }
+    dest_path: Path = artifact["dest_path"]
+    enrichment_prefix = _conn_state.recent_text(connection_id)
+    worker = get_ingest_worker(get_ingest_result_registry())
+    worker.submit(
+        IngestTask(
+            ingest_id=file_id,
+            file_path=dest_path,
+            connection_id=connection_id,
+            enrichment_prefix=enrichment_prefix or None,
         )
-        return
-
-    if status != "transcribed":
-        await websocket.send_json(
-            {
-                "type": "error",
-                "file_id": file_id,
-                "message": result.get("reason", "processing_failed"),
-            }
-        )
-        return
-
-    payload = result.get("result", {})
-    text = payload.get("text", "")
-    if text:
-        _conn_state.remember(connection_id, text)
-
-    await websocket.send_json(
-        {
-            "type": "transcription",
-            "file_id": file_id,
-            "text": text,
-            "language": payload.get("language", ""),
-            "delete_audio": True,
-            "privacy_mode": payload.get("privacy_mode", "audit"),
-        }
     )
 
 
 @router.websocket("/ws/ingest")
 async def websocket_ingest(websocket: WebSocket):
-    """WebSocket для приёма аудио-сегментов от клиентов."""
+    """WebSocket для приёма аудио-сегментов. Принял байты → сразу «received» → обработка в фоне → результат в очередь соединения."""
     if not verify_websocket_token(websocket):
         logger.warning("websocket_auth_failed", client=websocket.client)
         await websocket.close(code=4001, reason="Unauthorized")
@@ -129,6 +118,9 @@ async def websocket_ingest(websocket: WebSocket):
 
     await websocket.accept()
     connection_id = str(id(websocket))
+    result_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    _ingest_result_registry[connection_id] = result_queue
+    reader_task = asyncio.create_task(_result_reader(websocket, connection_id, result_queue))
     logger.info("websocket_ingest_connected", client=websocket.client)
     try:
         while True:
@@ -137,15 +129,18 @@ async def websocket_ingest(websocket: WebSocket):
                 if not data["bytes"]:
                     await websocket.send_json({"type": "error", "message": "Empty audio"})
                     continue
-                # ПОЧЕМУ: SAFE size check против DoS через большие payload.
-                # check_file_size() принимает Path, поэтому сравниваем с
-                # MAX_FILE_SIZE_BYTES напрямую — быстро и без temp file.
                 safe = get_safe_checker()
                 if safe and len(data["bytes"]) > safe.MAX_FILE_SIZE_BYTES:
                     await websocket.send_json({"type": "error", "message": "File too large"})
                     continue
                 file_id = str(uuid.uuid4())
-                await _process_audio_segment(websocket, data["bytes"], file_id, connection_id)
+                try:
+                    _enqueue_audio_segment(data["bytes"], file_id, connection_id)
+                except Exception as e:
+                    logger.warning("ingest_artifact_failed", file_id=file_id, error=str(e))
+                    await websocket.send_json({"type": "error", "file_id": file_id, "message": "Failed to save audio"})
+                    continue
+                await websocket.send_json({"type": "received", "file_id": file_id, "status": "queued"})
             elif "text" in data and data["text"]:
                 try:
                     msg = json.loads(data["text"])
@@ -156,7 +151,13 @@ async def websocket_ingest(websocket: WebSocket):
                             await websocket.send_json({"type": "error", "message": "File too large"})
                             continue
                         file_id = str(uuid.uuid4())
-                        await _process_audio_segment(websocket, audio_bytes, file_id, connection_id)
+                        try:
+                            _enqueue_audio_segment(audio_bytes, file_id, connection_id)
+                        except Exception as e:
+                            logger.warning("ingest_artifact_failed", file_id=file_id, error=str(e))
+                            await websocket.send_json({"type": "error", "file_id": file_id, "message": "Failed to save audio"})
+                            continue
+                        await websocket.send_json({"type": "received", "file_id": file_id, "status": "queued"})
                     else:
                         await websocket.send_json({"type": "error", "message": "Unknown message type"})
                 except (json.JSONDecodeError, KeyError) as e:
@@ -170,4 +171,14 @@ async def websocket_ingest(websocket: WebSocket):
         except Exception:
             pass
     finally:
+        _ingest_result_registry.pop(connection_id, None)
+        try:
+            result_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+        reader_task.cancel()
+        try:
+            await reader_task
+        except asyncio.CancelledError:
+            pass
         _conn_state.disconnect(connection_id)

@@ -3,12 +3,18 @@ package com.reflexio.app.ui.screens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,9 +49,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,15 +61,27 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.reflexio.app.BuildConfig
+import com.reflexio.app.ui.components.ShimmerLine
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -71,13 +91,19 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 // ──────────────────────────────────────────────
-// Palette: confidence levels
+// Palette
 // ──────────────────────────────────────────────
 
-private val ColorHigh = Color(0xFF4CAF50)      // green
-private val ColorMedium = Color(0xFF2196F3)    // blue
-private val ColorLow = Color(0xFFFF9800)       // amber
-private val ColorSpeculative = Color(0xFFF44336) // red
+private val ColorHigh = Color(0xFF4CAF50)
+private val ColorMedium = Color(0xFF2196F3)
+private val ColorLow = Color(0xFFFF9800)
+private val ColorSpeculative = Color(0xFFF44336)
+
+private val ColorTeal = Color(0xFF00E5CC)
+private val ColorIndigo = Color(0xFF7C6CFF)
+private val ColorAmber = Color(0xFFFFB74D)
+private val ColorRose = Color(0xFFE91E63)
+private val ColorBlue = Color(0xFF42A5F5)
 
 private fun confidenceColor(label: String): Color = when (label) {
     "high" -> ColorHigh
@@ -93,7 +119,6 @@ private fun confidenceLabel(label: String): String = when (label) {
     else -> "Предположение"
 }
 
-/** Человечный текст для confidence вместо процентов. */
 private fun confidenceHumanLabel(label: String): String = when (label) {
     "high" -> "высокая"
     "medium" -> "средняя"
@@ -112,11 +137,11 @@ private data class EvidenceMeta(
     val topTopic: String,
 )
 
-// Rich data from digest
 private data class AskDayMapPoint(
     val label: String,   // "peak" / "valley" / "fork"
     val time: String,
     val text: String,
+    val emotion: String = "",
 )
 
 private data class MicroStepInfo(
@@ -125,18 +150,66 @@ private data class MicroStepInfo(
     val domain: String,
 )
 
+private data class AcousticProfile(
+    val avgEnergy: Float,
+    val arousal: Float,
+    val hourlyEnergy: List<Float>,
+)
+
+private data class InsightItem(
+    val role: String,
+    val text: String,
+    val confidence: Float,
+)
+
+private data class NoveltyInfo(
+    val newTopics: List<String>,
+    val score: Float,
+)
+
+private data class RepetitionItem(
+    val topic: String,
+    val count: Int,
+    val streakDays: Int,
+)
+
+private data class RepetitionsInfo(
+    val items: List<RepetitionItem>,
+    val alertText: String?,
+)
+
+private data class EmotionInfo(
+    val primary: String,
+    val secondary: String?,
+    val valence: String,
+)
+
+private data class BalanceInfo(
+    val work: Float,
+    val relationships: Float,
+    val health: Float,
+    val growth: Float,
+)
+
 private data class DigestRichData(
     val verdictText: String?,
     val verdictQuotes: List<String>,
+    val emotionalArc: String?,
     val dayMap: List<AskDayMapPoint>,
     val keyThemes: List<String>,
     val emotions: List<String>,
     val microStep: MicroStepInfo?,
     val novelty: List<String>,
     val summaryText: String?,
+    // New fields for Emotional Mirror
+    val acousticProfile: AcousticProfile? = null,
+    val insights: List<InsightItem> = emptyList(),
+    val noveltyInfo: NoveltyInfo? = null,
+    val repetitionsInfo: RepetitionsInfo? = null,
+    val emotionInfo: EmotionInfo? = null,
+    val balance: BalanceInfo? = null,
 )
 
-// Rich data from events
 private data class EventsRichData(
     val total: Int,
     val topTopics: List<String>,
@@ -176,15 +249,23 @@ private fun parseDigestData(dataObj: JSONObject): DigestRichData {
     verdict?.optJSONArray("evidence_quotes")?.let { arr ->
         for (i in 0 until arr.length()) verdictQuotes.add(arr.getString(i))
     }
+    // Also check "quotes" key
+    verdict?.optJSONArray("quotes")?.let { arr ->
+        if (verdictQuotes.isEmpty()) {
+            for (i in 0 until arr.length()) verdictQuotes.add(arr.getString(i))
+        }
+    }
+    val emotionalArc = verdict?.optString("emotional_arc", "")?.takeIf { it.isNotBlank() }
 
     val dayMap = mutableListOf<AskDayMapPoint>()
     dataObj.optJSONArray("day_map")?.let { arr ->
         for (i in 0 until arr.length()) {
             val p = arr.getJSONObject(i)
             dayMap.add(AskDayMapPoint(
-                label = p.optString("label", ""),
+                label = p.optString("type", p.optString("label", "")),
                 time = p.optString("time", ""),
-                text = p.optString("text", ""),
+                text = p.optString("description", p.optString("text", "")),
+                emotion = p.optString("emotion", ""),
             ))
         }
     }
@@ -194,48 +275,136 @@ private fun parseDigestData(dataObj: JSONObject): DigestRichData {
         for (i in 0 until arr.length()) keyThemes.add(arr.getString(i))
     }
 
-    val emotions = mutableListOf<String>()
+    val emotionsList = mutableListOf<String>()
     dataObj.optJSONArray("emotions")?.let { arr ->
         for (i in 0 until arr.length()) {
             val item = arr.opt(i)
             if (item is String) {
-                emotions.add(item)
+                emotionsList.add(item)
             } else if (item is JSONObject) {
-                item.optString("emotion", "").takeIf { it.isNotBlank() }?.let { emotions.add(it) }
+                item.optString("emotion", "").takeIf { it.isNotBlank() }?.let { emotionsList.add(it) }
             }
         }
     }
 
     val microStep = dataObj.optJSONObject("micro_step")?.let { ms ->
-        val action = ms.optString("action", "")
+        val action = ms.optString("action", ms.optString("text", ""))
         if (action.isNotBlank()) MicroStepInfo(
             action = action,
             why = ms.optString("why", ""),
-            domain = ms.optString("domain", "growth"),
+            domain = ms.optString("category", ms.optString("domain", "growth")),
         ) else null
     }
 
-    val novelty = mutableListOf<String>()
-    dataObj.optJSONArray("novelty")?.let { arr ->
-        for (i in 0 until arr.length()) novelty.add(arr.getString(i))
+    val noveltyList = mutableListOf<String>()
+    val noveltyObj = dataObj.opt("novelty")
+    var noveltyInfo: NoveltyInfo? = null
+    if (noveltyObj is JSONObject) {
+        val topics = mutableListOf<String>()
+        noveltyObj.optJSONArray("new_topics")?.let { arr ->
+            for (i in 0 until arr.length()) topics.add(arr.getString(i))
+        }
+        noveltyInfo = NoveltyInfo(
+            newTopics = topics,
+            score = noveltyObj.optDouble("score", 0.0).toFloat(),
+        )
+        noveltyList.addAll(topics)
+    } else if (noveltyObj is JSONArray) {
+        for (i in 0 until noveltyObj.length()) noveltyList.add(noveltyObj.getString(i))
+        if (noveltyList.isNotEmpty()) {
+            noveltyInfo = NoveltyInfo(newTopics = noveltyList, score = 0.5f)
+        }
+    }
+
+    // Parse acoustic_profile
+    val acousticProfile = dataObj.optJSONObject("acoustic_profile")?.let { ap ->
+        val hourly = mutableListOf<Float>()
+        ap.optJSONArray("hourly_energy")?.let { arr ->
+            for (i in 0 until arr.length()) hourly.add(arr.optDouble(i, 0.0).toFloat())
+        }
+        AcousticProfile(
+            avgEnergy = ap.optDouble("avg_energy", 0.0).toFloat(),
+            arousal = ap.optDouble("arousal", 0.5).toFloat(),
+            hourlyEnergy = hourly,
+        )
+    }
+
+    // Parse insights
+    val insights = mutableListOf<InsightItem>()
+    dataObj.optJSONArray("insights")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            val ins = arr.getJSONObject(i)
+            insights.add(InsightItem(
+                role = ins.optString("role", "analyst"),
+                text = ins.optString("text", ""),
+                confidence = ins.optDouble("confidence", 0.5).toFloat(),
+            ))
+        }
+    }
+
+    // Parse repetitions
+    val repetitionsInfo = dataObj.opt("repetitions")?.let { rep ->
+        if (rep is JSONObject) {
+            val items = mutableListOf<RepetitionItem>()
+            rep.optJSONArray("items")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val ri = arr.getJSONObject(i)
+                    items.add(RepetitionItem(
+                        topic = ri.optString("topic", ""),
+                        count = ri.optInt("count", 0),
+                        streakDays = ri.optInt("streak_days", 0),
+                    ))
+                }
+            }
+            RepetitionsInfo(
+                items = items,
+                alertText = rep.optString("alert_text", "").takeIf { it.isNotBlank() },
+            )
+        } else null
+    }
+
+    // Parse emotions object (not array — structured form)
+    val emotionsObj = dataObj.optJSONObject("emotions")
+    val emotionInfo = emotionsObj?.let { eo ->
+        EmotionInfo(
+            primary = eo.optString("primary", ""),
+            secondary = eo.optString("secondary", "").takeIf { it.isNotBlank() },
+            valence = eo.optString("valence", "neutral"),
+        )
+    }
+
+    // Parse balance
+    val balance = dataObj.optJSONObject("balance")?.let { b ->
+        BalanceInfo(
+            work = b.optDouble("work", 0.0).toFloat(),
+            relationships = b.optDouble("relationships", 0.0).toFloat(),
+            health = b.optDouble("health", 0.0).toFloat(),
+            growth = b.optDouble("growth", 0.0).toFloat(),
+        )
     }
 
     return DigestRichData(
         verdictText = verdictText,
         verdictQuotes = verdictQuotes,
+        emotionalArc = emotionalArc,
         dayMap = dayMap,
         keyThemes = keyThemes,
-        emotions = emotions,
+        emotions = emotionsList,
         microStep = microStep,
-        novelty = novelty,
+        novelty = noveltyList,
         summaryText = dataObj.optString("summary_text", "").takeIf { it.isNotBlank() },
+        acousticProfile = acousticProfile,
+        insights = insights,
+        noveltyInfo = noveltyInfo,
+        repetitionsInfo = repetitionsInfo,
+        emotionInfo = emotionInfo,
+        balance = balance,
     )
 }
 
 private fun parseEventsData(dataObj: JSONObject): EventsRichData {
     val total = dataObj.optInt("total", 0)
     val topTopics = mutableListOf<String>()
-    // Собираем top topics из events[].topics_json
     dataObj.optJSONArray("events")?.let { arr ->
         val counter = mutableMapOf<String, Int>()
         for (i in 0 until arr.length()) {
@@ -291,7 +460,6 @@ private fun postAsk(baseHttpUrl: String, question: String): AskResult {
 
         val primaryTool = json.optString("primary_tool", "").takeIf { it.isNotBlank() }
 
-        // Парсим evidence_metadata и ui_hint из data[0]
         var uiHint = "timeline"
         val evidenceMetadata = mutableListOf<EvidenceMeta>()
         var digestData: DigestRichData? = null
@@ -316,7 +484,6 @@ private fun postAsk(baseHttpUrl: String, question: String): AskResult {
                 }
             }
 
-            // Parse rich data based on primary_tool
             val innerData = first.optJSONObject("data")
             if (innerData != null) {
                 when (primaryTool) {
@@ -345,25 +512,78 @@ private fun postAsk(baseHttpUrl: String, question: String): AskResult {
 }
 
 // ──────────────────────────────────────────────
-// Composables
+// Helpers
+// ──────────────────────────────────────────────
+
+private fun emotionEmoji(primary: String): String = when (primary.lowercase()) {
+    "joy", "радость", "happiness" -> "\uD83D\uDE0A"
+    "sadness", "грусть", "печаль" -> "\uD83D\uDE14"
+    "anger", "злость", "гнев" -> "\uD83D\uDE20"
+    "anxiety", "тревога", "fear", "страх" -> "\uD83D\uDE1F"
+    "calm", "спокойствие", "peace" -> "\uD83E\uDDD8"
+    "surprise", "удивление" -> "\uD83D\uDE2E"
+    "love", "любовь" -> "\u2764\uFE0F"
+    "excitement", "возбуждение", "энергия" -> "\u26A1"
+    else -> "\uD83D\uDCAD"
+}
+
+private fun emotionColor(emotion: String): Color = when (emotion.lowercase()) {
+    "joy", "радость", "happiness", "love", "любовь" -> ColorTeal
+    "sadness", "грусть", "печаль" -> ColorBlue
+    "anger", "злость", "гнев" -> ColorRose
+    "anxiety", "тревога", "fear", "страх" -> ColorAmber
+    "calm", "спокойствие", "peace" -> ColorIndigo
+    else -> ColorIndigo
+}
+
+private fun valenceColor(valence: String): Color = when (valence.lowercase()) {
+    "positive" -> ColorTeal
+    "negative" -> ColorRose
+    else -> ColorIndigo
+}
+
+private fun arousalLabel(arousal: Float): String = when {
+    arousal < 0.35f -> "Спокойный день"
+    arousal < 0.65f -> "Умеренный день"
+    else -> "Энергичный день"
+}
+
+private fun insightRoleIcon(role: String): String = when (role.lowercase()) {
+    "psychologist", "психолог" -> "\uD83E\uDDE0"
+    "analyst", "аналитик" -> "\uD83D\uDCC8"
+    "coach", "коуч" -> "\uD83C\uDFAF"
+    "detective", "детектив" -> "\uD83D\uDD0D"
+    "philosopher", "философ" -> "\uD83D\uDCA1"
+    else -> "\uD83D\uDCDD"
+}
+
+private fun insightRoleLabel(role: String): String = when (role.lowercase()) {
+    "psychologist", "психолог" -> "Психолог"
+    "analyst", "аналитик" -> "Аналитик"
+    "coach", "коуч" -> "Коуч"
+    "detective", "детектив" -> "Детектив"
+    "philosopher", "философ" -> "Философ"
+    else -> role.replaceFirstChar { it.uppercase() }
+}
+
+// ──────────────────────────────────────────────
+// Main Composable
 // ──────────────────────────────────────────────
 
 /**
- * AskScreen — One Interface.
+ * AskScreen — Emotional Mirror.
  *
- * ПОЧЕМУ одна точка входа:
- *   Пользователь не должен знать какой endpoint нужен для его вопроса.
- *   POST /ask -> orchestrator сам выберет тул(ы) и вернёт синтезированный ответ.
- *
- * Порядок рендера (meaning-first):
+ * Порядок рендера (emotion-first):
  *   1. Warning (если есть)
- *   2. Answer Card — verdict/summary (крупный текст)
- *   3. DayMap — 3 карточки peak/valley/fork
- *   4. Themes + Emotions — FlowRow чипов
- *   5. MicroStep — карточка рекомендации
- *   6. ConfidenceLine — "Ответ основан на N событиях, уверенность высокая"
- *   7. EvidenceTraceRow — timeline dots
- *   8. Детали — collapsed
+ *   2. EmotionalPulseRing — hero element с arousal + emotion emoji
+ *   3. VerdictHeroCard — verdict текст с gradient border + expandable quotes
+ *   4. DayJourneyTimeline — вертикальная timeline с staggered animation
+ *   5. EmotionRiver — horizontal pills
+ *   6. InsightCarousel — 5 перспектив (swipe cards)
+ *   7. PatternSignalRow — novelty + repetitions
+ *   8. AskMicroStepCard — рекомендация с expandable why
+ *   9. ConfidenceLine — human-readable
+ *  10. EvidenceTraceRow + Details — collapsed
  */
 @Composable
 fun AskScreen(
@@ -432,12 +652,7 @@ fun AskScreen(
             }
 
             is AskState.Loading -> {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(32.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
+                AskShimmerSkeleton()
             }
 
             is AskState.Error -> {
@@ -459,56 +674,133 @@ fun AskScreen(
             is AskState.Success -> {
                 val r = s.result
 
-                // 1. Warning banner
-                r.warning?.let { warn ->
+                // 1. Пустое состояние при 0 источников (смысл + действие); иначе — баннер предупреждения
+                if (r.evidenceCount == 0) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
-                            containerColor = ColorLow.copy(alpha = 0.12f),
+                            containerColor = ColorIndigo.copy(alpha = 0.08f),
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = if (r.answer.contains("не найдено") || r.answer.contains("нет данных"))
+                                    "По этому запросу данных пока нет."
+                                else
+                                    "Сегодня ещё нет записей.",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Нажмите «Запись» внизу экрана, чтобы начать.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                } else {
+                    r.warning?.let { warn ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = ColorLow.copy(alpha = 0.12f),
+                            ),
+                        ) {
+                            Text(
+                                text = warn,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = ColorLow,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+
+                // 2. EmotionalPulseRing (only for digest with acoustic data)
+                r.digestData?.let { digest ->
+                    if (digest.acousticProfile != null || digest.emotionInfo != null) {
+                        EmotionalPulseRing(
+                            emotionInfo = digest.emotionInfo,
+                            arousal = digest.acousticProfile?.arousal ?: 0.5f,
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+                }
+
+                // 3. VerdictHeroCard
+                r.digestData?.let { digest ->
+                    if (digest.verdictText != null) {
+                        VerdictHeroCard(
+                            verdictText = digest.verdictText,
+                            quotes = digest.verdictQuotes,
+                            emotionalArc = digest.emotionalArc,
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+                }
+                // Fallback: show answer if no verdict
+                if (r.digestData?.verdictText == null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
                         ),
                     ) {
                         Text(
-                            text = warn,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = ColorLow,
-                            modifier = Modifier.padding(12.dp),
+                            text = r.answer,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(16.dp),
                         )
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
-                // 2. Answer Card — verdict/summary (meaning-first)
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    ),
-                ) {
-                    Text(
-                        text = r.answer,
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.padding(16.dp),
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                // 3. DayMap (only for digest)
                 r.digestData?.let { digest ->
+                    // 4. DayJourneyTimeline (vertical)
                     if (digest.dayMap.isNotEmpty()) {
-                        AskDayMapSection(digest.dayMap)
-                        Spacer(modifier = Modifier.height(8.dp))
+                        DayJourneyTimeline(digest.dayMap)
+                        Spacer(modifier = Modifier.height(12.dp))
                     }
 
-                    // 4. Themes + Emotions
-                    if (digest.keyThemes.isNotEmpty() || digest.emotions.isNotEmpty()) {
-                        AskThemesSection(digest.keyThemes, digest.emotions)
-                        Spacer(modifier = Modifier.height(8.dp))
+                    // 5. EmotionRiver
+                    if (digest.emotionInfo != null || digest.emotions.isNotEmpty()) {
+                        EmotionRiver(
+                            emotionInfo = digest.emotionInfo,
+                            emotionsList = digest.emotions,
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
                     }
 
-                    // 5. MicroStep
+                    // 6. InsightCarousel
+                    if (digest.insights.isNotEmpty()) {
+                        InsightCarousel(digest.insights)
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
+                    // 7. PatternSignalRow
+                    val hasNovelty = digest.noveltyInfo != null && digest.noveltyInfo.newTopics.isNotEmpty()
+                    val hasRepetitions = digest.repetitionsInfo != null && digest.repetitionsInfo.items.any { it.streakDays > 2 }
+                    if (hasNovelty || hasRepetitions) {
+                        PatternSignalRow(
+                            novelty = digest.noveltyInfo,
+                            repetitions = digest.repetitionsInfo,
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
+                    // 8. MicroStep
                     digest.microStep?.let { step ->
                         AskMicroStepCard(step)
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+
+                    // Themes (if no emotion river showed them)
+                    if (digest.emotionInfo == null && digest.keyThemes.isNotEmpty()) {
+                        AskThemesSection(digest.keyThemes, digest.emotions)
                         Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
@@ -521,20 +813,20 @@ fun AskScreen(
                     }
                 }
 
-                // 6. ConfidenceLine — human-readable text
+                // 9. ConfidenceLine
                 ConfidenceLine(
                     label = r.confidenceLabel,
                     evidenceCount = r.evidenceCount,
                 )
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // 7. EvidenceTrace — horizontal dots
+                // 10. EvidenceTrace
                 if (r.evidenceMetadata.isNotEmpty()) {
                     EvidenceTraceRow(r.evidenceMetadata)
                     Spacer(modifier = Modifier.height(8.dp))
                 }
 
-                // 8. Expandable details
+                // 11. Expandable details
                 TextButton(
                     onClick = { showDetails = !showDetails },
                     modifier = Modifier.align(Alignment.End),
@@ -560,9 +852,9 @@ fun AskScreen(
                         ),
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
-                            DetailRow("Улик найдено", "${r.evidenceCount}")
+                            DetailRow("Событий в ответе", "${r.evidenceCount}")
                             DetailRow("Время ответа", "${r.totalMs.toInt()} мс")
-                            DetailRow("Тулы", r.toolsUsed.joinToString(", ").ifEmpty { "-" })
+                            DetailRow("Инструменты", r.toolsUsed.joinToString(", ").ifEmpty { "-" })
                             if (r.needsClarification) {
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
@@ -580,69 +872,308 @@ fun AskScreen(
 }
 
 // ──────────────────────────────────────────────
-// New composables: meaning-first sections
+// New composables: Emotional Mirror sections
 // ──────────────────────────────────────────────
 
 /**
- * ConfidenceLine — человечный текст вместо процентов.
- * "Ответ основан на 6 событиях, уверенность высокая"
+ * AskShimmerSkeleton — shimmer loading вместо spinner.
+ * Показывает форму будущего контента для снижения perceived wait time.
  */
 @Composable
-private fun ConfidenceLine(label: String, evidenceCount: Int) {
-    val color = confidenceColor(label)
-    val evText = when {
-        evidenceCount == 0 -> "без источников"
-        evidenceCount == 1 -> "на 1 событии"
-        evidenceCount in 2..4 -> "на $evidenceCount событиях"
-        else -> "на $evidenceCount событиях"
+private fun AskShimmerSkeleton() {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // Pulse ring placeholder
+        Box(modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            ShimmerLine(modifier = Modifier.size(80.dp), height = 80.dp)
+        }
+        // Verdict placeholder
+        ShimmerLine(modifier = Modifier.fillMaxWidth(), height = 60.dp)
+        // Timeline placeholder
+        ShimmerLine(modifier = Modifier.fillMaxWidth(0.9f), height = 24.dp)
+        ShimmerLine(modifier = Modifier.fillMaxWidth(0.85f), height = 24.dp)
+        ShimmerLine(modifier = Modifier.fillMaxWidth(0.8f), height = 24.dp)
+        // Insight cards placeholder
+        ShimmerLine(modifier = Modifier.fillMaxWidth(), height = 80.dp)
     }
-    Text(
-        text = "Ответ основан $evText, уверенность ${confidenceHumanLabel(label)}",
-        style = MaterialTheme.typography.bodySmall,
-        color = color,
-    )
 }
 
 /**
- * AskDayMapSection — горизонтальный скролл 3 ключевых моментов дня.
- * Аналог DailySummaryScreen day_map карточек.
+ * EmotionalPulseRing — hero element.
+ * Кольцо пульсирует по arousal, цвет по valence, emoji по dominant emotion.
  */
 @Composable
-private fun AskDayMapSection(points: List<AskDayMapPoint>) {
-    val labelEmoji = mapOf("peak" to "+", "valley" to "-", "fork" to "?")
+private fun EmotionalPulseRing(
+    emotionInfo: EmotionInfo?,
+    arousal: Float,
+) {
+    val ringColor = if (emotionInfo != null) valenceColor(emotionInfo.valence) else ColorIndigo
+    val emoji = if (emotionInfo != null) emotionEmoji(emotionInfo.primary) else "\uD83D\uDCAD"
+    val label = arousalLabel(arousal)
 
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(points) { point: AskDayMapPoint ->
-            Card(
-                modifier = Modifier.width(200.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                ),
+    // Pulsation speed tied to arousal: calm=slow, energetic=fast
+    val pulseDuration = (2000 - (arousal * 1000).toInt()).coerceIn(800, 2000)
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse_ring")
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 1.0f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(pulseDuration),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "ring_scale",
+    )
+    val ringAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.7f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(pulseDuration),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "ring_alpha",
+    )
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.size(96.dp),
+        ) {
+            // Pulsating ring
+            Canvas(
+                modifier = Modifier
+                    .size(88.dp)
+                    .scale(scale),
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                drawCircle(
+                    color = ringColor.copy(alpha = ringAlpha * 0.3f),
+                    radius = size.minDimension / 2,
+                )
+                drawCircle(
+                    color = ringColor.copy(alpha = ringAlpha),
+                    radius = size.minDimension / 2,
+                    style = Stroke(width = 3.dp.toPx()),
+                )
+            }
+            // Emoji center
+            Text(
+                text = emoji,
+                fontSize = 36.sp,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleSmall,
+            color = ringColor,
+            fontWeight = FontWeight.Medium,
+        )
+        if (emotionInfo != null) {
+            Text(
+                text = emotionInfo.primary.replaceFirstChar { it.uppercase() } +
+                    (emotionInfo.secondary?.let { " + ${it.replaceFirstChar { c -> c.uppercase() }}" } ?: ""),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * VerdictHeroCard — verdict с gradient border и expandable quotes.
+ */
+@Composable
+private fun VerdictHeroCard(
+    verdictText: String,
+    quotes: List<String>,
+    emotionalArc: String?,
+) {
+    var showQuotes by remember { mutableStateOf(false) }
+    val gradientBrush = Brush.linearGradient(listOf(ColorIndigo, ColorTeal))
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .drawBehind {
+                drawRoundRect(
+                    brush = gradientBrush,
+                    cornerRadius = CornerRadius(16.dp.toPx()),
+                    style = Stroke(width = 2.dp.toPx()),
+                )
+            }
+            .padding(2.dp),
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = verdictText,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                emotionalArc?.let { arc ->
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = arc,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ColorIndigo,
+                        fontStyle = FontStyle.Italic,
+                    )
+                }
+                if (quotes.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    TextButton(
+                        onClick = { showQuotes = !showQuotes },
                     ) {
                         Text(
-                            text = labelEmoji[point.label] ?: "",
-                            style = MaterialTheme.typography.titleMedium,
+                            text = if (showQuotes) "Скрыть цитаты" else "Показать цитаты (${quotes.size})",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ColorIndigo,
                         )
+                    }
+                    AnimatedVisibility(
+                        visible = showQuotes,
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically(),
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            quotes.forEach { quote ->
+                                Row {
+                                    Box(
+                                        modifier = Modifier
+                                            .width(2.dp)
+                                            .height(40.dp)
+                                            .background(ColorIndigo),
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "\"$quote\"",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontStyle = FontStyle.Italic,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 3,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * DayJourneyTimeline — вертикальная timeline с цветными точками.
+ * Staggered появление сверху вниз.
+ */
+@Composable
+private fun DayJourneyTimeline(points: List<AskDayMapPoint>) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "Путь дня",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+        points.forEachIndexed { index, point ->
+            var visible by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                delay(100L * index)
+                visible = true
+            }
+            val alpha by animateFloatAsState(
+                targetValue = if (visible) 1f else 0f,
+                animationSpec = tween(400),
+                label = "timeline_fade_$index",
+            )
+
+            val dotColor = when (point.label.lowercase()) {
+                "peak" -> ColorTeal
+                "valley" -> ColorRose
+                "fork" -> ColorAmber
+                else -> ColorIndigo
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 4.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                // Dot + line column
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.width(24.dp),
+                ) {
+                    // Colored dot
+                    Box(
+                        modifier = Modifier
+                            .size(12.dp)
+                            .background(dotColor.copy(alpha = alpha), CircleShape),
+                    )
+                    // Dashed line to next point
+                    if (index < points.size - 1) {
+                        Canvas(
+                            modifier = Modifier
+                                .width(2.dp)
+                                .height(40.dp),
+                        ) {
+                            drawLine(
+                                color = Color(0xFF3D4450).copy(alpha = alpha),
+                                start = Offset(size.width / 2, 0f),
+                                end = Offset(size.width / 2, size.height),
+                                strokeWidth = 1.dp.toPx(),
+                                pathEffect = PathEffect.dashPathEffect(
+                                    floatArrayOf(6f, 4f),
+                                ),
+                            )
+                        }
+                    }
+                }
+                // Content
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 8.dp, bottom = if (index < points.size - 1) 4.dp else 0.dp),
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         if (point.time.isNotBlank()) {
                             Text(
                                 text = point.time,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = dotColor.copy(alpha = alpha),
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                        if (point.emotion.isNotBlank()) {
+                            Text(
+                                text = point.emotion,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha * 0.7f),
                             )
                         }
                     }
                     if (point.text.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = point.text,
                             style = MaterialTheme.typography.bodySmall,
-                            maxLines = 3,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
@@ -652,8 +1183,250 @@ private fun AskDayMapSection(points: List<AskDayMapPoint>) {
 }
 
 /**
- * AskThemesSection — FlowRow чипов с темами и эмоциями.
+ * EmotionRiver — горизонтальные animated pills с эмоциями.
  */
+@Composable
+private fun EmotionRiver(
+    emotionInfo: EmotionInfo?,
+    emotionsList: List<String>,
+) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visible = true }
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInHorizontally(initialOffsetX = { it / 3 }) + fadeIn(tween(500)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Structured emotion info (primary + secondary)
+            if (emotionInfo != null) {
+                EmotionPill(
+                    text = emotionInfo.primary,
+                    color = emotionColor(emotionInfo.primary),
+                    isPrimary = true,
+                )
+                emotionInfo.secondary?.let { sec ->
+                    EmotionPill(
+                        text = sec,
+                        color = emotionColor(sec),
+                        isPrimary = false,
+                    )
+                }
+            }
+            // Legacy emotions list (if no structured info)
+            if (emotionInfo == null) {
+                emotionsList.forEachIndexed { idx, emotion ->
+                    EmotionPill(
+                        text = emotion,
+                        color = emotionColor(emotion),
+                        isPrimary = idx == 0,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmotionPill(text: String, color: Color, isPrimary: Boolean) {
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = color.copy(alpha = if (isPrimary) 0.18f else 0.10f),
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                horizontal = if (isPrimary) 14.dp else 10.dp,
+                vertical = if (isPrimary) 8.dp else 6.dp,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = emotionEmoji(text),
+                fontSize = if (isPrimary) 16.sp else 13.sp,
+            )
+            Text(
+                text = text.replaceFirstChar { it.uppercase() },
+                style = if (isPrimary) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelSmall,
+                color = color,
+                fontWeight = if (isPrimary) FontWeight.Bold else FontWeight.Normal,
+            )
+        }
+    }
+}
+
+/**
+ * InsightCarousel — горизонтальный свайп карточек с инсайтами.
+ * 5 разных перспектив на день от разных "ролей".
+ */
+@Composable
+private fun InsightCarousel(insights: List<InsightItem>) {
+    Column {
+        Text(
+            text = "Перспективы",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            items(insights) { insight ->
+                Surface(
+                    modifier = Modifier.width(260.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    shadowElevation = 2.dp,
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text(
+                                text = insightRoleIcon(insight.role),
+                                fontSize = 20.sp,
+                            )
+                            Text(
+                                text = insightRoleLabel(insight.role),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = ColorIndigo,
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = insight.text,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 5,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+        // Page indicator dots
+        if (insights.size > 1) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                insights.forEachIndexed { idx, _ ->
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = 3.dp)
+                            .size(if (idx == 0) 8.dp else 6.dp)
+                            .background(
+                                color = if (idx == 0) ColorIndigo else ColorIndigo.copy(alpha = 0.3f),
+                                shape = CircleShape,
+                            ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * PatternSignalRow — новизна и повторения.
+ * Amber accent border для привлечения внимания к паттернам.
+ */
+@Composable
+private fun PatternSignalRow(
+    novelty: NoveltyInfo?,
+    repetitions: RepetitionsInfo?,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .drawBehind {
+                drawRoundRect(
+                    color = Color(0xFFFFB74D),
+                    cornerRadius = CornerRadius(12.dp.toPx()),
+                    style = Stroke(width = 1.dp.toPx()),
+                )
+            },
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = ColorAmber.copy(alpha = 0.06f),
+        ),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            // Novelty
+            novelty?.let { nov ->
+                if (nov.newTopics.isNotEmpty() && nov.score > 0.3f) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(text = "\u2728", fontSize = 16.sp) // sparkle
+                        Text(
+                            text = "Новое в вашей жизни: ${nov.newTopics.joinToString(", ")}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ColorTeal,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
+            }
+            // Repetitions
+            repetitions?.let { rep ->
+                rep.items.filter { it.streakDays > 2 }.forEach { item ->
+                    if (novelty != null && novelty.newTopics.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(text = "\uD83D\uDD04", fontSize = 16.sp) // repeat icon
+                        Text(
+                            text = "\"${item.topic}\" уже ${item.streakDays} дней подряд",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = ColorAmber,
+                        )
+                    }
+                }
+                rep.alertText?.let { alert ->
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = alert,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontStyle = FontStyle.Italic,
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ──────────────────────────────────────────────
+// Existing composables (updated/preserved)
+// ──────────────────────────────────────────────
+
+@Composable
+private fun ConfidenceLine(label: String, evidenceCount: Int) {
+    val color = confidenceColor(label)
+    val text = when {
+        evidenceCount == 0 -> "Записей пока нет. Нажмите «Запись», чтобы начать."
+        evidenceCount == 1 -> "Ответ основан на 1 событии, уверенность ${confidenceHumanLabel(label)}"
+        else -> "Ответ основан на $evidenceCount событиях, уверенность ${confidenceHumanLabel(label)}"
+    }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = color,
+    )
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AskThemesSection(themes: List<String>, emotions: List<String>) {
@@ -666,8 +1439,8 @@ private fun AskThemesSection(themes: List<String>, emotions: List<String>) {
                 onClick = {},
                 label = { Text(theme, style = MaterialTheme.typography.labelSmall) },
                 colors = SuggestionChipDefaults.suggestionChipColors(
-                    containerColor = ColorMedium.copy(alpha = 0.1f),
-                    labelColor = ColorMedium,
+                    containerColor = ColorIndigo.copy(alpha = 0.1f),
+                    labelColor = ColorIndigo,
                 ),
             )
         }
@@ -676,58 +1449,70 @@ private fun AskThemesSection(themes: List<String>, emotions: List<String>) {
                 onClick = {},
                 label = { Text(emotion, style = MaterialTheme.typography.labelSmall) },
                 colors = SuggestionChipDefaults.suggestionChipColors(
-                    containerColor = ColorLow.copy(alpha = 0.1f),
-                    labelColor = ColorLow,
+                    containerColor = ColorAmber.copy(alpha = 0.1f),
+                    labelColor = ColorAmber,
                 ),
             )
         }
     }
 }
 
-/**
- * AskMicroStepCard — карточка с рекомендацией на завтра.
- */
 @Composable
 private fun AskMicroStepCard(step: MicroStepInfo) {
+    var showWhy by remember { mutableStateOf(false) }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = ColorHigh.copy(alpha = 0.08f),
+            containerColor = ColorTeal.copy(alpha = 0.08f),
         ),
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                text = "Микрошаг на завтра",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = ColorHigh,
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(text = "\uD83D\uDE80", fontSize = 16.sp) // rocket
+                Text(
+                    text = "Микрошаг на завтра",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = ColorTeal,
+                )
+            }
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = step.action,
                 style = MaterialTheme.typography.bodyMedium,
             )
             if (step.why.isNotBlank()) {
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = step.why,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = if (showWhy) "Скрыть" else "Почему?",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ColorTeal,
+                    modifier = Modifier.clickable { showWhy = !showWhy },
                 )
+                AnimatedVisibility(
+                    visible = showWhy,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically(),
+                ) {
+                    Text(
+                        text = step.why,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
             }
         }
     }
 }
 
-// ──────────────────────────────────────────────
-// Existing composables (preserved)
-// ──────────────────────────────────────────────
-
 /**
- * ConfidenceBadge — chip с пульсирующей анимацией для speculative результатов.
- * Сохранён для backward compatibility (не используется в новом layout,
- * но может пригодиться в других экранах).
+ * ConfidenceBadge — preserved for backward compatibility.
  */
 @Composable
 private fun ConfidenceBadge(label: String, confidence: Double) {
@@ -756,10 +1541,6 @@ private fun ConfidenceBadge(label: String, confidence: Double) {
     )
 }
 
-/**
- * EvidenceTraceRow — горизонтальная лента улик.
- * [14:32 · стресс · red] [15:10 · работа · amber] [16:45 · финансы · green]
- */
 @Composable
 private fun EvidenceTraceRow(evidenceList: List<EvidenceMeta>) {
     LazyRow(

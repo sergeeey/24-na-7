@@ -1,6 +1,6 @@
 """Роутер для генерации дайджестов."""
 import json as _json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from fastapi import APIRouter, HTTPException, Query, Path as PathParam, Request, Response
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -33,8 +33,8 @@ def _get_cached_digest(target_date: str) -> dict | None:
             return _json.loads(row["digest_json"])
         if row and row["status"] == "generating":
             return {"_status": "generating"}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("digest_cache_read_failed", date=target_date, error=str(e))
     return None
 
 
@@ -48,98 +48,52 @@ async def get_digest_daily(
     force: bool = Query(False, description="Принудительная генерация (без кеша)"),
 ):
     """
-    Дневной итог для Android. Логика:
-    1. Есть кеш → мгновенный ответ
-    2. Сегодня до 18:30 → предыдущий день + status=pending
-    3. force=true или прошедшая дата → генерация inline (может занять 2-5 мин)
+    Дневной итог для Android. Единый источник с GET /query/digest:
+    1. Есть кеш за дату → мгновенный ответ
+    2. Нет кеша → генерация на лету за запрошенную дату (как query.get_digest)
+    3. Пусто → один формат _status=empty, _notice для UI
     """
     try:
         parsed_date = datetime.strptime(date, "%Y-%m-%d").date()
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
 
-    today = datetime.now().date()
-    now = datetime.now()
-
-    # 1. Проверяем кеш (если не force)
+    # 1. Кеш за запрошенную дату (если не force)
     if not force:
         cached = _get_cached_digest(date)
-        if cached and "_status" not in cached:
+        if cached and cached.get("_status") != "generating":
             return cached
-        if cached and cached.get("_status") == "generating":
-            # Идёт генерация — показываем предыдущий день
-            prev_date = (parsed_date - timedelta(days=1)).isoformat()
-            prev_cached = _get_cached_digest(prev_date)
-            if prev_cached and "_status" not in prev_cached:
-                prev_cached["_notice"] = "Анализ за сегодня готовится, показан предыдущий день"
-                prev_cached["_target_date"] = date
-                prev_cached["_status"] = "generating"
-                return prev_cached
+        # status=generating → всё равно отдаём live за дату ниже
+
+    # 2. Генерация на лету за запрошенную дату (согласовано с query.get_digest)
+    try:
+        generator = DigestGenerator()
+        result = generator.get_daily_digest_json(parsed_date, user_id=user_id)
+        has_content = (result.get("total_recordings") or 0) > 0 or bool(
+            (result.get("summary_text") or "").strip()
+        )
+        if not has_content:
+            today = datetime.now().date()
+            notice = (
+                "Пока нет записей за сегодня."
+                if parsed_date == today
+                else "Нет записей за этот день."
+            )
             return {
                 "date": date,
-                "summary_text": "Анализ дня готовится…",
+                "summary_text": "",
                 "key_themes": [],
                 "emotions": [],
                 "actions": [],
                 "total_recordings": 0,
                 "total_duration": "0m 0s",
                 "repetitions": [],
-                "_status": "generating",
-                "_notice": "Качественный анализ требует времени. Дайджест будет готов к 18:30.",
+                "_status": "empty",
+                "_notice": notice,
             }
-
-    # 2. Сегодня до 18:30 → показываем вчера
-    if parsed_date == today and not force:
-        is_before_ready = (
-            now.hour < _DIGEST_READY_HOUR
-            or (now.hour == _DIGEST_READY_HOUR and now.minute < _DIGEST_READY_MINUTE)
-        )
-        if is_before_ready:
-            yesterday = (today - timedelta(days=1)).isoformat()
-            prev_cached = _get_cached_digest(yesterday)
-            if prev_cached and "_status" not in prev_cached:
-                prev_cached["_notice"] = "Сегодняшний дайджест будет готов к 18:30. Показан вчерашний."
-                prev_cached["_target_date"] = date
-                prev_cached["_status"] = "pending"
-                return prev_cached
-            # Нет кеша за вчера — генерируем вчера inline и кешируем
-            try:
-                generator = DigestGenerator()
-                yesterday_date = today - timedelta(days=1)
-                result = generator.get_daily_digest_json(yesterday_date, user_id=user_id)
-                # Кешируем вчера чтобы следующий запрос был мгновенным
-                try:
-                    db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
-                    db.execute(
-                        "INSERT OR REPLACE INTO digest_cache (date, digest_json, generated_at, status) VALUES (?, ?, ?, ?)",
-                        (yesterday, _json.dumps(result, ensure_ascii=False), datetime.now().isoformat(), "ready"),
-                    )
-                    db.conn.commit()
-                except Exception:
-                    pass
-                result["_notice"] = "Сегодняшний дайджест будет готов к 18:30. Показан вчерашний."
-                result["_target_date"] = date
-                result["_status"] = "pending"
-                return result
-            except Exception:
-                return {
-                    "date": date,
-                    "summary_text": "",
-                    "key_themes": [],
-                    "emotions": [],
-                    "actions": [],
-                    "total_recordings": 0,
-                    "total_duration": "0m 0s",
-                    "repetitions": [],
-                    "_status": "pending",
-                    "_notice": "Дайджест будет готов к 18:30. Записи за вчера отсутствуют.",
-                }
-
-    # 3. Генерация inline (force=true, или прошедшая дата без кеша, или после 18:30)
-    try:
-        generator = DigestGenerator()
-        result = generator.get_daily_digest_json(parsed_date, user_id=user_id)
-        # Кешируем результат
+        result["_lineage"] = result.get("_lineage") or {}
+        result["_lineage"]["live"] = True
+        # Кешируем для следующих запросов
         try:
             db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
             db.execute(
@@ -147,8 +101,8 @@ async def get_digest_daily(
                 (date, _json.dumps(result, ensure_ascii=False), datetime.now().isoformat(), "ready"),
             )
             db.conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("digest_cache_write_failed", date=date, error=str(e))
         return result
     except Exception as e:
         logger.exception("digest_daily_failed", date=date, error=str(e))

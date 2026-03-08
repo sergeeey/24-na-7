@@ -117,12 +117,17 @@ class OpenAIClient(LLMClient):
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
-            
+            try:
+                from src.utils.config import settings as _cfg
+                timeout = kwargs.pop("timeout", getattr(_cfg, "LLM_TIMEOUT_SEC", 120.0))
+            except Exception:
+                timeout = kwargs.pop("timeout", 120.0)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature,
                 max_tokens=max_tokens,
+                timeout=timeout,
                 **kwargs
             )
             
@@ -218,12 +223,18 @@ class AnthropicClient(LLMClient):
         logger.info("llm_call_started", **reasoning_trace)
 
         try:
+            try:
+                from src.utils.config import settings as _cfg
+                timeout = kwargs.pop("timeout", getattr(_cfg, "LLM_TIMEOUT_SEC", 120.0))
+            except Exception:
+                timeout = kwargs.pop("timeout", 120.0)
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=max_tokens,
                 temperature=self.temperature,
                 system=system_prompt or "",
                 messages=[{"role": "user", "content": prompt}],
+                timeout=timeout,
                 **kwargs
             )
             
@@ -281,20 +292,21 @@ class GoogleGeminiClient(LLMClient):
             self.api_key = getattr(_s, "GOOGLE_API_KEY", None) or getattr(_s, "GEMINI_API_KEY", None) or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         except Exception:
             self.api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-        
+
         if not self.api_key:
             logger.warning("GOOGLE_API_KEY not set")
             return
-        
+
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=self.api_key)
-            self.client = genai.GenerativeModel(model)
+            # ПОЧЕМУ google.genai: старый google.generativeai задепрекейтен Google (2025).
+            # Новый SDK: from google import genai → client = genai.Client(api_key=...).
+            from google import genai
+            self.client = genai.Client(api_key=self.api_key)
         except ImportError:
-            logger.error("google-generativeai library not installed. Run: pip install google-generativeai")
-    
+            logger.error("google-genai library not installed. Run: pip install google-genai")
+
     def call(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1000, **kwargs) -> Dict[str, Any]:
-        """Вызывает Google Gemini API."""
+        """Вызывает Google Gemini API через новый google.genai SDK."""
         if not self.client:
             return {
                 "text": "",
@@ -302,30 +314,36 @@ class GoogleGeminiClient(LLMClient):
                 "tokens_used": 0,
                 "latency_ms": 0,
             }
-        
+
         start_time = time.time()
-        
+
         try:
             full_prompt = prompt
             if system_prompt:
                 full_prompt = f"{system_prompt}\n\n{prompt}"
-            
-            response = self.client.generate_content(
-                full_prompt,
-                generation_config={
-                    "temperature": self.temperature,
-                    "max_output_tokens": max_tokens,
-                },
-                **kwargs
+
+            # ПОЧЕМУ contents=full_prompt: новый SDK принимает строку напрямую,
+            # generation_config через types.GenerateContentConfig.
+            from google.genai import types
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=full_prompt,
+                config=types.GenerateContentConfig(
+                    temperature=self.temperature,
+                    max_output_tokens=max_tokens,
+                ),
             )
-            
+
             latency_ms = (time.time() - start_time) * 1000
-            
+
             text = response.text if hasattr(response, "text") else ""
-            
+            tokens_used = 0
+            if hasattr(response, "usage_metadata") and response.usage_metadata:
+                tokens_used = getattr(response.usage_metadata, "total_token_count", 0) or 0
+
             return {
                 "text": text,
-                "tokens_used": response.usage_metadata.total_token_count if hasattr(response, "usage_metadata") else 0,
+                "tokens_used": tokens_used,
                 "latency_ms": round(latency_ms, 2),
                 "model": self.model,
             }
@@ -433,7 +451,7 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
         default_models = {
             "openai": "gpt-4o-mini" if role == "actor" else "gpt-4o",
             "anthropic": "claude-haiku-4-5-20251001" if role == "actor" else "claude-sonnet-4-6",
-            "google": "gemini-2.0-flash" if role == "actor" else "gemini-2.0-flash",
+            "google": "gemini-2.5-flash" if role == "actor" else "gemini-2.5-flash",
         }
 
         model = (
@@ -453,7 +471,7 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
         default_models = {
             "openai": "gpt-4o-mini" if role == "actor" else "gpt-4o",
             "anthropic": "claude-haiku-4-5-20251001" if role == "actor" else "claude-sonnet-4-6",
-            "google": "gemini-2.0-flash" if role == "actor" else "gemini-2.0-flash",
+            "google": "gemini-2.5-flash" if role == "actor" else "gemini-2.5-flash",
         }
         model = os.getenv(f"LLM_MODEL_{role.upper()}", default_models.get(provider_name, "gpt-4o-mini"))
         temperature = float(os.getenv(f"LLM_TEMPERATURE_{role.upper()}", "0.3" if role == "actor" else "0.0"))
@@ -477,7 +495,7 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
             cascade_order_str = cascade_order_str or os.getenv("LLM_CASCADE_ORDER", "google,anthropic,openai")
 
             cascade_defaults = {
-                "google": ("gemini-2.0-flash", GoogleGeminiClient),
+                "google": ("gemini-2.5-flash", GoogleGeminiClient),
                 "anthropic": ("claude-haiku-4-5-20251001", AnthropicClient),
                 "openai": ("gpt-4o-mini", OpenAIClient),
             }

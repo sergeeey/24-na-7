@@ -74,15 +74,16 @@ class VoiceflowRAG:
             
             if response.status_code == 200:
                 data = response.json()
-                
-                # Извлекаем intent из ответа
-                intent = data.get("trace", [{}])[0].get("payload", {}).get("intent", "unknown")
-                confidence = data.get("trace", [{}])[0].get("payload", {}).get("confidence", 0.0)
-                
+                trace = data.get("trace") or []
+                first = trace[0] if trace else {}
+                payload = first.get("payload", {}) if isinstance(first, dict) else {}
+                intent = payload.get("intent", "unknown")
+                confidence = payload.get("confidence", 0.0)
+                entities = payload.get("entities", [])
                 return {
                     "intent": intent,
                     "confidence": confidence,
-                    "entities": data.get("trace", [{}])[0].get("payload", {}).get("entities", []),
+                    "entities": entities,
                     "provider": "voiceflow",
                 }
             else:

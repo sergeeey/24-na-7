@@ -1,11 +1,9 @@
 """Роутер для голосовых операций: intent recognition + voice enrollment."""
-from __future__ import annotations
-
 import tempfile
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, HTTPException, Request, Response, UploadFile, File
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -53,7 +51,7 @@ async def recognize_intent(request: Request, response: Response):
         raise HTTPException(status_code=500, detail="Intent recognition failed")
 
 
-@router.post("/enroll")
+@router.post("/enroll", response_model=None)
 @limiter.limit("5/minute")
 async def enroll_voice(
     request: Request,
@@ -148,13 +146,19 @@ async def enroll_voice(
         }
 
     except ValueError as e:
-        # Validation errors (too short samples, too few)
+        # Validation errors (too short samples, too few, embed failed)
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("voice_enrollment_failed", user_id=user_id, error=str(e))
-        raise HTTPException(status_code=500, detail="Voice enrollment failed")
+        logger.error("voice_enrollment_failed", user_id=user_id, error=str(e), exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Не удалось создать голосовой профиль. "
+                "Убедитесь, что каждый образец 3–10 сек и записан без помех."
+            ),
+        )
     finally:
         # Всегда удаляем временные файлы
         for tmp_path in tmp_paths:

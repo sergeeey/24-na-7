@@ -61,6 +61,7 @@ def verify_row_counts() -> Dict[str, Any]:
         "differences": [],
     }
     
+    conn = None
     try:
         # Подключаемся к SQLite
         from src.utils.config import settings
@@ -80,7 +81,6 @@ def verify_row_counts() -> Dict[str, Any]:
         
         if not supabase:
             result["error"] = "Supabase client not available"
-            conn.close()
             return result
         
         # Таблицы для проверки
@@ -114,12 +114,12 @@ def verify_row_counts() -> Dict[str, Any]:
                 
                 if not match:
                     result["match"] = False
-                    result["differences"].append({
-                        "table": table,
-                        "sqlite": sqlite_count,
-                        "supabase": supabase_count,
-                        "diff": abs(sqlite_count - supabase_count),
-                    })
+                result["differences"].append({
+                    "table": table,
+                    "sqlite": sqlite_count,
+                    "supabase": supabase_count,
+                    "diff": abs(sqlite_count - supabase_count),
+                })
                     
             except Exception as e:
                 logger.warning(f"Failed to verify {table}", error=str(e))
@@ -129,11 +129,12 @@ def verify_row_counts() -> Dict[str, Any]:
                     "error": str(e),
                 }
         
-        conn.close()
-        
     except Exception as e:
         logger.error("verify_row_counts_failed", error=str(e))
         result["error"] = str(e)
+    finally:
+        if conn is not None:
+            conn.close()
     
     return result
 
@@ -182,74 +183,77 @@ def migrate_to_supabase(dry_run: bool = False) -> Dict[str, Any]:
             result["errors"].append(f"SQLite database not found: {sqlite_path}")
             return result
         
-        conn = sqlite3.connect(str(sqlite_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        conn = None
+        try:
+            conn = sqlite3.connect(str(sqlite_path))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
         
-        # Список таблиц для миграции (старые + новые)
-        tables = [
-            "ingest_queue", "transcriptions", "facts", "digests",  # Старые таблицы
-            "missions", "claims", "audio_meta", "text_entries", "insights", "metrics"  # Новые таблицы
-        ]
+            # Список таблиц для миграции (старые + новые)
+            tables = [
+                "ingest_queue", "transcriptions", "facts", "digests",  # Старые таблицы
+                "missions", "claims", "audio_meta", "text_entries", "insights", "metrics"  # Новые таблицы
+            ]
         
-        for table in tables:
-            try:
-                cursor.execute(f"SELECT COUNT(*) FROM {table}")  # nosec B608 — table from hardcoded list
-                count = cursor.fetchone()[0]
+            for table in tables:
+                try:
+                    cursor.execute(f"SELECT COUNT(*) FROM {table}")  # nosec B608 — table from hardcoded list
+                    count = cursor.fetchone()[0]
                 
-                result["tables"][table] = {
-                    "sqlite_count": count,
-                    "migrated": False,
-                }
+                    result["tables"][table] = {
+                        "sqlite_count": count,
+                        "migrated": False,
+                    }
                 
-                if count == 0:
-                    logger.info(f"Skipping empty table: {table}")
-                    continue
+                    if count == 0:
+                        logger.info(f"Skipping empty table: {table}")
+                        continue
                 
-                if dry_run:
-                    result["tables"][table]["would_migrate"] = True
-                    logger.info(f"[DRY RUN] Would migrate {count} rows from {table}")
-                    continue
+                    if dry_run:
+                        result["tables"][table]["would_migrate"] = True
+                        logger.info(f"[DRY RUN] Would migrate {count} rows from {table}")
+                        continue
                 
-                # Читаем данные
-                cursor.execute(f"SELECT * FROM {table}")  # nosec B608 — table from hardcoded list
-                rows = cursor.fetchall()
+                    # Читаем данные
+                    cursor.execute(f"SELECT * FROM {table}")  # nosec B608 — table from hardcoded list
+                    rows = cursor.fetchall()
                 
-                # Конвертируем в словари
-                data = [dict(row) for row in rows]
+                    # Конвертируем в словари
+                    data = [dict(row) for row in rows]
                 
-                # Конвертируем данные для PostgreSQL
-                for row in data:
-                    # JSON строки → JSONB
-                    for key in ["segments", "parameters", "source_urls", "evidence"]:
-                        if key in row and row[key] and isinstance(row[key], str):
-                            try:
-                                row[key] = json.loads(row[key])
-                            except Exception:
-                                pass
+                    # Конвертируем данные для PostgreSQL
+                    for row in data:
+                        # JSON строки → JSONB
+                        for key in ["segments", "parameters", "source_urls", "evidence"]:
+                            if key in row and row[key] and isinstance(row[key], str):
+                                try:
+                                    row[key] = json.loads(row[key])
+                                except Exception:
+                                    pass
                     
-                    # TEXT ID → UUID (если нужно)
-                    if "id" in row and isinstance(row["id"], str) and len(row["id"]) != 36:
-                        # Оставляем как есть, Supabase примет
-                        pass
+                        # TEXT ID → UUID (если нужно)
+                        if "id" in row and isinstance(row["id"], str) and len(row["id"]) != 36:
+                            # Оставляем как есть, Supabase примет
+                            pass
                 
-                # Вставляем в Supabase
-                if data:
-                    response = supabase.table(table).insert(data).execute()
-                    migrated_count = len(response.data) if response.data else len(data)
-                    result["tables"][table]["migrated"] = True
-                    result["tables"][table]["supabase_count"] = migrated_count
+                    # Вставляем в Supabase
+                    if data:
+                        response = supabase.table(table).insert(data).execute()
+                        migrated_count = len(response.data) if response.data else len(data)
+                        result["tables"][table]["migrated"] = True
+                        result["tables"][table]["supabase_count"] = migrated_count
                     
-                    logger.info(f"Migrated {migrated_count} rows to {table}")
+                        logger.info(f"Migrated {migrated_count} rows to {table}")
                     
-            except Exception as e:
-                logger.error(f"Failed to migrate {table}", error=str(e))
-                result["tables"][table]["error"] = str(e)
-                result["errors"].append(f"{table}: {str(e)}")
+                except Exception as e:
+                    logger.error(f"Failed to migrate {table}", error=str(e))
+                    result["tables"][table]["error"] = str(e)
+                    result["errors"].append(f"{table}: {str(e)}")
         
-        conn.close()
-        
-        result["status"] = "success" if not result["errors"] else "partial"
+            result["status"] = "success" if not result["errors"] else "partial"
+        finally:
+            if conn is not None:
+                conn.close()
         
     except Exception as e:
         logger.error("migration_failed", error=str(e))
@@ -339,32 +343,35 @@ def apply_schema_migrations(backend: str = "supabase") -> Dict[str, Any]:
                 import sqlite3
                 
                 db_path = settings.STORAGE_PATH / "reflexio.db"
-                conn = sqlite3.connect(str(db_path))
-                cursor = conn.cursor()
+                conn = None
+                try:
+                    conn = sqlite3.connect(str(db_path))
+                    cursor = conn.cursor()
                 
-                # Адаптируем SQL для SQLite
-                sqlite_sql = migration_sql
-                # Убираем PostgreSQL-специфичные конструкции
-                sqlite_sql = sqlite_sql.replace("UUID", "TEXT")
-                sqlite_sql = sqlite_sql.replace("gen_random_uuid()", "(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))")
-                sqlite_sql = sqlite_sql.replace("JSONB", "TEXT")
-                sqlite_sql = sqlite_sql.replace("TIMESTAMP WITH TIME ZONE", "TIMESTAMP")
-                sqlite_sql = sqlite_sql.replace("TIMESTAMPTZ", "TIMESTAMP")
-                sqlite_sql = sqlite_sql.replace("vector(1536)", "TEXT")  # pgvector не поддерживается в SQLite
-                sqlite_sql = sqlite_sql.replace("SERIAL", "INTEGER")
-                sqlite_sql = sqlite_sql.replace("now()", "datetime('now')")
+                    # Адаптируем SQL для SQLite
+                    sqlite_sql = migration_sql
+                    # Убираем PostgreSQL-специфичные конструкции
+                    sqlite_sql = sqlite_sql.replace("UUID", "TEXT")
+                    sqlite_sql = sqlite_sql.replace("gen_random_uuid()", "(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))")
+                    sqlite_sql = sqlite_sql.replace("JSONB", "TEXT")
+                    sqlite_sql = sqlite_sql.replace("TIMESTAMP WITH TIME ZONE", "TIMESTAMP")
+                    sqlite_sql = sqlite_sql.replace("TIMESTAMPTZ", "TIMESTAMP")
+                    sqlite_sql = sqlite_sql.replace("vector(1536)", "TEXT")  # pgvector не поддерживается в SQLite
+                    sqlite_sql = sqlite_sql.replace("SERIAL", "INTEGER")
+                    sqlite_sql = sqlite_sql.replace("now()", "datetime('now')")
                 
-                # Убираем RLS политики (не поддерживаются в SQLite)
-                if "0003_rls_policies" in migration_file.name:
-                    logger.info(f"Skipping RLS policies for SQLite: {migration_file.name}")
-                    result["migrations_applied"].append(migration_file.name + " (skipped - RLS not supported)")
-                else:
-                    cursor.executescript(sqlite_sql)
-                    conn.commit()
-                    result["migrations_applied"].append(migration_file.name)
-                    logger.info(f"Applied migration {migration_file.name} to SQLite")
-                
-                conn.close()
+                    # Убираем RLS политики (не поддерживаются в SQLite)
+                    if "0003_rls_policies" in migration_file.name:
+                        logger.info(f"Skipping RLS policies for SQLite: {migration_file.name}")
+                        result["migrations_applied"].append(migration_file.name + " (skipped - RLS not supported)")
+                    else:
+                        cursor.executescript(sqlite_sql)
+                        conn.commit()
+                        result["migrations_applied"].append(migration_file.name)
+                        logger.info(f"Applied migration {migration_file.name} to SQLite")
+                finally:
+                    if conn is not None:
+                        conn.close()
                 
         except Exception as e:
             logger.error(f"Failed to apply migration {migration_file.name}", error=str(e))

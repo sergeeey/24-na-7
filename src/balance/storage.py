@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from src.storage.db import get_reflexio_db
+from src.utils.date_utils import resolve_date_range
 
 DEFAULT_DOMAINS = {
     "work": ["работа", "задача", "встреча", "проект", "клиент", "дедлайн", "банк", "безопасность"],
@@ -142,16 +143,19 @@ def _score_from_mentions(mentions: int, max_mentions: int) -> float:
 def get_balance_wheel(db_path: Path, from_date: date, to_date: date) -> dict[str, Any]:
     ensure_balance_tables(db_path)
     db = get_reflexio_db(db_path)
+    # ПОЧЕМУ resolve_date_range: timezone-safe UTC-диапазон для Алматы UTC+6
+    dr = resolve_date_range(start_str=from_date.isoformat(), end_str=to_date.isoformat())
+    start_utc, end_utc = dr.sql_range()
     rows = db.fetchall(
         """
         SELECT json_each.value as domain,
                COUNT(*) as mention_count,
                AVG(CASE WHEN sentiment='positive' THEN 1.0 WHEN sentiment='negative' THEN -1.0 ELSE 0.0 END) as avg_sentiment
         FROM structured_events, json_each(structured_events.domains)
-        WHERE DATE(created_at) BETWEEN ? AND ?
+        WHERE created_at BETWEEN ? AND ?
         GROUP BY json_each.value
         """,
-        (from_date.isoformat(), to_date.isoformat()),
+        (start_utc, end_utc),
     )
 
     mention_max = max([int(r["mention_count"]) for r in rows], default=0)

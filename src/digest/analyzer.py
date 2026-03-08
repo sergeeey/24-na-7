@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.storage.db import get_reflexio_db
 from src.utils.config import settings
+from src.utils.date_utils import resolve_date_range
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics, interpret_semantic_density, interpret_wpm_rate
 
@@ -37,6 +38,10 @@ class InformationDensityAnalyzer:
         
         db = get_reflexio_db(self.db_path)
 
+        # ПОЧЕМУ BETWEEN: timezone-safe, resolve_date_range конвертирует день Алматы → UTC-диапазон
+        dr = resolve_date_range(target_date.isoformat())
+        start_utc, end_utc = dr.sql_range()
+
         # Получаем статистику транскрипций
         row = db.fetchone("""
             SELECT
@@ -45,21 +50,21 @@ class InformationDensityAnalyzer:
                 SUM(LENGTH(text)) as total_chars,
                 AVG(LENGTH(text)) as avg_chars
             FROM transcriptions
-            WHERE DATE(created_at) = ?
-        """, (target_date.isoformat(),))
+            WHERE created_at BETWEEN ? AND ?
+        """, (start_utc, end_utc))
 
         stats = dict(row) if row else {}
 
-        # Распределение по часам
+        # Распределение по часам (UTC+6 для отображения)
         hourly_rows = db.fetchall("""
             SELECT
-                strftime('%H', created_at) as hour,
+                strftime('%H', created_at, '+6 hours') as hour,
                 COUNT(*) as count
             FROM transcriptions
-            WHERE DATE(created_at) = ?
+            WHERE created_at BETWEEN ? AND ?
             GROUP BY hour
             ORDER BY hour
-        """, (target_date.isoformat(),))
+        """, (start_utc, end_utc))
 
         hourly_distribution = {r[0]: r[1] for r in hourly_rows}
 
@@ -82,9 +87,9 @@ class InformationDensityAnalyzer:
                     duration,
                     created_at
                 FROM transcriptions
-                WHERE DATE(created_at) = ?
+                WHERE created_at BETWEEN ? AND ?
                 ORDER BY created_at ASC
-            """, (target_date.isoformat(),))
+            """, (start_utc, end_utc))
             transcriptions = [dict(r) for r in trans_rows]
 
         # Вычисляем расширенные метрики (если включено)

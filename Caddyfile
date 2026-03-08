@@ -13,9 +13,10 @@
 #   cp Caddyfile /etc/caddy/Caddyfile
 #   systemctl reload caddy
 #
-# ЗАМЕНИ: reflexio.duckdns.org → твой реальный домен (DuckDNS или купленный)
+# Оба домена ведут на один backend (DuckDNS).
+# reflexio247.duckdns.org — используется в android/local.properties (SERVER_WS_URL_DEVICE).
 
-reflexio.duckdns.org {
+reflexio.duckdns.org reflexio247.duckdns.org {
     # Автоматический SSL от Let's Encrypt — Caddy сам получает и обновляет
     # WebSocket проксирование работает автоматически (Upgrade header передаётся)
     reverse_proxy localhost:8000 {

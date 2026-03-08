@@ -8,7 +8,6 @@ import hashlib
 import json
 import math
 import os
-import sqlite3
 
 from src.utils.logging import get_logger
 

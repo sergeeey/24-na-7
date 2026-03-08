@@ -43,8 +43,9 @@ class IngestWebSocketClient(
     /**
      * Sends one WAV file to the server. Returns IngestResult (transcription + fileId) on success.
      * Connects, sends binary, waits for "received" then "transcription" or "error", then closes.
+     * @param onStage вызывается при получении этапа от сервера (например "received") для диагностики в UI.
      */
-    suspend fun sendSegment(file: File): Result<IngestResult> = withContext(Dispatchers.IO) {
+    suspend fun sendSegment(file: File, onStage: ((String) -> Unit)? = null): Result<IngestResult> = withContext(Dispatchers.IO) {
         if (!file.exists()) return@withContext Result.failure(IllegalArgumentException("File not found: ${file.absolutePath}"))
         val bytes = file.readBytes()
         if (bytes.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Empty file"))
@@ -73,6 +74,7 @@ class IngestWebSocketClient(
                         val json = JSONObject(text)
                         when (json.optString("type")) {
                             "received" -> {
+                                onStage?.invoke("received")
                                 // ПОЧЕМУ сохраняем fileId из "received": это первый ответ
                                 // с file_id, нужен для запроса enrichment позже
                                 fileId = json.optString("file_id", "").ifEmpty { null }

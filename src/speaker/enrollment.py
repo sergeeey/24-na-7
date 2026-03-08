@@ -82,7 +82,10 @@ def enroll_from_wavs(
             logger.debug("enrollment_sample_embedded", path=wav_path.name, duration_sec=round(duration_sec, 1))
         except Exception as e:
             logger.warning("enrollment_embed_failed", path=str(wav_path), error=str(e))
-            raise
+            # Пользователю: образец не подошёл (тишина, шум, модель)
+            raise ValueError(
+                f"Образец {wav_path.name} не подошёл для голоса. Запишите 3–10 сек чёткой речи без помех."
+            ) from e
 
     # Усреднённый embedding = "средний голос" пользователя
     # ПОЧЕМУ mean: каждый образец немного отличается (громкость, скорость, шум).

@@ -12,7 +12,6 @@ Digest Data Lineage — связь дайджестов с исходными т
 """
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List
 
 from src.utils.logging import get_logger

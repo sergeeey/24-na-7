@@ -5,6 +5,7 @@ description = "Reflexio 24/7 — умный диктофон и дневной �
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.110.0",
+    "starlette>=0.37.2",
     "uvicorn[standard]>=0.29.0",
     "python-dotenv>=1.0.0",
     "structlog>=23.2.0",

@@ -13,6 +13,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -27,6 +28,7 @@ import com.reflexio.app.data.model.RecordingStatus
 import com.reflexio.app.debug.DebugLog
 import com.reflexio.app.domain.network.EnrichmentApiClient
 import com.reflexio.app.domain.network.IngestWebSocketClient
+import com.reflexio.app.domain.pipeline.PipelineDiagnostics
 import com.reflexio.app.domain.vad.VadSegmentWriter
 import com.reflexio.app.domain.workers.UploadWorker
 import com.reflexio.app.ui.MainActivity
@@ -52,6 +54,10 @@ class AudioRecordingService : Service() {
     private val scope = CoroutineScope(Dispatchers.Default + Job())
     private var recordingDao: RecordingDao? = null
     private var pendingUploadDao: PendingUploadDao? = null
+    // ПОЧЕМУ WakeLock: без него CPU засыпает при выключенном экране,
+    // AudioRecord.read() перестаёт получать данные. PARTIAL_WAKE_LOCK держит CPU,
+    // но позволяет экрану выключиться — минимальный расход батареи.
+    private var wakeLock: PowerManager.WakeLock? = null
 
     companion object {
         private const val SAMPLE_RATE = 16000
@@ -94,6 +100,7 @@ class AudioRecordingService : Service() {
             return START_STICKY
         }
         startForeground(NOTIFICATION_ID, createForegroundNotification())
+        acquireWakeLock()
         startRecording()
         UploadWorker.enqueue(this)
         return START_STICKY
@@ -227,6 +234,7 @@ class AudioRecordingService : Service() {
             val id = withContext(Dispatchers.IO) { recordingDao!!.insert(recording) }
             withContext(Dispatchers.IO) {
                 pendingUploadDao?.upsert(PendingUpload(recordingId = id, filePath = file.absolutePath))
+                PipelineDiagnostics.setStage(this@AudioRecordingService, "queued")
             }
             UploadWorker.enqueue(this)
             scope.launch { sendAudioToServer(file, id) }
@@ -286,7 +294,10 @@ class AudioRecordingService : Service() {
     private suspend fun sendAudioToServer(file: File, recordingId: Long) {
         val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
         val wsClient = IngestWebSocketClient(baseUrl = baseUrl, apiKey = BuildConfig.SERVER_API_KEY)
-        val result = wsClient.sendSegment(file)
+        PipelineDiagnostics.setStage(this, "uploaded")
+        val result = wsClient.sendSegment(file) { stage ->
+            PipelineDiagnostics.setStage(this@AudioRecordingService, stage)
+        }
         withContext(Dispatchers.IO) {
             val dao = recordingDao ?: return@withContext
             val rec = dao.getById(recordingId) ?: return@withContext
@@ -300,12 +311,16 @@ class AudioRecordingService : Service() {
                     )
                 )
                 pendingUploadDao?.deleteByRecordingId(recordingId)
+                PipelineDiagnostics.setStage(this@AudioRecordingService, "transcribed")
+                PipelineDiagnostics.clearError(this@AudioRecordingService)
                 runCatching { if (file.exists()) file.delete() }
-
+                PipelineDiagnostics.setStage(this@AudioRecordingService, "deleted")
                 ingestResult?.fileId?.let { fileId ->
                     scope.launch { fetchEnrichment(recordingId, fileId) }
                 }
             } else {
+                PipelineDiagnostics.setStage(this@AudioRecordingService, "error")
+                PipelineDiagnostics.setError(this@AudioRecordingService, result.exceptionOrNull()?.message)
                 val pending = pendingUploadDao?.findByRecordingId(recordingId)
                 val next = if (pending == null) {
                     PendingUpload(
@@ -360,12 +375,22 @@ class AudioRecordingService : Service() {
         }
     }
 
+    private fun acquireWakeLock() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "reflexio:recording").apply {
+            acquire()
+        }
+        Log.d(TAG, "WakeLock acquired")
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         isRecording = false
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
         scope.coroutineContext[Job]?.cancel()
     }
 

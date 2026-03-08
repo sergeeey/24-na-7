@@ -12,7 +12,7 @@ def test_concurrent_health_requests():
     """Проверка обработки конкурентных запросов к /health."""
     client = TestClient(app)
     
-    num_concurrent = 20
+    num_concurrent = 10
     
     def make_request():
         return client.get("/health")

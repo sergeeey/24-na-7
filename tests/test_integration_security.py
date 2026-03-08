@@ -2,18 +2,19 @@
 Интеграционные тесты безопасности (W1D4).
 Проверка работы всех security компонентов вместе.
 """
-import pytest
 import os
 import time
 from unittest.mock import patch
 
-# Устанавливаем переменные окружения для тестов
+import pytest
+
+# Устанавливаем переменные окружения до импорта security-модулей
 os.environ["SAFE_MODE"] = "disabled"
 os.environ["VAULT_ENABLED"] = "false"
 
-from src.utils.vault_client import SecretManager
-from src.utils.input_guard import InputGuard, ThreatLevel
-from src.utils.guardrails import Guardrails, PIIDetector
+from src.utils.vault_client import SecretManager  # noqa: E402
+from src.utils.input_guard import InputGuard, ThreatLevel  # noqa: E402
+from src.utils.guardrails import Guardrails, PIIDetector  # noqa: E402
 
 
 class TestRateLimitAndInputGuard:

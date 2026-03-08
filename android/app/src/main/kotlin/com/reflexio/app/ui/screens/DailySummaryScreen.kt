@@ -191,8 +191,36 @@ private fun DailySummaryContent(data: DailyDigestData) {
     val completedStates = remember { mutableStateListOf(*BooleanArray(data.actions.size) { data.actions[it].done }.toTypedArray()) }
 
     Column(modifier = Modifier.verticalScroll(scroll)) {
-        // === Confidence UX: data quality label ===
         val sourcesCount = data.sources_count
+        val totalRecordings = data.total_recordings
+
+        // === Пустое состояние: записей нет (согласовано с бэкендом _status=empty, _notice) ===
+        if (totalRecordings == 0 || sourcesCount == 0) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = ColorTeal.copy(alpha = 0.08f),
+                ),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = data.notice.takeIf { data.status == "empty" } ?: "Сегодня записей пока нет.",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Нажмите «Запись» внизу экрана, чтобы начать.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // === Confidence UX: data quality label ===
         if (sourcesCount in 1..4) {
             Text(
                 text = "На основе $sourcesCount записей — мало данных",
@@ -812,8 +840,8 @@ private fun fetchDailyDigest(baseHttpUrl: String, date: String): DailyDigestResu
             day_map = dayMap,
             micro_step = microStep,
             novelty = novelty,
-            notice = json.optString("_notice", null),
-            status = json.optString("_status", null),
+            notice = if (json.has("_notice")) json.getString("_notice") else null,
+            status = if (json.has("_status")) json.getString("_status") else null,
         )
         DailyDigestResult.Success(data)
     } catch (e: Exception) {

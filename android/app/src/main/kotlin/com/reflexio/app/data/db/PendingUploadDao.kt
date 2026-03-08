@@ -18,9 +18,15 @@ interface PendingUploadDao {
     @Query("SELECT * FROM pending_uploads WHERE status = 'pending' ORDER BY createdAt ASC")
     suspend fun getPending(): List<PendingUpload>
 
+    @Query("SELECT COUNT(*) FROM pending_uploads WHERE status = 'pending'")
+    suspend fun getPendingCount(): Int
+
     @Query("SELECT * FROM pending_uploads WHERE recordingId = :recordingId LIMIT 1")
     suspend fun findByRecordingId(recordingId: Long): PendingUpload?
 
     @Query("DELETE FROM pending_uploads WHERE recordingId = :recordingId")
     suspend fun deleteByRecordingId(recordingId: Long)
+
+    @Query("SELECT * FROM pending_uploads WHERE status = 'failed' ORDER BY createdAt DESC LIMIT 1")
+    suspend fun getLastFailed(): PendingUpload?
 }

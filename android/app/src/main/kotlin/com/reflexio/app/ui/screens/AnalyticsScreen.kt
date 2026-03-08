@@ -57,19 +57,22 @@ fun AnalyticsScreen(
         AnalyticsItem(
             title = "Отчёт за месяц",
             description = "Сводка за месяц: темы, паттерны, динамика",
-            available = false
+            available = false,
+            unavailableHint = "Данные появятся после нескольких дней записей"
         )
         Spacer(modifier = Modifier.height(8.dp))
         AnalyticsItem(
             title = "Характеристика",
             description = "Самопортрет по записям: как вы говорите о себе, работе, целях",
-            available = false
+            available = false,
+            unavailableHint = "В разработке — будет в следующих обновлениях"
         )
         Spacer(modifier = Modifier.height(8.dp))
         AnalyticsItem(
             title = "Работа и сеть",
             description = "Темы по работе, коллегам, отношениям, встречам",
-            available = false
+            available = false,
+            unavailableHint = "В разработке — будет в следующих обновлениях"
         )
         Spacer(modifier = Modifier.height(16.dp))
         Card(
@@ -97,7 +100,8 @@ private fun AnalyticsItem(
     title: String,
     description: String,
     available: Boolean,
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    unavailableHint: String? = null,
 ) {
     val modifier = if (available && onClick != null) {
         Modifier.fillMaxWidth().clickable(onClick = onClick)
@@ -129,9 +133,10 @@ private fun AnalyticsItem(
             }
             if (!available) {
                 Text(
-                    text = "Скоро",
+                    text = unavailableHint ?: "Данные появятся после нескольких дней записей",
                     style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(start = 8.dp)
+                    modifier = Modifier.padding(start = 8.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

@@ -50,7 +50,7 @@ def merge_confidence(results: list["ToolResult"]) -> ConfidenceSummary:
             label=ConfidenceLabel.SPECULATIVE.value,
             evidence_count=0,
             tool_count=0,
-            speculative_warning="No valid tool results.",
+            speculative_warning="Пока нет данных для ответа. Начните запись или уточните период.",
             needs_clarification=True,
         )
 
@@ -75,13 +75,12 @@ def merge_confidence(results: list["ToolResult"]) -> ConfidenceSummary:
     needs_clarification = False
     if label == ConfidenceLabel.SPECULATIVE:
         warning = (
-            f"Уверенность низкая ({avg:.0%}). "
-            f"Найдено {total_evidence} источников. "
-            "Попробуйте уточнить запрос или указать период."
+            "Мало данных за выбранный период. "
+            "Попробуйте уточнить запрос или указать другой период."
         )
         needs_clarification = True
     elif label == ConfidenceLabel.LOW:
-        warning = f"Есть признаки, но данных недостаточно ({total_evidence} источников)."
+        warning = "Есть признаки, но данных пока недостаточно. Уточните запрос или период."
 
     return ConfidenceSummary(
         score=round(avg, 3),

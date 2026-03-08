@@ -18,6 +18,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from src.utils.date_utils import resolve_date_range
 from src.utils.logging import get_logger
 
 logger = get_logger("asr.acoustic")
@@ -125,16 +126,18 @@ def aggregate_session_acoustics(
     except Exception:
         return None
 
+    dr = resolve_date_range(target_date.isoformat())
+    start_utc, end_utc = dr.sql_range()
     rows = db.fetchall(
         """
         SELECT pitch_hz_mean, pitch_variance, energy_mean,
                spectral_centroid_mean, acoustic_arousal, created_at
         FROM structured_events
-        WHERE DATE(created_at) = ? AND is_current = 1
+        WHERE created_at BETWEEN ? AND ? AND is_current = 1
               AND pitch_hz_mean IS NOT NULL
         ORDER BY created_at ASC
         """,
-        (target_date.isoformat(),),
+        (start_utc, end_utc),
     )
 
     if not rows or len(rows) < 3:

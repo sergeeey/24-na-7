@@ -375,8 +375,13 @@ private fun enrollSamples(
         if (response.isSuccessful) {
             onSuccess()
         } else {
-            val errorBody = response.body?.string()?.take(200) ?: "HTTP ${response.code}"
-            onError(errorBody)
+            val raw = response.body?.string() ?: ""
+            val msg = try {
+                org.json.JSONObject(raw).optString("detail", raw).take(300)
+            } catch (_: Exception) {
+                raw.take(300).ifEmpty { "HTTP ${response.code}" }
+            }
+            onError(msg.ifEmpty { "HTTP ${response.code}" })
         }
     } catch (e: Exception) {
         onError(e.message ?: "Нет соединения с сервером")

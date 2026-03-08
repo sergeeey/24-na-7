@@ -65,11 +65,23 @@ class OpenAIWhisperProvider(ASRProvider):
         
         try:
             import openai
-            self.client = openai.OpenAI(
-                api_key=self.api_key,
-                timeout=timeout,
-                max_retries=max_retries,
-            )
+            # Часть окружений передаёт proxies в Client; новые версии openai/httpx не принимают этот аргумент.
+            saved = {k: os.environ.pop(k, None) for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")}
+            try:
+                self.client = openai.OpenAI(
+                    api_key=self.api_key,
+                    timeout=timeout,
+                    max_retries=max_retries,
+                )
+            except Exception as e:
+                if "proxies" in str(e):
+                    self.client = openai.OpenAI(api_key=self.api_key)
+                else:
+                    raise
+            finally:
+                for k, v in saved.items():
+                    if v is not None:
+                        os.environ[k] = v
         except ImportError:
             raise ImportError("openai package required. Install: pip install openai")
         

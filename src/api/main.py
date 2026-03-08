@@ -1,13 +1,16 @@
 """FastAPI приложение Reflexio 24/7."""
 import asyncio
 import os
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel as _BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
@@ -30,7 +33,7 @@ from src.api.routers import search
 from src.api.routers import voice
 from src.api.routers import websocket
 from src.api.routers import query
-from src.storage.db import ensure_all_tables, get_reflexio_db, run_migrations
+from src.storage.db import ReflexioDB, ensure_all_tables, get_reflexio_db, run_migrations
 from src.utils.config import settings
 from src.utils.logging import get_logger, setup_logging
 from src.utils.rate_limiter import RateLimitConfig, setup_rate_limiting
@@ -41,6 +44,11 @@ logger = get_logger("api")
 limiter = Limiter(key_func=get_remote_address)
 
 
+# Блокировка по дате для precompute дайджеста (избегаем двух одновременных за одну дату)
+_digest_precompute_locks: dict[str, threading.Lock] = {}
+_digest_precompute_dict_lock = threading.Lock()
+
+
 # ──────────────────────────────────────────────
 # APScheduler — ежедневный compliance cleanup
 # ──────────────────────────────────────────────
@@ -48,7 +56,6 @@ limiter = Limiter(key_func=get_remote_address)
 
 def _run_audio_retention_cleanup() -> None:
     """Удаляет WAV файлы старше AUDIO_RETENTION_HOURS."""
-    import os
     import time
     uploads_dir = Path("src/storage/uploads")
     if not uploads_dir.exists():
@@ -75,15 +82,28 @@ def _run_daily_digest_precompute() -> None:
     Запускается APScheduler в 18:00 (Алматы). Если сервер был выключен —
     misfire_grace_time=7200 даёт 2 часа на catch-up.
     """
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _digest_precompute_dict_lock:
+        date_lock = _digest_precompute_locks.setdefault(today, threading.Lock())
+    if not date_lock.acquire(blocking=False):
+        logger.info("digest_precompute_skipped_already_running", date=today)
+        return
+    try:
+        _run_digest_precompute_body(today)
+    finally:
+        date_lock.release()
+
+
+def _run_digest_precompute_body(today: str) -> None:
+    """Внутренняя реализация precompute под блокировкой по дате."""
     import json as _json
 
+    db: Any = None
     try:
         from src.digest.generator import DigestGenerator
         from src.storage.db import get_reflexio_db
 
         db_path = settings.STORAGE_PATH / "reflexio.db"
-        today = datetime.now().strftime("%Y-%m-%d")
-
         db = get_reflexio_db(db_path)
 
         # Помечаем статус "generating"
@@ -121,11 +141,12 @@ def _run_daily_digest_precompute() -> None:
     except Exception as e:
         logger.error("digest_precompute_failed", error=str(e))
         try:
-            db.execute(
-                "UPDATE digest_cache SET status = 'failed' WHERE date = ?",
-                (today,),
-            )
-            db.conn.commit()
+            if db is not None:
+                db.execute(
+                    "UPDATE digest_cache SET status = 'failed' WHERE date = ?",
+                    (today,),
+                )
+                db.conn.commit()
         except Exception:
             pass
 
@@ -247,6 +268,12 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
     enrichment_worker = get_enrichment_worker()
     await enrichment_worker.start()
 
+    # Ingest workers: принятый по WebSocket аудио обрабатывается в фоне (ASR + enrichment).
+    from src.api.routers.websocket import get_ingest_result_registry
+    from src.ingest.worker import get_ingest_worker
+    ingest_worker = get_ingest_worker(get_ingest_result_registry())
+    await ingest_worker.start()
+
     # APScheduler: ежедневный compliance cleanup в 03:00
     scheduler = None
     try:
@@ -292,10 +319,12 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
     yield  # ── Приложение работает ──────────────
 
     # ── Shutdown ─────────────────────────────────
+    await ingest_worker.stop()
     await enrichment_worker.stop()
     if scheduler and scheduler.running:
         scheduler.shutdown(wait=False)
         logger.info("apscheduler_stopped")
+    ReflexioDB.close_all_instances()
     logger.info("Reflexio API stopped")
 
 
@@ -373,7 +402,7 @@ async def health(request: Request, response: Response):
     """Health check endpoint."""
     return {
         "status": "ok",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "version": "0.2.0",
     }
 
@@ -383,7 +412,6 @@ async def health(request: Request, response: Response):
 # Оркестратор сам выбирает тулы, параллельно вызывает, объединяет ответ.
 # Пользователь не знает о тулах, роутерах, event_ids.
 
-from pydantic import BaseModel as _BaseModel
 
 class AskRequest(_BaseModel):
     question: str
@@ -413,7 +441,6 @@ async def ask(request: Request, response: Response, body: AskRequest):
       total_ms        — latency
     """
     from src.core.orchestrator import orchestrate
-    from dataclasses import asdict
 
     result = await orchestrate(body.question)
 
@@ -447,6 +474,7 @@ async def root():
             "ingest_audio": "/ingest/audio",
             "transcribe": "/asr/transcribe",
             "status": "/ingest/status/{file_id}",
+            "pipeline_status": "/ingest/pipeline-status",
             "digest_today": "/digest/today",
             "digest_date": "/digest/{date}",
             "density_analysis": "/digest/{date}/density",

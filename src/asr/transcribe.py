@@ -74,7 +74,10 @@ def get_asr_provider():
     with _asr_lock:
         if _asr_provider_initialized:
             return _asr_provider
-        # Загружаем конфигурацию
+        # Загружаем конфигурацию.
+        # Приоритет: Settings (src.utils.config) > config/asr.yaml > env.
+        # Для local faster-whisper всегда используются Settings: ASR_MODEL_SIZE, ASR_DEVICE,
+        # ASR_COMPUTE_TYPE, ASR_LANGUAGE. Провайдер (provider/model/edge_mode) задаётся YAML или env.
         config_path = Path("config/asr.yaml")
         edge_mode = False
         provider_name = "local"
@@ -124,7 +127,7 @@ def get_asr_provider():
                     provider_kwargs["api_key"] = os.getenv("OPENAI_API_KEY")
                 elif provider_name == "whisperx":
                     provider_kwargs["model_size"] = os.getenv("WHISPERX_MODEL_SIZE", "large-v3")
-                    provider_kwargs["device"] = os.getenv("ASR_DEVICE", "cuda")
+                    provider_kwargs["device"] = getattr(settings, "ASR_DEVICE", None) or os.getenv("ASR_DEVICE", "cuda")
                 elif provider_name == "parakeet":
                     provider_kwargs["model_id"] = os.getenv("PARAKEET_MODEL_ID", "nvidia/parakeet-tdt-v2")
                 elif provider_name == "distil-whisper":
@@ -136,7 +139,7 @@ def get_asr_provider():
                             provider_kwargs["device"] = distil_config.get("device", "cpu")
                     else:
                         provider_kwargs["model_size"] = os.getenv("DISTIL_MODEL_SIZE", "distil-small.en")
-                        provider_kwargs["device"] = os.getenv("ASR_DEVICE", "cpu")
+                        provider_kwargs["device"] = getattr(settings, "ASR_DEVICE", None) or os.getenv("ASR_DEVICE", "cpu")
 
                 _asr_provider = create_provider(provider_name, **provider_kwargs)
                 logger.info(
@@ -274,6 +277,37 @@ def transcribe_audio(
             audio_path=str(audio_path),
             error=str(e),
         )
+        # Fallback на OpenAI Whisper при падении локального ASR (через requests, без openai.Client — обход proxies)
+        api_key = getattr(settings, "OPENAI_API_KEY", None) or os.getenv("OPENAI_API_KEY")
+        if api_key:
+            try:
+                import requests
+                with open(audio_path, "rb") as f:
+                    body = {"file": (audio_path.name, f, "audio/wav")}
+                    data = {"model": "whisper-1"}
+                    if language:
+                        data["language"] = language
+                    r = requests.post(
+                        "https://api.openai.com/v1/audio/transcriptions",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        files=body,
+                        data=data,
+                        timeout=60,
+                    )
+                r.raise_for_status()
+                out = r.json()
+                normalized = {
+                    "text": out.get("text", ""),
+                    "language": out.get("language", language or "unknown"),
+                    "language_probability": 1.0,
+                    "segments": [],
+                    "duration": 0.0,
+                    "provider": "openai_fallback",
+                }
+                logger.info("transcription_complete", audio_path=str(audio_path), provider="openai_fallback", text_length=len(normalized["text"]))
+                return normalized
+            except Exception as fallback_e:
+                logger.warning("openai_fallback_failed", error=str(fallback_e))
         raise
 
 

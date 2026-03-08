@@ -2,14 +2,14 @@
 Тесты для Rate Limiting (P0-2).
 Проверка защиты от DDoS и abuse.
 """
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
-# Нужно импортировать до создания TestClient
-import os
-os.environ["SAFE_MODE"] = "disabled"  # Отключаем SAFE для тестов
+os.environ["SAFE_MODE"] = "disabled"  # Отключаем SAFE до загрузки app
 
-from src.api.main import app
+from src.api.main import app  # noqa: E402
 
 
 @pytest.fixture

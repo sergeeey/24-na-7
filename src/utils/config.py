@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     AUDIO_SILENCE_LIMIT: float = 2.0
     AUDIO_VAD_AGGRESSIVENESS: int = 2
 
-    # ASR
+    # ASR (единый источник для локального faster-whisper; приоритет над config/asr.yaml и env)
     ASR_MODEL_SIZE: str = "small"
     ASR_DEVICE: str = "auto"
     ASR_COMPUTE_TYPE: str = "auto"
@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     LLM_MODEL_CRITIC: str = "gpt-4o-mini"
     LLM_TEMPERATURE_ACTOR: float = 0.3
     LLM_TEMPERATURE_CRITIC: float = 0.0
+    LLM_TIMEOUT_SEC: float = 120.0  # таймаут вызова API (дайджест, CoD, extract_tasks)
 
     # SAFE / Security
     SAFE_MODE: str = "audit"
@@ -82,6 +83,11 @@ class Settings(BaseSettings):
 
     # Database
     DB_BACKEND: str = "sqlite"
+
+    # Timezone — offset пользователя от UTC (Алматы = +6)
+    # ПОЧЕМУ не pytz/zoneinfo: один пользователь, одна таймзона, offset достаточен.
+    # Используется для конвертации "дня пользователя" в UTC-диапазон при выборке из БД.
+    USER_TZ_OFFSET: int = 6
 
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -96,9 +102,22 @@ class Settings(BaseSettings):
     # ПОЧЕМУ disabled по умолчанию: backward compatible — не ломает существующих пользователей.
     # Включить после создания голосового профиля (POST /voice/enroll).
     SPEAKER_VERIFICATION_ENABLED: bool = False
-    SPEAKER_AMPLITUDE_THRESHOLD: float = 0.01  # RMS gate: ~-40dBFS
-    SPEAKER_SIMILARITY_THRESHOLD: float = 0.75  # Cosine similarity cutoff
+    # ПОЧЕМУ 0.003: телефонный микрофон (Pixel 9 Pro) даёт RMS=0.005-0.007 для нормальной речи.
+    # Старое значение 0.01 отфильтровывало 100% записей. 0.003 пропускает речь, но режет тишину.
+    SPEAKER_AMPLITUDE_THRESHOLD: float = 0.003  # RMS gate: ~-50dBFS (телефонный микрофон)
+    # ПОЧЕМУ 0.65: короткие VAD-сегменты (0.3-1.7с) дают similarity 0.65-0.76.
+    # Старое значение 0.75 отфильтровывало ~60% легитимных записей.
+    SPEAKER_SIMILARITY_THRESHOLD: float = 0.65  # Cosine similarity cutoff (relaxed for phone mic)
     SPEAKER_MIN_ENROLLMENT_SAMPLES: int = 3      # Минимум образцов для профиля
+
+    # Audio Retention (единая политика для API и edge listener)
+    # ПОЧЕМУ: в production — zero-retention (0). При тестировании — 48h для диагностики.
+    AUDIO_RETENTION_HOURS: int = 0  # 0 = удалять сразу после транскрипции
+
+    @property
+    def WAV_CLEANUP_MAX_AGE_HOURS(self) -> int:
+        """Возраст (часы) для очистки WAV при старте listener. Не менее 1ч при zero-retention (PII)."""
+        return max(1, self.AUDIO_RETENTION_HOURS)
 
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True

@@ -36,11 +36,13 @@ speech_filter = SpeechFilter(
 settings.RECORDINGS_PATH.mkdir(parents=True, exist_ok=True)
 
 
-# ── Startup sweep: удалить WAV-сироты старше 1 часа ──
+# ── Startup sweep: удалить WAV-сироты (единая политика из settings.WAV_CLEANUP_MAX_AGE_HOURS) ──
 # ПОЧЕМУ: если listener крашился, WAV с PII (голос) остаются на диске.
-# При рестарте подчищаем — это zero-retention compliance.
-def _startup_sweep(recordings_path: Path, max_age_hours: int = 1) -> int:
-    """Удаляет WAV файлы старше max_age_hours при старте."""
+# При рестарте подчищаем — zero-retention compliance.
+def _startup_sweep(recordings_path: Path, max_age_hours: int | None = None) -> int:
+    """Удаляет WAV файлы старше max_age_hours при старте. По умолчанию — settings.WAV_CLEANUP_MAX_AGE_HOURS."""
+    if max_age_hours is None:
+        max_age_hours = settings.WAV_CLEANUP_MAX_AGE_HOURS
     deleted = 0
     cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=max_age_hours)
     for wav_file in recordings_path.glob("*.wav"):
@@ -56,7 +58,7 @@ def _startup_sweep(recordings_path: Path, max_age_hours: int = 1) -> int:
     return deleted
 
 
-_startup_sweep(settings.RECORDINGS_PATH)
+_startup_sweep(settings.RECORDINGS_PATH, settings.WAV_CLEANUP_MAX_AGE_HOURS)
 
 
 def write_wave(path: Path, audio_frames: list[bytes], sample_rate: int) -> None:
@@ -68,45 +70,64 @@ def write_wave(path: Path, audio_frames: list[bytes], sample_rate: int) -> None:
         wf.writeframes(b"".join(audio_frames))
 
 
+# Retry при временных сетевых сбоях (экспоненциальная задержка)
+_UPLOAD_MAX_RETRIES = 3
+_UPLOAD_RETRY_BASE_SEC = 2
+
+
 def upload_audio(file_path: Path, api_url: str) -> bool:
     """
-    Отправляет аудиофайл на сервер.
+    Отправляет аудиофайл на сервер. При временной сетевой ошибке повторяет запрос
+    до _UPLOAD_MAX_RETRIES раз с экспоненциальной задержкой.
     
     Returns:
         True если успешно, False в противном случае
     """
-    try:
-        with open(file_path, "rb") as f:
-            files = {"file": (file_path.name, f, "audio/wav")}
-            response = requests.post(
-                f"{api_url}/ingest/audio",
-                files=files,
-                timeout=30,
-            )
-            response.raise_for_status()
-            result = response.json()
-            
-            logger.info(
-                "audio_uploaded",
+    for attempt in range(_UPLOAD_MAX_RETRIES):
+        try:
+            with open(file_path, "rb") as f:
+                files = {"file": (file_path.name, f, "audio/wav")}
+                response = requests.post(
+                    f"{api_url}/ingest/audio",
+                    files=files,
+                    timeout=30,
+                )
+                response.raise_for_status()
+                result = response.json()
+                logger.info(
+                    "audio_uploaded",
+                    filename=file_path.name,
+                    server_id=result.get("id"),
+                    size=result.get("size"),
+                )
+                return True
+        except requests.exceptions.RequestException as e:
+            if attempt < _UPLOAD_MAX_RETRIES - 1:
+                delay = _UPLOAD_RETRY_BASE_SEC ** (attempt + 1)
+                logger.warning(
+                    "upload_retry",
+                    filename=file_path.name,
+                    attempt=attempt + 1,
+                    max_retries=_UPLOAD_MAX_RETRIES,
+                    delay_sec=delay,
+                    error=str(e),
+                )
+                time.sleep(delay)
+            else:
+                logger.error(
+                    "upload_failed",
+                    filename=file_path.name,
+                    error=str(e),
+                )
+                return False
+        except Exception as e:
+            logger.error(
+                "upload_error",
                 filename=file_path.name,
-                server_id=result.get("id"),
-                size=result.get("size"),
+                error=str(e),
             )
-            return True
-    except requests.exceptions.RequestException as e:
-        logger.error(
-            "upload_failed",
-            filename=file_path.name,
-            error=str(e),
-        )
-        return False
-    except Exception as e:
-        logger.error(
-            "upload_error",
-            filename=file_path.name,
-            error=str(e),
-        )
-        return False
+            return False
+    return False
 
 
 def listen_forever(api_url: Optional[str] = None) -> None:

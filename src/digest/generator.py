@@ -89,7 +89,8 @@ class DigestGenerator:
         try:
             dt = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
             return dt.strftime("%Y-%m-%d %H:00")
-        except Exception:
+        except Exception as e:
+            logger.debug("hour_bucket_parse_failed", iso_ts=iso_ts, error=str(e))
             return "unknown"
 
     def _iter_meaningful_texts(self, transcriptions: List[Dict]) -> List[str]:
@@ -452,8 +453,8 @@ class DigestGenerator:
                         for e in (emo.get("emotions") or []):
                             if e and e not in emotions:
                                 emotions.append(e)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("cod_emotions_tasks_failed", error=str(e))
                 except Exception as e:
                     logger.warning("cod_digest_failed", error=str(e))
                     summary_text = full_text[:500] + "…" if len(full_text) > 500 else full_text or "Нет записей за день."
@@ -465,7 +466,8 @@ class DigestGenerator:
         try:
             from src.balance.storage import get_balance_wheel
             balance_payload = get_balance_wheel(self.db_path, target_date, target_date)
-        except Exception:
+        except Exception as e:
+            logger.warning("balance_wheel_failed", date=target_date.isoformat(), error=str(e))
             balance_payload = {}
 
         try:
@@ -474,7 +476,8 @@ class DigestGenerator:
             if day_text:
                 save_day_psychology_snapshot(self.db_path, target_date.isoformat(), day_text)
             insights = get_day_insights(self.db_path, target_date.isoformat())
-        except Exception:
+        except Exception as e:
+            logger.warning("day_insights_failed", date=target_date.isoformat(), error=str(e))
             insights = []
 
         # Acoustic session profile — агрегация per-segment фич в дневной тренд
@@ -482,16 +485,16 @@ class DigestGenerator:
         try:
             from src.asr.acoustic import aggregate_session_acoustics
             acoustic_profile = aggregate_session_acoustics(self.db_path, target_date)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("aggregate_session_acoustics_failed", date=target_date.isoformat(), error=str(e))
 
         # Data lineage: записываем какие транскрипции вошли в этот дайджест.
         # Fire-and-forget — ошибка не ломает уже готовый результат.
         try:
             from src.storage.digest_lineage import save_digest_sources
             save_digest_sources(target_date.isoformat(), transcriptions)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("save_digest_sources_failed", date=target_date.isoformat(), error=str(e))
 
         # === WOW Digest: verdict, day_map, micro_step, novelty/repetitions ===
         # ПОЧЕМУ backward compatible: все новые поля nullable, старые клиенты их игнорируют.
@@ -813,7 +816,8 @@ class DigestGenerator:
         daily_payload = {}
         try:
             daily_payload = self.get_daily_digest_json(target_date)
-        except Exception:
+        except Exception as e:
+            logger.warning("daily_digest_for_density_failed", date=target_date.isoformat(), error=str(e))
             daily_payload = {}
 
         balance = daily_payload.get("balance", {}) if isinstance(daily_payload, dict) else {}
@@ -986,8 +990,8 @@ class DigestGenerator:
                     try:
                         hour = datetime.fromisoformat(trans["created_at"]).strftime("%H")
                         hourly_dist[hour] = hourly_dist.get(hour, 0) + 1
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("hourly_dist_parse_failed", created_at=trans.get("created_at"), error=str(e))
             
             extended = calculate_extended_metrics(
                 transcriptions=transcriptions,
