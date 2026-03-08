@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,6 +41,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -68,6 +70,7 @@ import com.reflexio.app.ui.components.RecordingFab
 import com.reflexio.app.ui.screens.AskScreen
 import com.reflexio.app.ui.screens.CommitmentsScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
+import com.reflexio.app.ui.screens.HistoryScreen
 import com.reflexio.app.ui.screens.VoiceEnrollmentScreen
 import com.reflexio.app.ui.screens.SplashScreen
 import com.reflexio.app.ui.theme.ReflexioTheme
@@ -193,6 +196,7 @@ fun RecordingApp(
     val hasPermission by hasRecordingPermission
     var recordingActive by remember(hasPermission) { mutableStateOf(hasPermission) }
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var showHistory by remember { mutableStateOf(false) }
 
     // ПОЧЕМУ isEmulator() а не BuildConfig.DEBUG: DEBUG=true и на телефоне и на эмуляторе.
     // 10.0.2.2 работает ТОЛЬКО в эмуляторе. На телефоне с adb reverse нужен localhost.
@@ -205,6 +209,8 @@ fun RecordingApp(
     }
 
     val screens = Screen.entries
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val database = remember { RecordingDatabase.getInstance(context) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         AmbientBackdrop()
@@ -269,7 +275,7 @@ fun RecordingApp(
                         modifier = Modifier.padding(padding),
                     )
                     2 -> DailySummaryScreen(
-                        onBack = { selectedTab = 1 },
+                        onOpenHistory = { showHistory = true },
                         baseHttpUrl = baseHttpUrl,
                         modifier = Modifier.padding(padding),
                     )
@@ -280,6 +286,39 @@ fun RecordingApp(
                     4 -> VoiceEnrollmentScreen(
                         baseHttpUrl = baseHttpUrl,
                         modifier = Modifier.padding(padding),
+                    )
+                }
+            }
+        }
+
+        // ПОЧЕМУ overlay а не 6-й таб: History — вспомогательный экран,
+        // не заслуживает постоянного места в навигации. Доступен через иконку в Digest.
+        androidx.compose.animation.AnimatedVisibility(
+            visible = showHistory,
+            enter = androidx.compose.animation.slideInVertically { it },
+            exit = androidx.compose.animation.slideOutVertically { it },
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("История записей", style = MaterialTheme.typography.titleLarge)
+                        TextButton(onClick = { showHistory = false }) {
+                            Text("Закрыть")
+                        }
+                    }
+                    HistoryScreen(
+                        database = database,
+                        modifier = Modifier.weight(1f),
                     )
                 }
             }

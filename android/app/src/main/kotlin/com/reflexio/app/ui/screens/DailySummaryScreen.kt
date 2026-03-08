@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -84,7 +85,7 @@ private val ColorBlue = Color(0xFF2196F3)
  */
 @Composable
 fun DailySummaryScreen(
-    onBack: () -> Unit,
+    onOpenHistory: () -> Unit = {},
     modifier: Modifier = Modifier,
     baseHttpUrl: String,
 ) {
@@ -126,12 +127,21 @@ fun DailySummaryScreen(
                 )
                 Text("Итог дня", style = MaterialTheme.typography.headlineMedium)
             }
-            IconButton(onClick = { retryCount++ }) {
-                Icon(
-                    Icons.Default.Refresh,
-                    contentDescription = "Обновить",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
+            Row {
+                IconButton(onClick = onOpenHistory) {
+                    Icon(
+                        Icons.Default.History,
+                        contentDescription = "История записей",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(onClick = { retryCount++ }) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "Обновить",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
 
