@@ -83,7 +83,7 @@ apscheduler>=3.10.0
 # Social Graph — speaker diarization
 # ПОЧЕМУ pyannote: DER ~5% на CPU, де-факто стандарт speaker diarization 2024.
 # Требует: HF_TOKEN в .env + принять лицензию на huggingface.co/pyannote
-# pyannote.audio>=3.1.0  # Раскомментировать после: принять лицензию HF + добавить HF_TOKEN
+pyannote.audio>=3.1.0
 
 # Embedded Graph DB для multi-hop запросов (Sprint 3)
 # ПОЧЕМУ kuzu: embedded как SQLite, Cypher, 15-188x быстрее NetworkX на graph traversal.
