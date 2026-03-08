@@ -1,7 +1,6 @@
 # Dockerfile для Reflexio 24/7 API (FastAPI)
 # ПОЧЕМУ multi-stage: build-essential (~400MB) нужен только для компиляции C-extension пакетов
 # (sqlcipher3, некоторые numpy/scipy биты). В рантайме он не нужен — удаляем из финального образа.
-# Итог: финальный образ на ~400MB меньше, без потери функциональности.
 
 # ── Stage 1: builder — компиляция C-extensions ────────────────────────────────
 FROM python:3.11-slim AS builder
@@ -16,23 +15,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /build
 COPY requirements.txt .
 
-# ПОЧЕМУ torch CPU-only ПЕРВЫМ: pyannote.audio тянет torch с CUDA (~5GB).
-# На VPS нет GPU → ставим CPU-only torch (~300MB) ДО requirements.txt,
-# pip увидит что torch уже есть и не скачает CUDA-версию.
-RUN pip install --no-cache-dir --prefix=/install \
+# ПОЧЕМУ 2-step: pyannote.audio тянет torch с CUDA (~5GB).
+# На VPS нет GPU. Step 1: torch CPU-only (~300MB).
+# Step 2: requirements.txt — pip видит torch уже установленным, не тянет CUDA.
+RUN pip install --no-cache-dir \
     torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# ПОЧЕМУ --prefix=/install: изолируем пакеты в отдельный prefix-dir
-# чтобы скопировать в runtime stage без лишнего мусора
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 
 # ── Stage 2: runtime — лёгкий продакшн образ ─────────────────────────────────
 FROM python:3.11-slim
 
 # Только runtime-зависимости: нет build-essential, нет компилятора
-# ПОЧЕМУ эти пакеты: ffmpeg — конвертация аудио (Whisper), libsndfile1 — чтение WAV (librosa),
-# libportaudio2 — sounddevice, curl — healthcheck, libsqlcipher-dev — .so для sqlcipher3
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libsndfile1 \
@@ -46,8 +41,9 @@ RUN useradd -m -u 1000 reflexio && \
     mkdir -p /app /app/storage && \
     chown -R reflexio:reflexio /app
 
-# Копируем установленные пакеты из builder stage
-COPY --from=builder /install /usr/local
+# Копируем установленные пакеты из builder stage (глобальный site-packages)
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 WORKDIR /app
 
@@ -61,13 +57,8 @@ USER reflexio
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8000/health', timeout=5)" || exit 1
 
-# Expose порт
 EXPOSE 8000
 
-# ПОЧЕМУ --workers 2: Whisper транскрипция блокирует CPU на 100%.
-# С 1 worker — все HTTP запросы (digest, voice) таймаутятся во время ASR.
-# 2 workers: один обрабатывает WebSocket/ASR, второй — REST API.
-# ПОЧЕМУ --timeout-keep-alive 120: дефолт 5 сек слишком короткий для ASR
-# и digest generation (может занимать 30-120 сек). Без этого uvicorn
-# закрывает connection до завершения транскрипции → клиент получает 502.
+# ПОЧЕМУ --workers 2: Whisper блокирует CPU на 100%.
+# 2 workers: один для WebSocket/ASR, второй для REST API.
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--timeout-keep-alive", "120"]
