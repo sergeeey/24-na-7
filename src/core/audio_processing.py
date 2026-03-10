@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import hashlib
+import re
 import tempfile
 import threading
 import uuid
 import wave
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -101,6 +104,7 @@ NOISE_PHRASES = frozenset(
         "понял",
     }
 )
+TRANSCRIPT_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]{2,}")
 
 # ПОЧЕМУ 2 слова: одиночные слова ("угу", "ладно") — это шум, а не осмысленная речь.
 # 2 слова = минимальная единица смысла ("идём домой", "позвони маме").
@@ -257,6 +261,102 @@ def _assess_transcription_quality(result: dict[str, Any]) -> tuple[float, bool, 
     garbage_flag = (len(words) >= 4 and unique_ratio < 0.3) or chars_per_second > 35
     needs_recheck = score < 0.55 or garbage_flag
     return score, needs_recheck, garbage_flag
+
+
+def _normalize_transcript_signature(text: str) -> str:
+    tokens = [
+        token
+        for token in TRANSCRIPT_TOKEN_RE.findall((text or "").lower())
+        if token not in NOISE_PHRASES and len(token) > 1
+    ]
+    if len(tokens) < 2:
+        return ""
+    return " ".join(tokens[:12])
+
+
+def _assess_contextual_transcription_risk(
+    db_path: Path,
+    transcription_id: str,
+    episode_id: str | None,
+    result: dict[str, Any],
+) -> tuple[bool, str | None, float]:
+    text = (result.get("transcript_clean") or result.get("text") or "").strip()
+    words = [token.lower() for token in TRANSCRIPT_TOKEN_RE.findall(text)]
+    signature = _normalize_transcript_signature(text)
+    if not words or not signature:
+        return False, None, 0.0
+
+    counts = Counter(words)
+    dominant_share = max(counts.values()) / len(words)
+    bigrams = list(zip(words, words[1:]))
+    repeated_bigram_count = max(Counter(bigrams).values(), default=0)
+    if len(words) >= 6 and (dominant_share >= 0.45 or repeated_bigram_count >= 2):
+        return True, "repeated_phrase_pattern", 0.45
+
+    db = get_reflexio_db(db_path)
+    recent_rows = db.fetchall(
+        """
+        SELECT id, transcript_clean, text
+        FROM transcriptions
+        WHERE id != ?
+          AND created_at >= datetime('now', '-20 minutes')
+        ORDER BY created_at DESC
+        LIMIT 8
+        """,
+        (transcription_id,),
+    )
+    duplicate_neighbors = 0
+    for row in recent_rows:
+        recent_signature = _normalize_transcript_signature(
+            row["transcript_clean"] or row["text"] or ""
+        )
+        if recent_signature and recent_signature == signature:
+            duplicate_neighbors += 1
+    if duplicate_neighbors >= 2:
+        return True, "duplicate_neighbor_pattern", 0.4
+
+    episode_context = get_episode_context(db_path, episode_id)
+    if episode_context:
+        topics = json.loads(episode_context.get("topics_json") or "[]")
+        topic_tokens = {
+            token.lower()
+            for topic in topics
+            for token in TRANSCRIPT_TOKEN_RE.findall(str(topic))
+        }
+        if (
+            len(words) >= 6
+            and topic_tokens
+            and not any(token in topic_tokens for token in words)
+            and dominant_share >= 0.4
+        ):
+            return True, "episode_context_mismatch", 0.3
+
+    return False, None, 0.0
+
+
+def _mark_transcription_for_review(
+    db_path: Path,
+    transcription_id: str,
+    episode_id: str | None,
+    quality_score: float,
+) -> None:
+    db = get_reflexio_db(db_path)
+    with db.transaction():
+        db.execute(
+            """
+            UPDATE transcriptions
+            SET quality_score = ?,
+                needs_recheck = 1,
+                garbage_flag = 1
+            WHERE id = ?
+            """,
+            (quality_score, transcription_id),
+        )
+        if episode_id:
+            db.execute(
+                "UPDATE episodes SET needs_review = 1 WHERE id = ?",
+                (episode_id,),
+            )
 
 
 def _episode_duration_seconds(episode_context: dict[str, Any] | None, fallback: float) -> float:
@@ -717,6 +817,49 @@ def process_audio_from_artifact_sync(
             file_size=file_size,
             result=result,
         )
+        episode_id = attach_transcription_to_episode(db_path, transcription_id) if transcription_id else None
+        if episode_id:
+            result["episode_id"] = episode_id
+
+        if transcription_id:
+            flagged, quarantine_reason, penalty = _assess_contextual_transcription_risk(
+                db_path, transcription_id, episode_id, result
+            )
+            if flagged:
+                quality_score = max(0.0, min(result["quality_score"], result["quality_score"] - penalty))
+                result["quality_score"] = quality_score
+                result["needs_recheck"] = True
+                result["garbage_flag"] = True
+                _mark_transcription_for_review(db_path, transcription_id, episode_id, quality_score)
+                _mark_ingest_status(
+                    db_path,
+                    ingest_id,
+                    "quarantined",
+                    quarantine_reason,
+                    transport_status="server_acked",
+                    processing_status="quarantined",
+                    error_code=quarantine_reason,
+                    quarantine_reason=quarantine_reason,
+                    quality_score=quality_score,
+                    needs_recheck=True,
+                )
+                if delete_audio_after:
+                    file_path.unlink(missing_ok=True)
+                logger.warning(
+                    "transcription_quarantined_by_context_qc",
+                    ingest_id=ingest_id,
+                    transcription_id=transcription_id,
+                    episode_id=episode_id,
+                    reason=quarantine_reason,
+                )
+                return {
+                    "status": "quarantined",
+                    "reason": quarantine_reason,
+                    "ingest_id": ingest_id,
+                    "filename": filename,
+                    "transcription_id": transcription_id,
+                    "result": result,
+                }
 
         if settings.INTEGRITY_CHAIN_ENABLED:
             append_integrity_event(
@@ -1104,6 +1247,46 @@ async def process_audio_bytes(
         episode_id = attach_transcription_to_episode(db_path, transcription_id) if transcription_id else None
         if episode_id:
             result["episode_id"] = episode_id
+
+        if transcription_id:
+            flagged, quarantine_reason, penalty = _assess_contextual_transcription_risk(
+                db_path, transcription_id, episode_id, result
+            )
+            if flagged:
+                quality_score = max(0.0, min(result["quality_score"], result["quality_score"] - penalty))
+                result["quality_score"] = quality_score
+                result["needs_recheck"] = True
+                result["garbage_flag"] = True
+                _mark_transcription_for_review(db_path, transcription_id, episode_id, quality_score)
+                _mark_ingest_status(
+                    db_path,
+                    ingest_id,
+                    "quarantined",
+                    quarantine_reason,
+                    transport_status="server_acked",
+                    processing_status="quarantined",
+                    error_code=quarantine_reason,
+                    quarantine_reason=quarantine_reason,
+                    quality_score=quality_score,
+                    needs_recheck=True,
+                )
+                if delete_audio_after:
+                    dest_path.unlink(missing_ok=True)
+                logger.warning(
+                    "transcription_quarantined_by_context_qc",
+                    ingest_id=ingest_id,
+                    transcription_id=transcription_id,
+                    episode_id=episode_id,
+                    reason=quarantine_reason,
+                )
+                return {
+                    "status": "quarantined",
+                    "reason": quarantine_reason,
+                    "ingest_id": ingest_id,
+                    "filename": filename,
+                    "transcription_id": transcription_id,
+                    "result": result,
+                }
 
         if settings.INTEGRITY_CHAIN_ENABLED:
             append_integrity_event(

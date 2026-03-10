@@ -173,7 +173,7 @@ def test_digest_generator_prefers_episode_units(tmp_path):
                     "ep-1",
                     "2026-03-10T12:00:00",
                     "2026-03-10T12:01:30",
-                    "closed",
+                    "summarized",
                     2,
                     '["tr-1","tr-2"]',
                     "обсудили бюджет и сроки проекта",
@@ -193,6 +193,110 @@ def test_digest_generator_prefers_episode_units(tmp_path):
         assert digest["source_unit"] == "episode"
         assert digest["episodes_used"] == 1
         assert digest["total_recordings"] == 1
+        assert digest["incomplete_context"] is False
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_digest_generator_falls_back_when_episode_not_finalized(tmp_path):
+    from src.digest.generator import DigestGenerator
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:01:30",
+                    "closed",
+                    1,
+                    '["tr-1"]',
+                    "сырой эпизод",
+                    "сырой эпизод",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.4,
+                    1,
+                    "2026-03-10",
+                ),
+            )
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, language_probability, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("tr-1", "ing-1", "обсудили новую поставку и дедлайн", "обсудили новую поставку и дедлайн", 0.95, "2026-03-10T12:00:00"),
+            )
+
+        generator = DigestGenerator(db_path)
+        digest = generator.get_daily_digest_json(__import__("datetime").date(2026, 3, 10))
+        assert digest["source_unit"] == "transcription"
+        assert digest["episodes_used"] == 0
+        assert digest["total_recordings"] == 1
+        assert digest["incomplete_context"] is True
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_contextual_transcription_risk_detects_repeated_neighbors(tmp_path):
+    from src.core.audio_processing import _assess_contextual_transcription_risk
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-1", "ing-1", "Роман Роман ты где Роман", "Роман Роман ты где Роман", "2099-03-10T12:00:00"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-2", "ing-2", "Роман Роман ты где Роман", "Роман Роман ты где Роман", "2099-03-10T12:00:10"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-3", "ing-3", "Роман Роман ты где Роман", "Роман Роман ты где Роман", "2099-03-10T12:00:20"),
+            )
+
+        flagged, reason, penalty = _assess_contextual_transcription_risk(
+            db_path,
+            "tr-3",
+            None,
+            {"text": "Роман Роман ты где Роман", "transcript_clean": "Роман Роман ты где Роман"},
+        )
+        assert flagged is True
+        assert reason in {"repeated_phrase_pattern", "duplicate_neighbor_pattern"}
+        assert penalty > 0
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 

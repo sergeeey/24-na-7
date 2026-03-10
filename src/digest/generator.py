@@ -250,6 +250,8 @@ class DigestGenerator:
         episodes = get_episodes_for_day(self.db_path, target_date.isoformat())
         out: List[Dict] = []
         for episode in episodes:
+            if episode.get("status") != "summarized" or bool(episode.get("needs_review")):
+                continue
             started_at = episode.get("started_at")
             ended_at = episode.get("ended_at")
             duration_sec = 0.0
@@ -585,7 +587,10 @@ class DigestGenerator:
             "sources_count": len(transcriptions),
             "source_unit": transcriptions[0].get("_source_unit", "transcription") if transcriptions else "transcription",
             "episodes_used": sum(1 for item in transcriptions if item.get("_source_unit") == "episode"),
-            "incomplete_context": any(bool(item.get("needs_review")) for item in transcriptions),
+            "incomplete_context": any(
+                bool(item.get("needs_review")) or item.get("_source_unit") != "episode"
+                for item in transcriptions
+            ),
             # WOW fields (nullable — backward compatible)
             # ПОЧЕМУ `or []` для day_map: Kotlin DailyDigestData.day_map = List<DayMapPoint>
             # (non-null). JSON null → optJSONArray возвращает null → emptyList(), но лучше
