@@ -138,6 +138,7 @@ def _run_analysis_with_retry(clean_text: str) -> tuple[dict[str, Any], float]:
 
 def enrich_transcription(
     transcription_id: str,
+    episode_id: str | None,
     text: str,
     timestamp: datetime,
     duration_sec: float = 0.0,
@@ -156,6 +157,7 @@ def enrich_transcription(
     base_event = StructuredEvent(
         id=event_id,
         transcription_id=transcription_id,
+        episode_id=episode_id,
         timestamp=timestamp,
         duration_sec=duration_sec,
         text=text,

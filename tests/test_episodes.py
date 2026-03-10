@@ -1,0 +1,422 @@
+from fastapi.testclient import TestClient
+
+from src.api.main import app
+
+
+def test_episode_builder_merges_close_transcriptions(tmp_path):
+    from src.memory.episodes import attach_transcription_to_episode
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                """
+                INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("ing-2", "b.wav", "/tmp/b.wav", 10, "transcribed", "2026-03-10T12:00:45", "2026-03-10T12:00:45"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-1", "ing-1", "обсудили бюджет проекта", "обсудили бюджет проекта", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-2", "ing-2", "потом сверили бюджет и сроки", "потом сверили бюджет и сроки", "2026-03-10T12:00:45"),
+            )
+
+        ep1 = attach_transcription_to_episode(db_path, "tr-1")
+        ep2 = attach_transcription_to_episode(db_path, "tr-2")
+        assert ep1 == ep2
+        row = db.fetchone("SELECT source_count, transcription_ids_json FROM episodes WHERE id = ?", (ep1,))
+        assert row["source_count"] == 2
+        assert "tr-1" in row["transcription_ids_json"]
+        assert "tr-2" in row["transcription_ids_json"]
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_episode_builder_splits_far_transcriptions(tmp_path):
+    from src.memory.episodes import attach_transcription_to_episode
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("ing-2", "b.wav", "/tmp/b.wav", 10, "transcribed", "2026-03-10T12:05:00", "2026-03-10T12:05:00"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-1", "ing-1", "обсудили бюджет проекта", "обсудили бюджет проекта", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-2", "ing-2", "согласовали отпуск", "согласовали отпуск", "2026-03-10T12:05:00"),
+            )
+
+        ep1 = attach_transcription_to_episode(db_path, "tr-1")
+        ep2 = attach_transcription_to_episode(db_path, "tr-2")
+        assert ep1 != ep2
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_query_events_prefers_episodes(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:01:00",
+                    "closed",
+                    2,
+                    '["tr-1","tr-2"]',
+                    "обсудили бюджет проекта",
+                    "обсудили бюджет проекта",
+                    "обсуждение бюджета",
+                    '["бюджет"]',
+                    '["Марат"]',
+                    "[]",
+                    0.9,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+        client = TestClient(app)
+        response = client.get("/query/events", params={"q": "бюджет", "date": "2026-03-10"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["data"]["total"] == 1
+        event = body["data"]["events"][0]
+        assert event["episode_id"] == "ep-1"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_digest_generator_prefers_episode_units(tmp_path):
+    from src.digest.generator import DigestGenerator
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:01:30",
+                    "closed",
+                    2,
+                    '["tr-1","tr-2"]',
+                    "обсудили бюджет и сроки проекта",
+                    "обсудили бюджет и сроки проекта",
+                    "созвон по бюджету",
+                    '["бюджет","сроки"]',
+                    '["Марат"]',
+                    "[]",
+                    0.8,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+
+        generator = DigestGenerator(db_path)
+        digest = generator.get_daily_digest_json(__import__("datetime").date(2026, 3, 10))
+        assert digest["source_unit"] == "episode"
+        assert digest["episodes_used"] == 1
+        assert digest["total_recordings"] == 1
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_run_enrichment_sync_uses_episode_text(tmp_path):
+    from datetime import datetime
+    from unittest.mock import patch
+
+    from src.core.audio_processing import _run_enrichment_sync
+    from src.enrichment.schema import StructuredEvent
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, episode_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("tr-1", "ing-1", "ep-1", "короткий фрагмент", "короткий фрагмент", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:01:00",
+                    "open",
+                    2,
+                    '["tr-1","tr-2"]',
+                    "полный эпизод про бюджет и согласование сроков",
+                    "полный эпизод про бюджет и согласование сроков",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.5,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+
+        captured = {}
+
+        def fake_enrich_transcription(**kwargs):
+            captured["text"] = kwargs["text"]
+            return StructuredEvent(
+                id="ev-1",
+                transcription_id=kwargs["transcription_id"],
+                episode_id=kwargs.get("episode_id"),
+                timestamp=datetime(2026, 3, 10, 12, 1, 0),
+                duration_sec=kwargs.get("duration_sec", 0.0),
+                text=kwargs["text"],
+                language="ru",
+                summary="эпизод",
+                topics=["бюджет"],
+            )
+
+        with patch("src.enrichment.enricher.enrich_transcription", side_effect=fake_enrich_transcription):
+            _run_enrichment_sync(
+                db_path=db_path,
+                transcription_id="tr-1",
+                result={"ingest_id": "ing-1", "episode_id": "ep-1", "duration": 2.0, "language": "ru", "text": "короткий фрагмент"},
+                enrichment_text="короткий фрагмент",
+                acoustic_metadata=None,
+            )
+
+        assert captured["text"] == "полный эпизод про бюджет и согласование сроков"
+        row = db.fetchone("SELECT episode_id FROM structured_events WHERE id = ?", ("ev-1",))
+        assert row["episode_id"] == "ep-1"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_close_stale_episodes_marks_open_as_closed(tmp_path):
+    from datetime import datetime
+
+    from src.memory.episodes import close_stale_episodes
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:00:00",
+                    "open",
+                    1,
+                    '["tr-1"]',
+                    "текст",
+                    "текст",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.5,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+
+        closed = close_stale_episodes(db_path, datetime(2026, 3, 10, 12, 5, 0))
+        assert closed == 1
+        row = db.fetchone("SELECT status FROM episodes WHERE id = ?", ("ep-1",))
+        assert row["status"] == "closed"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_finalize_closed_episodes_marks_summarized(tmp_path):
+    from src.memory.episodes import finalize_closed_episodes
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:01:00",
+                    "closed",
+                    1,
+                    '["tr-1"]',
+                    "текст",
+                    "текст",
+                    "summary",
+                    '["work"]',
+                    "[]",
+                    "[]",
+                    0.8,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO structured_events (
+                    id, transcription_id, episode_id, text, summary, topics, speakers,
+                    created_at, is_current
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ev-1",
+                    "tr-1",
+                    "ep-1",
+                    "текст",
+                    "старый summary",
+                    '["legacy"]',
+                    '["Марат"]',
+                    "2026-03-10T12:02:00",
+                    1,
+                ),
+            )
+
+        summarized = finalize_closed_episodes(db_path)
+        assert summarized == 1
+        row = db.fetchone("SELECT status FROM episodes WHERE id = ?", ("ep-1",))
+        assert row["status"] == "summarized"
+        current = db.fetchone(
+            """
+            SELECT id, text, summary, topics, is_current, version
+            FROM structured_events
+            WHERE episode_id = ? AND is_current = 1
+            """,
+            ("ep-1",),
+        )
+        assert current["id"] != "ev-1"
+        assert current["text"] == "текст"
+        assert current["summary"] == "summary"
+        assert current["topics"] == '["work"]'
+        assert current["version"] == 2
+        previous = db.fetchone("SELECT is_current FROM structured_events WHERE id = ?", ("ev-1",))
+        assert previous["is_current"] == 0
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)

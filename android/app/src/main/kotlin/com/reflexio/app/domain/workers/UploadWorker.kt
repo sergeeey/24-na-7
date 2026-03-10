@@ -11,7 +11,10 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.reflexio.app.BuildConfig
 import com.reflexio.app.data.db.RecordingDatabase
+import com.reflexio.app.data.model.PendingUploadStatus
 import com.reflexio.app.data.model.RecordingStatus
+import com.reflexio.app.data.model.TransportStatus
+import com.reflexio.app.data.model.UploadRetryPolicy
 import com.reflexio.app.domain.network.IngestWebSocketClient
 import com.reflexio.app.domain.pipeline.PipelineDiagnostics
 import java.io.File
@@ -29,7 +32,10 @@ class UploadWorker(
         val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
         val wsClient = IngestWebSocketClient(baseUrl = baseUrl, apiKey = BuildConfig.SERVER_API_KEY)
 
-        val pending = pendingDao.getPending()
+        val pending = pendingDao.getRetryable(
+            UploadRetryPolicy.MAX_RETRY_ATTEMPTS,
+            System.currentTimeMillis(),
+        )
         if (pending.isEmpty()) {
             return Result.success()
         }
@@ -44,7 +50,12 @@ class UploadWorker(
             }
 
             PipelineDiagnostics.setStage(applicationContext, "uploaded")
-            val result = wsClient.sendSegment(file) { stage ->
+            pendingDao.update(item.copy(transportStatus = TransportStatus.UPLOADING))
+            val result = wsClient.sendSegment(
+                file = file,
+                segmentId = rec.segmentId ?: item.segmentId,
+                capturedAt = rec.createdAt,
+            ) { stage ->
                 PipelineDiagnostics.setStage(applicationContext, stage)
             }
             if (result.isSuccess) {
@@ -57,6 +68,7 @@ class UploadWorker(
                     )
                 )
                 pendingDao.deleteByRecordingId(item.recordingId)
+                PipelineDiagnostics.setStage(applicationContext, "server_acked")
                 PipelineDiagnostics.setStage(applicationContext, "transcribed")
                 PipelineDiagnostics.clearError(applicationContext)
                 runCatching { if (file.exists()) file.delete() }
@@ -66,11 +78,36 @@ class UploadWorker(
                 val err = result.exceptionOrNull()?.message
                 PipelineDiagnostics.setStage(applicationContext, "error")
                 PipelineDiagnostics.setError(applicationContext, err)
-                if (nextRetries >= 3) {
+                if (nextRetries >= UploadRetryPolicy.MAX_RETRY_ATTEMPTS) {
                     recordingDao.update(rec.copy(status = RecordingStatus.FAILED))
-                    pendingDao.update(item.copy(retryCount = nextRetries, lastError = err, status = "failed"))
+                    pendingDao.update(
+                        item.copy(
+                            retryCount = nextRetries,
+                            nextAttemptAt = UploadRetryPolicy.nextAttemptAt(
+                                System.currentTimeMillis(),
+                                nextRetries,
+                            ),
+                            lastError = err,
+                            lastErrorCode = "transport_error",
+                            transportStatus = TransportStatus.QUARANTINED,
+                            status = PendingUploadStatus.FAILED,
+                        )
+                    )
                 } else {
-                    pendingDao.update(item.copy(retryCount = nextRetries, lastError = err, status = "pending"))
+                    recordingDao.update(rec.copy(status = RecordingStatus.PENDING_UPLOAD))
+                    pendingDao.update(
+                        item.copy(
+                            retryCount = nextRetries,
+                            nextAttemptAt = UploadRetryPolicy.nextAttemptAt(
+                                System.currentTimeMillis(),
+                                nextRetries,
+                            ),
+                            lastError = err,
+                            lastErrorCode = "transport_error",
+                            transportStatus = TransportStatus.RETRY_WAIT,
+                            status = PendingUploadStatus.PENDING,
+                        )
+                    )
                     shouldRetry = true
                 }
                 Log.w(TAG, "Upload failed recId=${item.recordingId} retry=$nextRetries error=$err")

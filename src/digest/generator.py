@@ -10,6 +10,7 @@ from src.utils.date_utils import resolve_date_range
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics
 from src.storage.ingest_persist import ensure_ingest_tables
+from src.memory.episodes import get_episodes_for_day
 from src.memory.core_memory import get_core_memory
 from src.memory.session_memory import get_session_memory
 
@@ -236,6 +237,65 @@ class DigestGenerator:
         )
 
         return transcriptions
+
+    def get_episodes(self, target_date: date) -> List[Dict]:
+        """Возвращает episode-based units за день."""
+        if not self.db_path.parent.exists():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_ingest_tables(self.db_path)
+        if not self.db_path.exists():
+            logger.warning("database_not_found", db_path=str(self.db_path))
+            return []
+
+        episodes = get_episodes_for_day(self.db_path, target_date.isoformat())
+        out: List[Dict] = []
+        for episode in episodes:
+            started_at = episode.get("started_at")
+            ended_at = episode.get("ended_at")
+            duration_sec = 0.0
+            try:
+                if started_at and ended_at:
+                    duration_sec = max(
+                        0.0,
+                        (
+                            datetime.fromisoformat(str(ended_at).replace("Z", "+00:00"))
+                            - datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+                        ).total_seconds(),
+                    )
+            except Exception:
+                duration_sec = 0.0
+
+            out.append(
+                {
+                    "id": episode["id"],
+                    "episode_id": episode["id"],
+                    "text": episode.get("clean_text") or episode.get("raw_text") or "",
+                    "language": "unknown",
+                    "language_probability": 1.0,
+                    "duration": duration_sec,
+                    "segments": episode.get("transcription_ids_json") or "[]",
+                    "created_at": started_at or "",
+                    "summary": episode.get("summary") or "",
+                    "topics_json": episode.get("topics_json") or "[]",
+                    "participants_json": episode.get("participants_json") or "[]",
+                    "commitments_json": episode.get("commitments_json") or "[]",
+                    "needs_review": bool(episode.get("needs_review")),
+                    "source_count": episode.get("source_count") or 0,
+                    "_source_unit": "episode",
+                }
+            )
+
+        logger.info("episodes_found", date=target_date.isoformat(), count=len(out))
+        return out
+
+    def _get_digest_units(self, target_date: date) -> List[Dict]:
+        episodes = self.get_episodes(target_date)
+        if episodes:
+            return episodes
+        transcriptions = self.get_transcriptions(target_date)
+        for row in transcriptions:
+            row["_source_unit"] = "transcription"
+        return transcriptions
     
     def extract_facts(self, transcriptions: List[Dict], use_llm: bool = True) -> List[Dict]:
         """
@@ -372,7 +432,7 @@ class DigestGenerator:
         Дневной итог в формате API для Android (ROADMAP Phase 2).
         Возвращает: date, summary_text, key_themes, emotions, actions, total_recordings, total_duration, repetitions.
         """
-        transcriptions = self.get_transcriptions(target_date)
+        transcriptions = self._get_digest_units(target_date)
         analyses = self._get_recording_analyses_for_date(target_date)
         total_duration_sec = sum(t.get("duration", 0) or 0 for t in transcriptions)
         total_recordings = len(transcriptions)
@@ -523,6 +583,9 @@ class DigestGenerator:
             "insights": insights,
             "acoustic_profile": acoustic_profile,
             "sources_count": len(transcriptions),
+            "source_unit": transcriptions[0].get("_source_unit", "transcription") if transcriptions else "transcription",
+            "episodes_used": sum(1 for item in transcriptions if item.get("_source_unit") == "episode"),
+            "incomplete_context": any(bool(item.get("needs_review")) for item in transcriptions),
             # WOW fields (nullable — backward compatible)
             # ПОЧЕМУ `or []` для day_map: Kotlin DailyDigestData.day_map = List<DayMapPoint>
             # (non-null). JSON null → optJSONArray возвращает null → emptyList(), но лучше
@@ -957,7 +1020,7 @@ class DigestGenerator:
         logger.info("generating_digest", date=target_date.isoformat(), format=output_format)
         
         # Получаем транскрипции
-        transcriptions = self.get_transcriptions(target_date)
+        transcriptions = self._get_digest_units(target_date)
         
         if not transcriptions:
             logger.warning("no_transcriptions", date=target_date.isoformat())

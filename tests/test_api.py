@@ -1,6 +1,7 @@
 """Тесты API endpoints."""
+import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -99,3 +100,314 @@ def test_ingest_status():
     data = resp.json()
     assert data["id"] == "test-id-123"
     assert data["status"] == "pending"
+
+
+def test_reprocess_ingest_requeues_retryable_item(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    uploads_path = storage_path / "uploads"
+    storage_path.mkdir()
+    uploads_path.mkdir()
+
+    old_storage = settings.STORAGE_PATH
+    old_uploads = settings.UPLOADS_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "UPLOADS_PATH", uploads_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        audio_path = uploads_path / "retry.wav"
+        audio_path.write_bytes(
+            b"RIFF$\x00\x00\x00WAVEfmt " + b"\x10\x00\x00\x00\x01\x00\x01\x00" +
+            b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+        )
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO ingest_queue (
+                    id, filename, file_path, file_size, status,
+                    transport_status, processing_status, created_at, error_code, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ing-1",
+                    "retry.wav",
+                    str(audio_path),
+                    audio_path.stat().st_size,
+                    "retryable_error",
+                    "server_acked",
+                    "asr_pending",
+                    "2026-03-10T12:00:00",
+                    "asr_runtime_error",
+                    "boom",
+                ),
+            )
+
+        worker = MagicMock()
+        worker.submit = MagicMock()
+        client = TestClient(app)
+        with patch("src.api.routers.ingest.get_ingest_worker", return_value=worker):
+            resp = client.post("/ingest/reprocess/ing-1")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "requeued"
+        refreshed = db.fetchone("SELECT status, processing_status, error_code FROM ingest_queue WHERE id = ?", ("ing-1",))
+        assert refreshed["status"] == "received"
+        assert refreshed["processing_status"] == "received"
+        assert refreshed["error_code"] is None
+        assert worker.submit.call_count == 1
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "UPLOADS_PATH", old_uploads)
+
+
+def test_reprocess_ingest_rejects_non_reprocessable(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO ingest_queue (
+                    id, filename, file_path, file_size, status,
+                    transport_status, processing_status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ing-2",
+                    "done.wav",
+                    "D:/tmp/done.wav",
+                    44,
+                    "event_ready",
+                    "server_acked",
+                    "event_ready",
+                    "2026-03-10T12:00:00",
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.post("/ingest/reprocess/ing-2")
+        assert resp.status_code == 409
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_admin_reset_all_clears_data_and_artifacts(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.memory.semantic_memory import ensure_semantic_memory_tables
+    from src.persongraph.service import ensure_person_graph_tables
+
+    storage_path = tmp_path / "storage"
+    uploads_path = storage_path / "uploads"
+    digests_path = tmp_path / "digests"
+    storage_path.mkdir()
+    uploads_path.mkdir()
+    digests_path.mkdir()
+
+    old_storage = settings.STORAGE_PATH
+    old_uploads = settings.UPLOADS_PATH
+    old_cwd = Path.cwd()
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "UPLOADS_PATH", uploads_path)
+
+    try:
+        os.chdir(tmp_path)
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        ensure_semantic_memory_tables(db_path)
+        ensure_person_graph_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                ("ing-1", "a.wav", str(uploads_path / "a.wav"), 12, "received", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                """
+                INSERT INTO transcriptions (id, ingest_id, text, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("tr-1", "ing-1", "hello", "2026-03-10T12:00:01"),
+            )
+            db.execute(
+                """
+                INSERT INTO structured_events (id, transcription_id, text, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("ev-1", "tr-1", "hello", "2026-03-10T12:00:02"),
+            )
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:01",
+                    "2026-03-10T12:00:10",
+                    "closed",
+                    1,
+                    '["tr-1"]',
+                    "hello",
+                    "hello",
+                    "hello",
+                    '["work"]',
+                    "[]",
+                    "[]",
+                    0.8,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO day_threads (
+                    id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+                    commitments_json, carryover_candidate
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "dt-1",
+                    "2026-03-10",
+                    "work",
+                    '["ep-1"]',
+                    "hello",
+                    "",
+                    "[]",
+                    0,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO memory_nodes (id, source_ingest_id, source_transcription_id, content, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("mem-1", "ing-1", "tr-1", "hello", "2026-03-10T12:00:03"),
+            )
+            db.execute(
+                """
+                INSERT INTO person_graph_events (id, day, event_type, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("pg-1", "2026-03-10", "psychology_snapshot", "{}", "2026-03-10T12:00:04"),
+            )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS digest_cache (
+                    date TEXT PRIMARY KEY,
+                    digest_json TEXT NOT NULL,
+                    generated_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'ready'
+                )
+                """
+            )
+            db.execute(
+                """
+                INSERT INTO digest_cache (date, digest_json, generated_at, status)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("2026-03-10", "{}", "2026-03-10T12:00:05", "ready"),
+            )
+        (uploads_path / "a.wav").write_bytes(b"wav")
+        (digests_path / "digest_2026-03-10.json").write_text("{}", encoding="utf-8")
+
+        client = TestClient(app)
+        resp = client.post("/admin/reset-all", json={"confirm": "RESET_ALL_DATA"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "reset"
+        assert body["deleted_rows"]["ingest_queue"] == 1
+        assert body["deleted_rows"]["transcriptions"] == 1
+        assert body["deleted_rows"]["episodes"] == 1
+        assert body["deleted_rows"]["day_threads"] == 1
+        assert body["deleted_rows"]["structured_events"] == 1
+        assert body["deleted_rows"]["memory_nodes"] == 1
+        assert body["deleted_rows"]["person_graph_events"] == 1
+        assert body["deleted_rows"]["digest_cache"] == 1
+        assert body["deleted_digest_files"] == 1
+        assert body["deleted_upload_files"] == 1
+
+        assert db.fetchone("SELECT COUNT(*) AS c FROM ingest_queue")["c"] == 0
+        assert db.fetchone("SELECT COUNT(*) AS c FROM transcriptions")["c"] == 0
+        assert db.fetchone("SELECT COUNT(*) AS c FROM episodes")["c"] == 0
+        assert db.fetchone("SELECT COUNT(*) AS c FROM day_threads")["c"] == 0
+        assert db.fetchone("SELECT COUNT(*) AS c FROM structured_events")["c"] == 0
+        assert db.fetchone("SELECT COUNT(*) AS c FROM memory_nodes")["c"] == 0
+        assert db.fetchone("SELECT COUNT(*) AS c FROM person_graph_events")["c"] == 0
+        assert db.fetchone("SELECT COUNT(*) AS c FROM digest_cache")["c"] == 0
+        assert list(digests_path.iterdir()) == []
+        assert list(uploads_path.iterdir()) == []
+    finally:
+        os.chdir(old_cwd)
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "UPLOADS_PATH", old_uploads)
+
+
+def test_admin_reset_all_requires_explicit_confirm():
+    client = TestClient(app)
+    resp = client.post("/admin/reset-all", json={"confirm": "NOPE"})
+    assert resp.status_code == 400
+
+
+def test_admin_reset_all_requires_bearer_auth_when_api_key_enabled(tmp_path):
+    old_storage = settings.STORAGE_PATH
+    old_api_key = settings.API_KEY
+    old_limiter_enabled = app.state.limiter.enabled
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "API_KEY", "secret-test-key")
+    app.state.limiter.enabled = False
+
+    try:
+        client = TestClient(app)
+        ok = client.post(
+            "/admin/reset-all",
+            json={"confirm": "RESET_ALL_DATA"},
+            headers={"Authorization": "Bearer secret-test-key"},
+        )
+        assert ok.status_code == 200
+    finally:
+        app.state.limiter.enabled = old_limiter_enabled
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "API_KEY", old_api_key)
+
+
+def test_admin_reset_all_rejects_missing_bearer_auth_when_api_key_enabled(tmp_path):
+    old_storage = settings.STORAGE_PATH
+    old_api_key = settings.API_KEY
+    old_limiter_enabled = app.state.limiter.enabled
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "API_KEY", "secret-test-key")
+    app.state.limiter.enabled = False
+
+    try:
+        client = TestClient(app)
+        resp = client.post("/admin/reset-all", json={"confirm": "RESET_ALL_DATA"})
+        assert resp.status_code == 401
+    finally:
+        app.state.limiter.enabled = old_limiter_enabled
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "API_KEY", old_api_key)

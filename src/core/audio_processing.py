@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import tempfile
 import threading
 import uuid
@@ -17,11 +18,18 @@ import numpy as np
 from src.asr.acoustic import extract_acoustic_features
 from src.asr.transcribe import transcribe_audio
 from src.edge.filters import SpeechFilter
+from src.memory.episodes import (
+    attach_transcription_to_episode,
+    get_episode_context,
+    refresh_episode_from_event,
+)
 from src.memory.semantic_memory import consolidate_to_memory_node, ensure_semantic_memory_tables
 from src.security.privacy_pipeline import apply_privacy_mode
 from src.storage.db import get_reflexio_db
 from src.storage.ingest_persist import (
     ensure_ingest_tables,
+    get_existing_ingest,
+    get_transcription_by_ingest_id,
     persist_structured_event,
     persist_ws_transcription,
 )
@@ -131,14 +139,47 @@ def _read_wav_as_numpy(wav_path: Path) -> np.ndarray | None:
 
 
 def _mark_ingest_status(
-    db_path: Path, ingest_id: str, status: str, error_message: str | None = None
+    db_path: Path,
+    ingest_id: str,
+    status: str,
+    error_message: str | None = None,
+    *,
+    transport_status: str | None = None,
+    processing_status: str | None = None,
+    error_code: str | None = None,
+    quarantine_reason: str | None = None,
+    quality_score: float | None = None,
+    needs_recheck: bool | None = None,
 ) -> None:
     try:
         db = get_reflexio_db(db_path)
         with db.transaction():
             db.execute(
-                "UPDATE ingest_queue SET status=?, processed_at=?, error_message=? WHERE id=?",
-                (status, datetime.now().isoformat(), error_message, ingest_id),
+                """
+                UPDATE ingest_queue
+                SET status=?,
+                    processed_at=?,
+                    error_message=?,
+                    transport_status=COALESCE(?, transport_status),
+                    processing_status=COALESCE(?, processing_status),
+                    error_code=COALESCE(?, error_code),
+                    quarantine_reason=COALESCE(?, quarantine_reason),
+                    quality_score=COALESCE(?, quality_score),
+                    needs_recheck=COALESCE(?, needs_recheck)
+                WHERE id=?
+                """,
+                (
+                    status,
+                    datetime.now().isoformat(),
+                    error_message,
+                    transport_status,
+                    processing_status,
+                    error_code,
+                    quarantine_reason,
+                    quality_score,
+                    None if needs_recheck is None else int(needs_recheck),
+                    ingest_id,
+                ),
             )
     except Exception as e:
         logger.warning(
@@ -165,6 +206,78 @@ def _check_speech_gate(wav_path: Path) -> tuple[bool, str | None]:
     return True, None
 
 
+def _precheck_audio_artifact(wav_path: Path) -> tuple[bool, str | None]:
+    """Cheap guardrails before expensive ASR."""
+    try:
+        if not wav_path.exists() or wav_path.stat().st_size <= 44:
+            return False, "empty_audio"
+        with wave.open(str(wav_path), "rb") as wf:
+            frame_count = wf.getnframes()
+            sample_rate = wf.getframerate() or settings.AUDIO_SAMPLE_RATE
+            duration = frame_count / float(sample_rate or 1)
+        if duration < 0.2:
+            return False, "too_short"
+    except Exception:
+        return False, "invalid_wav"
+
+    audio_data = _read_wav_as_numpy(wav_path)
+    if audio_data is None or audio_data.size == 0:
+        return False, "invalid_wav"
+    clipped_ratio = float(np.mean(np.abs(audio_data) >= 32760))
+    if clipped_ratio > 0.25:
+        return False, "clipping"
+    return True, None
+
+
+def _assess_transcription_quality(result: dict[str, Any]) -> tuple[float, bool, bool]:
+    """Return quality_score, needs_recheck, garbage_flag."""
+    text = (result.get("text") or "").strip()
+    duration = float(result.get("duration") or 0.0)
+    language = (result.get("language") or "").lower()
+    lang_prob = float(result.get("language_probability") or 0.0)
+    words = [w for w in text.split() if w.strip()]
+    unique_ratio = (len(set(w.lower() for w in words)) / len(words)) if words else 0.0
+    chars_per_second = (len(text) / duration) if duration > 0 else 0.0
+
+    score = 1.0
+    if not text:
+        score -= 0.8
+    if duration >= 4.0 and len(words) < 2:
+        score -= 0.45
+    if chars_per_second > 25:
+        score -= 0.2
+    if unique_ratio < 0.45 and len(words) >= 4:
+        score -= 0.2
+    if not is_allowed_language(language):
+        score -= 0.2
+    if lang_prob < MIN_LANG_PROBABILITY:
+        score -= 0.15
+
+    score = max(0.0, min(1.0, score))
+    garbage_flag = (len(words) >= 4 and unique_ratio < 0.3) or chars_per_second > 35
+    needs_recheck = score < 0.55 or garbage_flag
+    return score, needs_recheck, garbage_flag
+
+
+def _episode_duration_seconds(episode_context: dict[str, Any] | None, fallback: float) -> float:
+    if not episode_context:
+        return fallback
+    started_at = episode_context.get("started_at")
+    ended_at = episode_context.get("ended_at")
+    try:
+        if started_at and ended_at:
+            return max(
+                0.0,
+                (
+                    datetime.fromisoformat(str(ended_at).replace("Z", "+00:00"))
+                    - datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+                ).total_seconds(),
+            )
+    except ValueError:
+        pass
+    return fallback
+
+
 def _run_enrichment_sync(
     db_path: Path,
     transcription_id: str,
@@ -175,17 +288,27 @@ def _run_enrichment_sync(
     import time as _time
     from src.enrichment.enricher import enrich_transcription
 
+    episode_context = get_episode_context(db_path, result.get("episode_id"))
+    episode_text = (
+        (episode_context or {}).get("clean_text")
+        or (episode_context or {}).get("raw_text")
+        or enrichment_text
+    )
     _enrich_t0 = _time.monotonic()
     event = enrich_transcription(
         transcription_id=transcription_id,
-        text=enrichment_text,
+        episode_id=result.get("episode_id"),
+        text=episode_text,
         timestamp=datetime.now(),
-        duration_sec=result.get("duration", 0.0) or 0.0,
+        duration_sec=_episode_duration_seconds(episode_context, result.get("duration", 0.0) or 0.0),
         language=result.get("language", "unknown") or "unknown",
         acoustic_metadata=acoustic_metadata,
     )
     _enrich_latency_ms = int((_time.monotonic() - _enrich_t0) * 1000)
     persist_structured_event(db_path, event)
+    episode_id = refresh_episode_from_event(db_path, transcription_id, event)
+    if episode_id:
+        result["episode_id"] = episode_id
     log_event(
         result.get("ingest_id", transcription_id),
         STAGE_ENRICHED,
@@ -194,6 +317,7 @@ def _run_enrichment_sync(
             "model": getattr(event, "enrichment_model", ""),
             "tokens": getattr(event, "enrichment_tokens", 0),
             "transcription_id": transcription_id,
+            "episode_id": episode_id or result.get("episode_id"),
         },
     )
     if settings.MEMORY_ENABLED:
@@ -266,6 +390,8 @@ def create_ingest_artifact(
     original_filename: str | None,
     stage: str,
     file_id: str | None = None,
+    segment_id: str | None = None,
+    captured_at: str | None = None,
     queue_status: str = "pending",
 ) -> dict[str, Any]:
     """Persist WAV file and queue row, append integrity event.
@@ -274,6 +400,31 @@ def create_ingest_artifact(
     """
     validate_upload_payload(content, content_type)
 
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    ensure_ingest_tables(db_path)
+    ensure_integrity_tables(db_path)
+    existing = get_existing_ingest(db_path, segment_id=segment_id)
+    if existing:
+        try:
+            db = get_reflexio_db(db_path)
+            with db.transaction():
+                db.execute(
+                    "UPDATE ingest_queue SET transport_status='deduplicated' WHERE id=?",
+                    (existing["id"],),
+                )
+        except Exception as e:
+            logger.warning("ingest_deduplicate_mark_failed", ingest_id=existing["id"], error=str(e))
+        return {
+            "ingest_id": existing["id"],
+            "filename": existing["filename"],
+            "dest_path": Path(existing["file_path"]),
+            "db_path": db_path,
+            "size": existing["file_size"],
+            "duplicate": True,
+            "existing_status": existing["status"],
+            "existing_result": get_transcription_by_ingest_id(db_path, existing["id"]),
+        }
+
     ingest_id = file_id or str(uuid.uuid4())
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"{timestamp}_{ingest_id}.wav"
@@ -281,21 +432,30 @@ def create_ingest_artifact(
     settings.UPLOADS_PATH.mkdir(parents=True, exist_ok=True)
     dest_path.write_bytes(content)
 
-    db_path = settings.STORAGE_PATH / "reflexio.db"
-    ensure_ingest_tables(db_path)
-    ensure_integrity_tables(db_path)
+    audio_sha256 = hashlib.sha256(content).hexdigest()
 
     try:
         db = get_reflexio_db(db_path)
         with db.transaction():
             db.execute(
-                "INSERT OR REPLACE INTO ingest_queue (id, filename, file_path, file_size, status, created_at, processed_at) VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT processed_at FROM ingest_queue WHERE id=?), NULL))",
+                """
+                INSERT OR REPLACE INTO ingest_queue (
+                    id, segment_id, filename, file_path, file_size, status,
+                    transport_status, processing_status, captured_at, audio_sha256,
+                    created_at, processed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'received', ?, ?, ?, ?, COALESCE((SELECT processed_at FROM ingest_queue WHERE id=?), NULL))
+                """,
                 (
                     ingest_id,
+                    segment_id,
                     filename,
                     str(dest_path),
                     len(content),
                     queue_status,
+                    queue_status,
+                    captured_at,
+                    audio_sha256,
                     datetime.now().isoformat(),
                     ingest_id,
                 ),
@@ -325,6 +485,7 @@ def create_ingest_artifact(
         "dest_path": dest_path,
         "db_path": db_path,
         "size": len(content),
+        "duplicate": False,
     }
 
 
@@ -357,9 +518,45 @@ def process_audio_from_artifact_sync(
     ensure_speaker_tables(db_path)
 
     try:
+        precheck_ok, precheck_reason = _precheck_audio_artifact(file_path)
+        if not precheck_ok:
+            terminal_status = "quarantined" if precheck_reason == "invalid_wav" else "filtered"
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                terminal_status,
+                precheck_reason,
+                processing_status=terminal_status,
+                error_code=precheck_reason,
+                quarantine_reason=precheck_reason if terminal_status == "quarantined" else None,
+            )
+            if delete_audio_after:
+                file_path.unlink(missing_ok=True)
+            return {
+                "status": terminal_status,
+                "reason": precheck_reason,
+                "ingest_id": ingest_id,
+                "filename": filename,
+            }
+
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "asr_pending",
+            transport_status="server_acked",
+            processing_status="asr_pending",
+        )
         allowed_speech, speech_reason = _check_speech_gate(file_path)
         if not allowed_speech:
-            _mark_ingest_status(db_path, ingest_id, "filtered", speech_reason)
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "filtered",
+                speech_reason,
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="speech_gate_filtered",
+            )
             if delete_audio_after:
                 file_path.unlink(missing_ok=True)
             return {
@@ -395,7 +592,15 @@ def process_audio_from_artifact_sync(
                     "speaker_id": verification.speaker_id,
                 }
                 if not verification.is_user:
-                    _mark_ingest_status(db_path, ingest_id, "filtered", "not_user_speaker")
+                    _mark_ingest_status(
+                        db_path,
+                        ingest_id,
+                        "filtered",
+                        "not_user_speaker",
+                        transport_status="server_acked",
+                        processing_status="filtered",
+                        error_code="speaker_filtered",
+                    )
                     if delete_audio_after:
                         file_path.unlink(missing_ok=True)
                     return {
@@ -429,7 +634,13 @@ def process_audio_from_artifact_sync(
 
         if not is_allowed_language(detected_lang):
             _mark_ingest_status(
-                db_path, ingest_id, "filtered", f"unsupported_language:{detected_lang or 'unknown'}"
+                db_path,
+                ingest_id,
+                "filtered",
+                f"unsupported_language:{detected_lang or 'unknown'}",
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="unsupported_language",
             )
             if delete_audio_after:
                 file_path.unlink(missing_ok=True)
@@ -442,7 +653,15 @@ def process_audio_from_artifact_sync(
             }
 
         if not is_meaningful_transcription(text, lang_prob):
-            _mark_ingest_status(db_path, ingest_id, "filtered", "noise")
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "filtered",
+                "noise",
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="noise",
+            )
             if delete_audio_after:
                 file_path.unlink(missing_ok=True)
             return {
@@ -454,7 +673,15 @@ def process_audio_from_artifact_sync(
 
         privacy = apply_privacy_mode(text, mode=settings.PRIVACY_MODE)
         if not privacy.allowed:
-            _mark_ingest_status(db_path, ingest_id, "filtered", "pii_blocked")
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "filtered",
+                "pii_blocked",
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="pii_blocked",
+            )
             if delete_audio_after:
                 file_path.unlink(missing_ok=True)
             return {
@@ -468,6 +695,14 @@ def process_audio_from_artifact_sync(
         result["privacy_mode"] = privacy.mode
         result["pii_count"] = privacy.pii_count
         result["ingest_id"] = ingest_id
+        result["transcript_raw"] = text
+        result["transcript_clean"] = privacy.text
+        result["asr_model"] = settings.ASR_MODEL_SIZE
+        result["asr_confidence"] = lang_prob
+        quality_score, needs_recheck, garbage_flag = _assess_transcription_quality(result)
+        result["quality_score"] = quality_score
+        result["needs_recheck"] = needs_recheck
+        result["garbage_flag"] = garbage_flag
         # ПОЧЕМУ speaker_data в result: persist_ws_transcription сохранит is_user/confidence в БД
         if speaker_data:
             result["speaker_confidence"] = speaker_data["speaker_confidence"]
@@ -492,7 +727,15 @@ def process_audio_from_artifact_sync(
                 metadata={"language": result.get("language", ""), "privacy_mode": privacy.mode},
             )
 
-        _mark_ingest_status(db_path, ingest_id, "processed")
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "transcribed",
+            transport_status="server_acked",
+            processing_status="transcribed",
+            quality_score=quality_score,
+            needs_recheck=needs_recheck,
+        )
         _asr_latency_ms = int((_time.monotonic() - _asr_t0) * 1000)
         log_event(
             ingest_id,
@@ -511,13 +754,49 @@ def process_audio_from_artifact_sync(
             text_for_enrichment = (
                 f"{(enrichment_prefix or '').strip()} {result.get('text', '').strip()}".strip()
             )
-            _run_enrichment_sync(
-                db_path=db_path,
-                transcription_id=transcription_id,
-                result=result,
-                enrichment_text=text_for_enrichment,
-                acoustic_metadata=acoustic_metadata,
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "event_pending",
+                transport_status="server_acked",
+                processing_status="event_pending",
+                quality_score=quality_score,
+                needs_recheck=needs_recheck,
             )
+            try:
+                _run_enrichment_sync(
+                    db_path=db_path,
+                    transcription_id=transcription_id,
+                    result=result,
+                    enrichment_text=text_for_enrichment,
+                    acoustic_metadata=acoustic_metadata,
+                )
+                _mark_ingest_status(
+                    db_path,
+                    ingest_id,
+                    "event_ready",
+                    transport_status="server_acked",
+                    processing_status="event_ready",
+                    quality_score=quality_score,
+                    needs_recheck=needs_recheck,
+                )
+            except Exception as enrich_error:
+                logger.warning(
+                    "enrichment_degraded_after_transcription",
+                    ingest_id=ingest_id,
+                    error=str(enrich_error),
+                )
+                _mark_ingest_status(
+                    db_path,
+                    ingest_id,
+                    "transcribed",
+                    str(enrich_error),
+                    transport_status="server_acked",
+                    processing_status="transcribed",
+                    error_code="enrichment_failed",
+                    quality_score=quality_score,
+                    needs_recheck=needs_recheck,
+                )
 
         return {
             "status": "transcribed",
@@ -527,7 +806,15 @@ def process_audio_from_artifact_sync(
             "result": result,
         }
     except Exception as e:
-        _mark_ingest_status(db_path, ingest_id, "error", str(e))
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "retryable_error",
+            str(e),
+            transport_status="server_acked",
+            processing_status="asr_pending",
+            error_code="asr_runtime_error",
+        )
         if delete_audio_after:
             file_path.unlink(missing_ok=True)
         logger.warning("process_audio_from_artifact_failed", ingest_id=ingest_id, error=str(e))
@@ -540,6 +827,8 @@ async def process_audio_bytes(
     original_filename: str | None,
     *,
     file_id: str | None = None,
+    segment_id: str | None = None,
+    captured_at: str | None = None,
     ingest_stage: str = "audio_received",
     transcription_stage: str = "transcription_saved",
     delete_audio_after: bool | None = None,  # None = читать из settings.AUDIO_RETENTION_HOURS
@@ -559,6 +848,8 @@ async def process_audio_bytes(
         original_filename=original_filename,
         stage=ingest_stage,
         file_id=file_id,
+        segment_id=segment_id,
+        captured_at=captured_at,
         queue_status="pending",
     )
     db_path = artifact["db_path"]
@@ -566,12 +857,27 @@ async def process_audio_bytes(
     ingest_id = artifact["ingest_id"]
     filename = artifact["filename"]
 
+    if artifact.get("duplicate"):
+        return {
+            "status": "duplicate",
+            "ingest_id": ingest_id,
+            "filename": filename,
+            "result": artifact.get("existing_result"),
+        }
+
     ensure_ingest_tables(db_path)
     ensure_integrity_tables(db_path)
     ensure_semantic_memory_tables(db_path)
     ensure_speaker_tables(db_path)
 
     if not transcribe_now:
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "received",
+            transport_status="server_acked",
+            processing_status="received",
+        )
         return {
             "status": "received",
             "ingest_id": ingest_id,
@@ -579,9 +885,46 @@ async def process_audio_bytes(
         }
 
     try:
+        precheck_ok, precheck_reason = _precheck_audio_artifact(dest_path)
+        if not precheck_ok:
+            terminal_status = "quarantined" if precheck_reason == "invalid_wav" else "filtered"
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                terminal_status,
+                precheck_reason,
+                transport_status="server_acked",
+                processing_status=terminal_status,
+                error_code=precheck_reason,
+                quarantine_reason=precheck_reason if terminal_status == "quarantined" else None,
+            )
+            if delete_audio_after:
+                dest_path.unlink(missing_ok=True)
+            return {
+                "status": terminal_status,
+                "reason": precheck_reason,
+                "ingest_id": ingest_id,
+                "filename": filename,
+            }
+
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "asr_pending",
+            transport_status="server_acked",
+            processing_status="asr_pending",
+        )
         allowed_speech, speech_reason = _check_speech_gate(dest_path)
         if not allowed_speech:
-            _mark_ingest_status(db_path, ingest_id, "filtered", speech_reason)
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "filtered",
+                speech_reason,
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="speech_gate_filtered",
+            )
             if delete_audio_after:
                 dest_path.unlink(missing_ok=True)
             return {
@@ -619,7 +962,15 @@ async def process_audio_bytes(
                     "speaker_id": verification.speaker_id,
                 }
                 if not verification.is_user:
-                    _mark_ingest_status(db_path, ingest_id, "filtered", "not_user_speaker")
+                    _mark_ingest_status(
+                        db_path,
+                        ingest_id,
+                        "filtered",
+                        "not_user_speaker",
+                        transport_status="server_acked",
+                        processing_status="filtered",
+                        error_code="speaker_filtered",
+                    )
                     if delete_audio_after:
                         dest_path.unlink(missing_ok=True)
                     return {
@@ -668,7 +1019,13 @@ async def process_audio_bytes(
 
         if not is_allowed_language(detected_lang):
             _mark_ingest_status(
-                db_path, ingest_id, "filtered", f"unsupported_language:{detected_lang or 'unknown'}"
+                db_path,
+                ingest_id,
+                "filtered",
+                f"unsupported_language:{detected_lang or 'unknown'}",
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="unsupported_language",
             )
             if delete_audio_after:
                 dest_path.unlink(missing_ok=True)
@@ -681,7 +1038,15 @@ async def process_audio_bytes(
             }
 
         if not is_meaningful_transcription(text, lang_prob):
-            _mark_ingest_status(db_path, ingest_id, "filtered", "noise")
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "filtered",
+                "noise",
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="noise",
+            )
             if delete_audio_after:
                 dest_path.unlink(missing_ok=True)
             return {
@@ -693,7 +1058,15 @@ async def process_audio_bytes(
 
         privacy = apply_privacy_mode(text, mode=settings.PRIVACY_MODE)
         if not privacy.allowed:
-            _mark_ingest_status(db_path, ingest_id, "filtered", "pii_blocked")
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "filtered",
+                "pii_blocked",
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="pii_blocked",
+            )
             if delete_audio_after:
                 dest_path.unlink(missing_ok=True)
             return {
@@ -707,6 +1080,14 @@ async def process_audio_bytes(
         result["privacy_mode"] = privacy.mode
         result["pii_count"] = privacy.pii_count
         result["ingest_id"] = ingest_id
+        result["transcript_raw"] = text
+        result["transcript_clean"] = privacy.text
+        result["asr_model"] = settings.ASR_MODEL_SIZE
+        result["asr_confidence"] = lang_prob
+        quality_score, needs_recheck, garbage_flag = _assess_transcription_quality(result)
+        result["quality_score"] = quality_score
+        result["needs_recheck"] = needs_recheck
+        result["garbage_flag"] = garbage_flag
         if speaker_data:
             result["speaker_confidence"] = speaker_data["speaker_confidence"]
             result["is_user"] = speaker_data["is_user"]
@@ -720,6 +1101,9 @@ async def process_audio_bytes(
             file_size=len(content),
             result=result,
         )
+        episode_id = attach_transcription_to_episode(db_path, transcription_id) if transcription_id else None
+        if episode_id:
+            result["episode_id"] = episode_id
 
         if settings.INTEGRITY_CHAIN_ENABLED:
             append_integrity_event(
@@ -730,7 +1114,15 @@ async def process_audio_bytes(
                 metadata={"language": result.get("language", ""), "privacy_mode": privacy.mode},
             )
 
-        _mark_ingest_status(db_path, ingest_id, "processed")
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "transcribed",
+            transport_status="server_acked",
+            processing_status="transcribed",
+            quality_score=quality_score,
+            needs_recheck=needs_recheck,
+        )
         log_event(
             ingest_id,
             STAGE_ASR_DONE,
@@ -739,6 +1131,7 @@ async def process_audio_bytes(
                 "words": len(text.split()),
                 "lang": detected_lang,
                 "transcription_id": transcription_id,
+                "episode_id": episode_id,
             },
         )
         if delete_audio_after:
@@ -752,6 +1145,15 @@ async def process_audio_bytes(
             from src.enrichment.worker import get_enrichment_worker, EnrichmentTask
 
             worker = get_enrichment_worker()
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "event_pending",
+                transport_status="server_acked",
+                processing_status="event_pending",
+                quality_score=quality_score,
+                needs_recheck=needs_recheck,
+            )
             await worker.submit(
                 EnrichmentTask(
                     db_path=db_path,
@@ -767,10 +1169,19 @@ async def process_audio_bytes(
             "ingest_id": ingest_id,
             "filename": filename,
             "transcription_id": transcription_id,
+            "episode_id": episode_id,
             "result": result,
         }
     except Exception as e:
-        _mark_ingest_status(db_path, ingest_id, "error", "processing_failed")
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "retryable_error",
+            "processing_failed",
+            transport_status="server_acked",
+            processing_status="asr_pending",
+            error_code="asr_runtime_error",
+        )
         if delete_audio_after:
             dest_path.unlink(missing_ok=True)
         if fail_open:

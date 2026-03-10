@@ -18,6 +18,14 @@ interface PendingUploadDao {
     @Query("SELECT * FROM pending_uploads WHERE status = 'pending' ORDER BY createdAt ASC")
     suspend fun getPending(): List<PendingUpload>
 
+    @Query(
+        "SELECT * FROM pending_uploads " +
+            "WHERE ((status = 'pending') OR (status = 'failed' AND retryCount < :maxRetryCount)) " +
+            "AND (nextAttemptAt IS NULL OR nextAttemptAt <= :nowMs) " +
+            "ORDER BY createdAt ASC"
+    )
+    suspend fun getRetryable(maxRetryCount: Int, nowMs: Long): List<PendingUpload>
+
     @Query("SELECT COUNT(*) FROM pending_uploads WHERE status = 'pending'")
     suspend fun getPendingCount(): Int
 

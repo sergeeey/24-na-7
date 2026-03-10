@@ -85,7 +85,7 @@ class EnrichmentWorker:
 
     def _execute(self, task: EnrichmentTask) -> None:
         """Run enrichment synchronously (called from worker or to_thread)."""
-        from src.core.audio_processing import _run_enrichment_sync
+        from src.core.audio_processing import _mark_ingest_status, _run_enrichment_sync
         try:
             _run_enrichment_sync(
                 db_path=task.db_path,
@@ -94,7 +94,31 @@ class EnrichmentWorker:
                 enrichment_text=task.enrichment_text,
                 acoustic_metadata=task.acoustic_metadata,
             )
+            ingest_id = task.result.get("ingest_id")
+            if ingest_id:
+                _mark_ingest_status(
+                    task.db_path,
+                    ingest_id,
+                    "event_ready",
+                    transport_status="server_acked",
+                    processing_status="event_ready",
+                    quality_score=task.result.get("quality_score"),
+                    needs_recheck=task.result.get("needs_recheck"),
+                )
         except Exception as e:
+            ingest_id = task.result.get("ingest_id")
+            if ingest_id:
+                _mark_ingest_status(
+                    task.db_path,
+                    ingest_id,
+                    "transcribed",
+                    str(e),
+                    transport_status="server_acked",
+                    processing_status="transcribed",
+                    error_code="enrichment_failed",
+                    quality_score=task.result.get("quality_score"),
+                    needs_recheck=task.result.get("needs_recheck"),
+                )
             logger.warning(
                 "enrichment_task_failed",
                 transcription_id=task.transcription_id,

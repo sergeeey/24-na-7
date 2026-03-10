@@ -21,6 +21,7 @@ object RecordingStatus {
 data class Recording(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
+    val segmentId: String? = null,
     val filePath: String,
     val durationSeconds: Long,
     val createdAt: Long,

@@ -32,30 +32,82 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS ingest_queue (
             id TEXT PRIMARY KEY,
+            segment_id TEXT,
             filename TEXT NOT NULL,
             file_path TEXT NOT NULL,
             file_size INTEGER NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
+            transport_status TEXT NOT NULL DEFAULT 'received',
+            processing_status TEXT NOT NULL DEFAULT 'received',
+            captured_at TEXT,
+            audio_sha256 TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT,
+            error_code TEXT,
             created_at TEXT,
             processed_at TEXT,
-            error_message TEXT
+            error_message TEXT,
+            quarantine_reason TEXT,
+            quality_score REAL,
+            needs_recheck INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    for col_def in [
+        "segment_id TEXT",
+        "transport_status TEXT NOT NULL DEFAULT 'received'",
+        "processing_status TEXT NOT NULL DEFAULT 'received'",
+        "captured_at TEXT",
+        "audio_sha256 TEXT",
+        "attempt_count INTEGER NOT NULL DEFAULT 0",
+        "next_attempt_at TEXT",
+        "error_code TEXT",
+        "quarantine_reason TEXT",
+        "quality_score REAL",
+        "needs_recheck INTEGER NOT NULL DEFAULT 0",
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE ingest_queue ADD COLUMN {col_def}")
+        except Exception:
+            pass
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ingest_queue_segment_id ON ingest_queue(segment_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ingest_queue_status ON ingest_queue(status)")
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS transcriptions (
             id TEXT PRIMARY KEY,
             ingest_id TEXT NOT NULL,
+            episode_id TEXT,
             text TEXT NOT NULL,
+            transcript_raw TEXT,
+            transcript_clean TEXT,
             language TEXT,
             language_probability REAL,
+            asr_model TEXT,
+            asr_confidence REAL,
+            garbage_flag INTEGER NOT NULL DEFAULT 0,
+            quality_score REAL,
+            needs_recheck INTEGER NOT NULL DEFAULT 0,
             duration REAL,
             segments TEXT,
             created_at TEXT
         )
         """
     )
+    for col_def in [
+        "transcript_raw TEXT",
+        "transcript_clean TEXT",
+        "episode_id TEXT",
+        "asr_model TEXT",
+        "asr_confidence REAL",
+        "garbage_flag INTEGER NOT NULL DEFAULT 0",
+        "quality_score REAL",
+        "needs_recheck INTEGER NOT NULL DEFAULT 0",
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE transcriptions ADD COLUMN {col_def}")
+        except Exception:
+            pass
     conn.commit()
 
 
@@ -76,6 +128,51 @@ def _ensure_recording_analyses_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.commit()
+
+
+def _ensure_episodes_tables(conn: sqlite3.Connection) -> None:
+    """Создаёт таблицы episodes и day_threads при отсутствии."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS episodes (
+            id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            ended_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            source_count INTEGER NOT NULL DEFAULT 0,
+            transcription_ids_json TEXT NOT NULL DEFAULT '[]',
+            raw_text TEXT NOT NULL DEFAULT '',
+            clean_text TEXT NOT NULL DEFAULT '',
+            summary TEXT NOT NULL DEFAULT '',
+            topics_json TEXT NOT NULL DEFAULT '[]',
+            participants_json TEXT NOT NULL DEFAULT '[]',
+            commitments_json TEXT NOT NULL DEFAULT '[]',
+            importance_score REAL DEFAULT 0.0,
+            needs_review INTEGER NOT NULL DEFAULT 0,
+            day_key TEXT NOT NULL,
+            thread_key TEXT
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS day_threads (
+            id TEXT PRIMARY KEY,
+            day_key TEXT NOT NULL,
+            topic_cluster TEXT NOT NULL,
+            episode_ids_json TEXT NOT NULL DEFAULT '[]',
+            summary TEXT NOT NULL DEFAULT '',
+            open_questions TEXT NOT NULL DEFAULT '',
+            commitments_json TEXT NOT NULL DEFAULT '[]',
+            carryover_candidate INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_day_key ON episodes(day_key, started_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status, ended_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_day_threads_day_key ON day_threads(day_key)")
     conn.commit()
 
 
@@ -134,6 +231,7 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS structured_events (
             id TEXT PRIMARY KEY,
             transcription_id TEXT NOT NULL,
+            episode_id TEXT,
             timestamp TEXT,
             duration_sec REAL DEFAULT 0.0,
             text TEXT NOT NULL,
@@ -166,6 +264,7 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
         "version INTEGER DEFAULT 1",
         "supersedes_id TEXT",
         "is_current INTEGER DEFAULT 1",
+        "episode_id TEXT",
         "pitch_hz_mean REAL",
         "pitch_variance REAL",
         "energy_mean REAL",
@@ -186,6 +285,12 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_structured_events_current
         ON structured_events(transcription_id) WHERE is_current = 1
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_structured_events_episode_current
+        ON structured_events(episode_id) WHERE is_current = 1
         """
     )
     # VIEW для удобства — всегда показывает только актуальные версии
@@ -225,9 +330,17 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
             existing = db.fetchone(
                 """
                 SELECT id, version FROM structured_events
-                WHERE transcription_id = ? AND is_current = 1
+                WHERE (
+                    (episode_id = ? AND ? IS NOT NULL)
+                    OR (transcription_id = ? AND ? IS NULL)
+                ) AND is_current = 1
                 """,
-                (event.transcription_id,),
+                (
+                    getattr(event, "episode_id", None),
+                    getattr(event, "episode_id", None),
+                    event.transcription_id,
+                    getattr(event, "episode_id", None),
+                ),
             )
 
             version = 1
@@ -244,7 +357,7 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
             db.execute(
                 """
                 INSERT INTO structured_events (
-                    id, transcription_id, timestamp, duration_sec, text, language,
+                    id, transcription_id, episode_id, timestamp, duration_sec, text, language,
                     summary, emotions, topics, domains, tasks, commitments,
                     decisions, speakers,
                     urgency, sentiment, location,
@@ -254,11 +367,12 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                     pitch_hz_mean, pitch_variance, energy_mean,
                     spectral_centroid_mean, acoustic_arousal,
                     enrichment_prompt_hash, enrichment_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
                     event.transcription_id,
+                    getattr(event, "episode_id", None),
                     event.timestamp.isoformat() if event.timestamp else None,
                     event.duration_sec,
                     event.text,
@@ -332,7 +446,47 @@ def ensure_ingest_tables(db_path: Path) -> None:
     db = get_reflexio_db(db_path)
     _ensure_sqlite_ingest_tables(db.conn)
     _ensure_recording_analyses_table(db.conn)
+    _ensure_episodes_tables(db.conn)
     _ensure_structured_events_table(db.conn)
+
+
+def get_existing_ingest(db_path: Path, *, segment_id: str | None = None) -> Optional[sqlite3.Row]:
+    """Вернуть существующий ingest row по segment_id, если он уже был принят."""
+    if not segment_id:
+        return None
+    db = get_reflexio_db(db_path)
+    _ensure_sqlite_ingest_tables(db.conn)
+    return db.fetchone(
+        "SELECT * FROM ingest_queue WHERE segment_id = ? ORDER BY created_at DESC LIMIT 1",
+        (segment_id,),
+    )
+
+
+def get_transcription_by_ingest_id(db_path: Path, ingest_id: str) -> Optional[dict[str, Any]]:
+    """Вернуть транскрипцию для dedupe-ответа по ingest_id."""
+    if not db_path.exists():
+        return None
+    db = get_reflexio_db(db_path)
+    _ensure_sqlite_ingest_tables(db.conn)
+    row = db.fetchone(
+        """
+        SELECT text, transcript_clean, language, language_probability, quality_score, needs_recheck
+        FROM transcriptions
+        WHERE ingest_id = ?
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (ingest_id,),
+    )
+    if not row:
+        return None
+    return {
+        "text": row["transcript_clean"] or row["text"] or "",
+        "language": row["language"] or "",
+        "language_probability": row["language_probability"],
+        "quality_score": row["quality_score"],
+        "needs_recheck": bool(row["needs_recheck"]),
+    }
 
 
 def transcription_exists(db_path: Path, transcription_id: str) -> bool:
@@ -354,8 +508,8 @@ def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[st
     try:
         row = db.fetchone(
             """
-            SELECT se.summary, se.emotions, se.topics, se.domains, se.tasks,
-                   se.urgency, se.sentiment, se.decisions, se.speakers,
+        SELECT se.summary, se.emotions, se.topics, se.domains, se.tasks,
+                   se.urgency, se.sentiment, se.decisions, se.speakers, se.episode_id,
                    se.enrichment_confidence, se.created_at
             FROM structured_events se
             JOIN transcriptions t ON se.transcription_id = t.id
@@ -378,6 +532,7 @@ def get_enrichment_by_ingest_id(db_path: Path, file_id: str) -> Optional[dict[st
             "urgency": row["urgency"] or "medium",
             "sentiment": row["sentiment"] or "neutral",
             "decisions": json.loads(row["decisions"]) if row["decisions"] else [],
+            "episode_id": row["episode_id"],
             "enrichment_confidence": row["enrichment_confidence"] or 0.0,
         }
     except Exception as e:
@@ -406,6 +561,7 @@ def persist_ws_transcription(
     db = get_reflexio_db(db_path)
     try:
         _ensure_sqlite_ingest_tables(db.conn)
+        _ensure_episodes_tables(db.conn)
 
         existing_queue = db.fetchone("SELECT 1 FROM ingest_queue WHERE id = ?", (file_id,))
         with db.transaction():
@@ -413,15 +569,44 @@ def persist_ws_transcription(
                 now = datetime.now(timezone.utc).isoformat()
                 db.execute(
                     """
-                    INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at, processed_at)
-                    VALUES (?, ?, ?, ?, 'processed', ?, ?)
+                    INSERT INTO ingest_queue (
+                        id, filename, file_path, file_size, status,
+                        transport_status, processing_status, created_at, processed_at,
+                        quality_score, needs_recheck
+                    )
+                    VALUES (?, ?, ?, ?, 'transcribed', 'server_acked', 'transcribed', ?, ?, ?, ?)
                     """,
-                    (file_id, filename, file_path, file_size, now, now),
+                    (
+                        file_id,
+                        filename,
+                        file_path,
+                        file_size,
+                        now,
+                        now,
+                        result.get("quality_score"),
+                        1 if result.get("needs_recheck") else 0,
+                    ),
                 )
             else:
                 db.execute(
-                    "UPDATE ingest_queue SET status='processed', processed_at=? WHERE id=?",
-                    (datetime.now(timezone.utc).isoformat(), file_id),
+                    """
+                    UPDATE ingest_queue
+                    SET status='transcribed',
+                        transport_status='server_acked',
+                        processing_status='transcribed',
+                        processed_at=?,
+                        error_code=NULL,
+                        error_message=NULL,
+                        quality_score=?,
+                        needs_recheck=?
+                    WHERE id=?
+                    """,
+                    (
+                        datetime.now(timezone.utc).isoformat(),
+                        result.get("quality_score"),
+                        1 if result.get("needs_recheck") else 0,
+                        file_id,
+                    ),
                 )
 
             existing = db.fetchone(
@@ -435,8 +620,15 @@ def persist_ws_transcription(
 
             transcription_id = str(uuid.uuid4())
             text = result.get("text") or ""
+            transcript_raw = result.get("transcript_raw") or text
+            transcript_clean = result.get("transcript_clean") or text
             language = result.get("language")
             language_probability = result.get("language_probability")
+            asr_model = result.get("asr_model")
+            asr_confidence = result.get("asr_confidence")
+            garbage_flag = 1 if result.get("garbage_flag") else 0
+            quality_score = result.get("quality_score")
+            needs_recheck = 1 if result.get("needs_recheck") else 0
             duration = result.get("duration")
             segments = result.get("segments")
 
@@ -458,15 +650,27 @@ def persist_ws_transcription(
             speaker_id = result.get("speaker_id", 0)
             db.execute(
                 """
-                INSERT INTO transcriptions (id, ingest_id, text, language, language_probability, duration, segments, created_at, speaker_id, is_user, speaker_confidence)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO transcriptions (
+                    id, ingest_id, text, transcript_raw, transcript_clean,
+                    language, language_probability, asr_model, asr_confidence,
+                    garbage_flag, quality_score, needs_recheck,
+                    duration, segments, created_at, speaker_id, is_user, speaker_confidence, episode_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     transcription_id,
                     file_id,
-                    text,
+                    transcript_clean,
+                    transcript_raw,
+                    transcript_clean,
                     language,
                     language_probability,
+                    asr_model,
+                    asr_confidence,
+                    garbage_flag,
+                    quality_score,
+                    needs_recheck,
                     duration,
                     segments_str,
                     datetime.now(timezone.utc).isoformat(),

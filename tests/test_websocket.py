@@ -1,6 +1,7 @@
 """Tests for WebSocket /ws/ingest endpoint."""
 import base64
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import wave
 
@@ -99,3 +100,49 @@ def test_websocket_ingest_invalid_audio_binary():
         # ПОЧЕМУ: после H1-фикса (security) сервер не раскрывает внутренние детали ошибок.
         # Проверяем только что ответ — это error с непустым message.
         assert len(msg["message"]) > 0
+
+
+def test_websocket_ingest_deduplicates_same_segment_id(tmp_path):
+    """Same segment_id should be accepted once and then treated as duplicate."""
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    uploads_path = storage_path / "uploads"
+    storage_path.mkdir()
+    uploads_path.mkdir()
+
+    old_storage = settings.STORAGE_PATH
+    old_uploads = settings.UPLOADS_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "UPLOADS_PATH", uploads_path)
+
+    client = TestClient(app)
+    worker = MagicMock()
+    worker.submit = MagicMock()
+
+    try:
+        with patch("src.api.routers.websocket.get_ingest_worker", return_value=worker):
+            with client.websocket_connect("/ws/ingest") as websocket:
+                payload = base64.b64encode(_valid_wav_bytes()).decode()
+                body = (
+                    '{"type":"audio","segment_id":"seg-123","captured_at":"2026-03-10T12:00:00Z","data":"'
+                    + payload
+                    + '"}'
+                )
+                websocket.send_text(body)
+                first = websocket.receive_json()
+                assert first["type"] == "received"
+                assert first["status"] == "queued"
+
+                websocket.send_text(body)
+                second = websocket.receive_json()
+                assert second["type"] == "received"
+                assert second["status"] == "duplicate"
+                assert second["file_id"] == first["file_id"]
+
+        assert worker.submit.call_count == 1
+        saved = list(Path(uploads_path).glob("*.wav"))
+        assert len(saved) == 1
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "UPLOADS_PATH", old_uploads)

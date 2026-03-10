@@ -1,17 +1,18 @@
 package com.reflexio.app.debug
 
 import android.util.Log
+import com.reflexio.app.BuildConfig
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Отправка NDJSON логов на хост для отладки (эмулятор: 10.0.2.2).
+ * Отправка NDJSON логов на хост для отладки.
+ * URL читается из BuildConfig и по умолчанию выключен на реальном устройстве.
  * Регионы agent log — не удалять до верификации.
  */
 object DebugLog {
     private const val TAG = "RFLX_DBG"
-    private const val INGEST_URL = "http://10.0.2.2:7245/ingest/66a35078-c564-4475-82a0-106b401b1bfc"
 
     // #region agent log
     fun log(hypothesisId: String, location: String, message: String, data: Map<String, Any?> = emptyMap()) {
@@ -25,9 +26,11 @@ object DebugLog {
             put("timestamp", System.currentTimeMillis())
         }.toString()
         Log.d(TAG, "HYP_$hypothesisId|$location|$message|$data")
+        val ingestUrl = BuildConfig.DEBUG_LOG_INGEST_URL.trim()
+        if (ingestUrl.isEmpty()) return
         Thread {
             try {
-                val conn = URL(INGEST_URL).openConnection() as HttpURLConnection
+                val conn = URL(ingestUrl).openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.doOutput = true

@@ -122,6 +122,16 @@ class IngestWorker:
                 },
             )
             return
+        if status == "quarantined":
+            self._deliver(
+                task.connection_id,
+                {
+                    "type": "error",
+                    "file_id": task.ingest_id,
+                    "message": result.get("reason", "quarantined"),
+                },
+            )
+            return
         if status != "transcribed":
             self._deliver(
                 task.connection_id,

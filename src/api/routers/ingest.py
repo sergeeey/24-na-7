@@ -8,6 +8,7 @@ from slowapi.util import get_remote_address
 
 from src.api.middleware.safe_middleware import get_safe_checker
 from src.core.audio_processing import process_audio_bytes, validate_safe_file_size
+from src.ingest.worker import IngestTask, get_ingest_worker
 from src.utils.config import settings  # noqa: F401
 from src.utils.logging import get_logger
 from src.utils.rate_limiter import RateLimitConfig
@@ -47,6 +48,8 @@ async def ingest_audio(request: Request, response: Response, file: UploadFile = 
             content=content,
             content_type=file.content_type,
             original_filename=file.filename,
+            segment_id=request.headers.get("X-Segment-Id"),
+            captured_at=request.headers.get("X-Captured-At"),
             ingest_stage="ingest_audio_received",
             transcription_stage="ingest_transcription_saved",
             run_enrichment=sync_process,
@@ -65,6 +68,13 @@ async def ingest_audio(request: Request, response: Response, file: UploadFile = 
             "size": len(content),
         }
         if unified.get("status") == "transcribed":
+            payload = unified.get("result", {})
+            out["transcription"] = {
+                "text": payload.get("text", ""),
+                "language": payload.get("language", ""),
+                "privacy_mode": payload.get("privacy_mode", "audit"),
+            }
+        if unified.get("status") == "duplicate" and unified.get("result"):
             payload = unified.get("result", {})
             out["transcription"] = {
                 "text": payload.get("text", ""),
@@ -107,7 +117,9 @@ async def get_pipeline_status():
             "transcriptions_today": 0,
             "transcriptions_total": 0,
             "last_transcription_at": None,
-            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0},
+            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0, "quarantine": 0},
+            "ingest_stage_counts": {},
+            "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
         }
 
     db = get_reflexio_db(db_path)
@@ -125,10 +137,33 @@ async def get_pipeline_status():
         )
         last_at = last_row[0] if last_row and last_row[0] else None
         q = {
-            "pending": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'pending'")[0],
-            "processed": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'processed'")[0],
-            "error": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'error'")[0],
+            "pending": db.fetchone(
+                "SELECT COUNT(*) FROM ingest_queue WHERE status IN ('pending','received','deduplicated','asr_pending','event_pending','transcribed')"
+            )[0],
+            "processed": db.fetchone(
+                "SELECT COUNT(*) FROM ingest_queue WHERE status IN ('processed','event_ready')"
+            )[0],
+            "error": db.fetchone(
+                "SELECT COUNT(*) FROM ingest_queue WHERE status IN ('error','retryable_error')"
+            )[0],
             "filtered": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'filtered'")[0],
+            "quarantine": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'quarantined'")[0],
+        }
+        stage_counts = {
+            "received": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'received'")[0],
+            "deduplicated": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE transport_status = 'deduplicated'")[0],
+            "asr_pending": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'asr_pending'")[0],
+            "transcribed": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'transcribed'")[0],
+            "event_pending": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'event_pending'")[0],
+            "event_ready": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'event_ready'")[0],
+            "retryable_error": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'retryable_error'")[0],
+            "quarantined": q["quarantine"],
+        }
+        episode_counts = {
+            "open": db.fetchone("SELECT COUNT(*) FROM episodes WHERE status = 'open'")[0],
+            "closed": db.fetchone("SELECT COUNT(*) FROM episodes WHERE status = 'closed'")[0],
+            "summarized": db.fetchone("SELECT COUNT(*) FROM episodes WHERE status = 'summarized'")[0],
+            "needs_review": db.fetchone("SELECT COUNT(*) FROM episodes WHERE needs_review = 1")[0],
         }
     except Exception as e:
         logger.warning("pipeline_status_failed", error=str(e))
@@ -137,7 +172,9 @@ async def get_pipeline_status():
             "transcriptions_today": 0,
             "transcriptions_total": 0,
             "last_transcription_at": None,
-            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0},
+            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0, "quarantine": 0},
+            "ingest_stage_counts": {},
+            "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
             "_error": str(e),
         }
 
@@ -147,7 +184,78 @@ async def get_pipeline_status():
         "transcriptions_total": total,
         "last_transcription_at": last_at,
         "ingest_queue": q,
+        "ingest_stage_counts": stage_counts,
+        "episode_counts": episode_counts,
     }
+
+
+@router.post("/reprocess/{file_id}")
+async def reprocess_ingest(file_id: str):
+    """Requeue quarantined/retryable ingest items without shell-level DB edits."""
+    from src.api.routers.websocket import get_ingest_result_registry
+    from src.storage.db import get_reflexio_db
+
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Ingest item not found")
+
+    db = get_reflexio_db(db_path)
+    row = db.fetchone(
+        """
+        SELECT id, file_path, status FROM ingest_queue
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (file_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Ingest item not found")
+
+    if row["status"] not in {"retryable_error", "quarantined"}:
+        raise HTTPException(status_code=409, detail="Ingest item is not reprocessable")
+
+    file_path = Path(row["file_path"])
+    if not file_path.exists():
+        with db.transaction():
+            db.execute(
+                """
+                UPDATE ingest_queue
+                SET status='quarantined',
+                    processing_status='quarantined',
+                    error_code='missing_audio',
+                    quarantine_reason='missing_audio',
+                    error_message='Audio artifact missing'
+                WHERE id=?
+                """,
+                (file_id,),
+            )
+        raise HTTPException(status_code=409, detail="Audio artifact missing")
+
+    with db.transaction():
+        db.execute(
+            """
+            UPDATE ingest_queue
+            SET status='received',
+                processing_status='received',
+                error_code=NULL,
+                error_message=NULL,
+                quarantine_reason=NULL,
+                processed_at=NULL
+            WHERE id=?
+            """,
+            (file_id,),
+        )
+
+    worker = get_ingest_worker(get_ingest_result_registry())
+    worker.submit(
+        IngestTask(
+            ingest_id=file_id,
+            file_path=file_path,
+            connection_id="reprocess",
+            enrichment_prefix=None,
+        )
+    )
+    return {"id": file_id, "status": "requeued"}
 
 
 

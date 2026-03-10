@@ -35,6 +35,7 @@ from src.api.routers import voice
 from src.api.routers import websocket
 from src.api.routers import query
 from src.api.routers import commitments
+from src.api.routers import admin
 from src.storage.db import ReflexioDB, ensure_all_tables, get_reflexio_db, run_migrations
 from src.utils.config import settings
 from src.utils.logging import get_logger, setup_logging
@@ -57,7 +58,7 @@ _digest_precompute_dict_lock = threading.Lock()
 
 
 def _run_ingest_watchdog() -> None:
-    """Помечает зависшие ingest_queue записи (pending > 30 мин) как error.
+    """Помечает зависшие ingest_queue записи (pending > 30 мин) как retryable_error.
 
     ПОЧЕМУ: Закон исключённого третьего — запись либо обработана, либо нет.
     Без watchdog запись может навсегда застрять в 'pending' если worker упал
@@ -72,7 +73,15 @@ def _run_ingest_watchdog() -> None:
         cutoff = (datetime.now() - timedelta(minutes=30)).isoformat()
         with db.transaction():
             result = db.execute(
-                "UPDATE ingest_queue SET status='error', error_message='watchdog: stuck in pending > 30min', processed_at=? WHERE status='pending' AND created_at < ?",
+                """
+                UPDATE ingest_queue
+                SET status='retryable_error',
+                    processing_status='received',
+                    error_code='watchdog_stuck_pending',
+                    error_message='watchdog: stuck in pending > 30min',
+                    processed_at=?
+                WHERE status='pending' AND created_at < ?
+                """,
                 (datetime.now().isoformat(), cutoff),
             )
         affected = result.rowcount if hasattr(result, "rowcount") else 0
@@ -101,6 +110,24 @@ def _run_audio_retention_cleanup() -> None:
             removed=removed,
             retention_hours=settings.AUDIO_RETENTION_HOURS,
         )
+
+
+def _run_episode_lifecycle() -> None:
+    """Закрывает неактивные эпизоды и переводит завершённые в summarized."""
+    try:
+        from src.memory.episodes import close_stale_episodes, finalize_closed_episodes
+
+        db_path = settings.STORAGE_PATH / "reflexio.db"
+        closed = close_stale_episodes(db_path)
+        summarized = finalize_closed_episodes(db_path)
+        if closed or summarized:
+            logger.info(
+                "episode_lifecycle_tick",
+                closed=closed,
+                summarized=summarized,
+            )
+    except Exception as e:
+        logger.error("episode_lifecycle_failed", error=str(e))
 
 
 def _run_daily_digest_precompute() -> None:
@@ -352,6 +379,13 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
             id="ingest_watchdog",
             replace_existing=True,
         )
+        scheduler.add_job(
+            _run_episode_lifecycle,
+            trigger="interval",
+            minutes=5,
+            id="episode_lifecycle",
+            replace_existing=True,
+        )
         # Audio retention cleanup — удаляет WAV старше AUDIO_RETENTION_HOURS
         if settings.AUDIO_RETENTION_HOURS > 0:
             scheduler.add_job(
@@ -364,7 +398,7 @@ async def lifespan(application: FastAPI):  # noqa: ARG001
         scheduler.start()
         logger.info(
             "apscheduler_started",
-            jobs="compliance_cleanup@03:00, digest_precompute@12:00UTC(18:00ALM)",
+            jobs="compliance_cleanup@03:00, digest_precompute@12:00UTC(18:00ALM), episode_lifecycle@5m",
         )
     except ImportError:
         logger.warning("apscheduler_not_installed", hint="pip install apscheduler")
@@ -431,6 +465,7 @@ app.include_router(graph.router)  # Sprint 2: Social Graph
 app.include_router(compliance.router)  # Sprint 2: KZ GDPR Compliance
 app.include_router(query.router)  # v1.0: Query Engine (5 unified tools)
 app.include_router(commitments.router)  # v0.5: Commitment Extraction (Relationship Guardian)
+app.include_router(admin.router)
 
 
 # ── Global Exception Handler ──────────────────
