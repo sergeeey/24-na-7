@@ -102,6 +102,18 @@ def test_ingest_status():
     assert data["status"] == "pending"
 
 
+def test_ingest_status_v1():
+    """Проверяет v1 alias для ingest status."""
+    client = TestClient(app)
+
+    resp = client.get("/v1/ingest/status/test-id-123")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == "test-id-123"
+    assert data["status"] == "pending"
+
+
 def test_reprocess_ingest_requeues_retryable_item(tmp_path):
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables

@@ -467,6 +467,32 @@ app.include_router(query.router)  # v1.0: Query Engine (5 unified tools)
 app.include_router(commitments.router)  # v0.5: Commitment Extraction (Relationship Guardian)
 app.include_router(admin.router)
 
+# ── v1 compatibility layer ────────────────────
+# ПОЧЕМУ alias-слой вместо немедленного hard cutover:
+# существующие Android/ops клиенты уже завязаны на текущие пути.
+# /v1 даёт формальный контракт для новых интеграций без поломки старых.
+for _router in (
+    ingest.router,
+    asr.router,
+    digest.router,
+    metrics.router,
+    search.router,
+    voice.router,
+    websocket.router,
+    analyze.router,
+    enrichment.router,
+    memory.router,
+    audit.router,
+    balance.router,
+    health_metrics.router,
+    graph.router,
+    compliance.router,
+    query.router,
+    commitments.router,
+    admin.router,
+):
+    app.include_router(_router, prefix="/v1")
+
 
 # ── Global Exception Handler ──────────────────
 # ПОЧЕМУ: без этого необработанные исключения возвращают сырой traceback
@@ -491,6 +517,17 @@ async def global_exception_handler(request: Request, exc: Exception):
 @limiter.limit(RateLimitConfig.HEALTH_LIMIT)
 async def health(request: Request, response: Response):
     """Health check endpoint."""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": "0.2.0",
+    }
+
+
+@app.get("/v1/health", include_in_schema=False)
+@limiter.limit(RateLimitConfig.HEALTH_LIMIT)
+async def health_v1(request: Request, response: Response):
+    """Версионированный health alias."""
     return {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
