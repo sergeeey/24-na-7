@@ -201,7 +201,7 @@ ToolResult(
 | `utils/date_utils.py` | resolve_date_range() — timezone-aware (UTC+6 Almaty), DateRange |
 | `utils/logging.py` | structlog |
 | `utils/rate_limiter.py` | RateLimitConfig + setup_rate_limiting() |
-| `experimental/` | Карантин для R&D (voice_agent, explainability и другие экспериментальные подсистемы) |
+| `experimental/` | Карантин для R&D (voice_agent, explainability и другие экспериментальные подсистемы; управляются флагами Settings.EXPERIMENTAL_*) |
 
 ---
 

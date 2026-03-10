@@ -289,13 +289,16 @@ def test_api_voice_intent_mocked():
     import sys
     from fastapi.testclient import TestClient
     from src.api.main import app
+    from src.utils.config import settings
     mock_client = MagicMock()
     mock_client.recognize_intent.return_value = {"intent": "test", "confidence": 0.9}
     fake_rag = MagicMock()
     fake_rag.get_voiceflow_client = lambda: mock_client
-    with patch.dict(sys.modules, {"src.voice_agent.voiceflow_rag": fake_rag}):
-        client = TestClient(app)
-        r = client.post("/voice/intent", json={"text": "hello"})
+    # Включаем experimental-флаг и подменяем experimental-модуль
+    with patch.object(settings, "EXPERIMENTAL_VOICE_INTENT_ENABLED", True):
+        with patch.dict(sys.modules, {"src.experimental.voice_agent.voiceflow_rag": fake_rag}):
+            client = TestClient(app)
+            r = client.post("/voice/intent", json={"text": "hello"})
     assert r.status_code == 200
     assert r.json().get("intent") == "test"
 

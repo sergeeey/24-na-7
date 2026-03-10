@@ -110,6 +110,10 @@ class Settings(BaseSettings):
     SPEAKER_SIMILARITY_THRESHOLD: float = 0.65  # Cosine similarity cutoff (relaxed for phone mic)
     SPEAKER_MIN_ENROLLMENT_SAMPLES: int = 3      # Минимум образцов для профиля
 
+    # Experimental feature flags
+    # ПОЧЕМУ отдельный флаг: voice_agent/Voiceflow — R&D, не должен быть обязателен для core API.
+    EXPERIMENTAL_VOICE_INTENT_ENABLED: bool = False
+
     # Audio Retention (единая политика для API и edge listener)
     # ПОЧЕМУ: в production — zero-retention (0). При тестировании — 48h для диагностики.
     AUDIO_RETENTION_HOURS: int = 0  # 0 = удалять сразу после транскрипции
