@@ -185,6 +185,7 @@ ToolResult(
 | `core/confidence.py` | merge_confidence() + single_confidence() — агрегация уверенности |
 | `core/orchestrator.py` | Rule-based intent analysis + параллельный вызов тулов + синтез |
 | `core/audio_processing.py` | Оркестратор аудио pipeline |
+| `core/bootstrap.py` | Lifespan FastAPI, APScheduler, ingest/enrichment workers, zero-retention watchdog-и |
 | `digest/` | Chain of Density summarizer, critic, PDF генератор, Telegram sender |
 | `edge/` | VAD v2, speech filters (FFT), edge listener |
 | `enrichment/` | Async worker, LLM enricher, StructuredEvent schema |
@@ -200,6 +201,7 @@ ToolResult(
 | `utils/date_utils.py` | resolve_date_range() — timezone-aware (UTC+6 Almaty), DateRange |
 | `utils/logging.py` | structlog |
 | `utils/rate_limiter.py` | RateLimitConfig + setup_rate_limiting() |
+| `experimental/` | Карантин для R&D (voice_agent, explainability и другие экспериментальные подсистемы) |
 
 ---
 
@@ -549,6 +551,7 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
 | Версия | Дата | Изменения |
 |--------|------|-----------|
+| 0.4.1 | 2026-03-10 | Архитектурный карантин: вынесены `src/voice_agent/*` и `src/explainability/*` в `src/experimental/*`, `api.main` использует `core.bootstrap.lifespan`, ядро `/ask` и пайплайн Edge→ASR→Digest изолированы от R&D модулей. |
 | 0.4.0 | 2026-03-04 | Visual Memory: UIHint enum (rendering contract), evidence_metadata (temporal anchors), GET /graph/neighborhood (KùzuDB→SQLite fallback), migration 0015 (3 индекса). Android: EvidenceTraceRow + pulsating ConfidenceBadge. KùzuDB активирован. Voice enrollment (resemblyzer GE2E, 3 сэмпла). SPEAKER_VERIFICATION_ENABLED. |
 | 0.3.0 | 2026-03-03 | Query Engine v1.0: ToolResult, Orchestrator, POST /ask, ConfidencePolicy, Permission Gate, date_utils. Rate limits: 32 декоратора в 13 роутерах. Android AskScreen (One Interface, таб 0). _meta миграция search/balance. |
 | 0.2.0 | 2026-03-03 | Security hardening, migration 0013, docker env vars fix, missing Settings fields, migration race condition fix |

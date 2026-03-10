@@ -37,7 +37,14 @@ async def recognize_intent(request: Request, response: Response):
         if not text:
             raise HTTPException(status_code=400, detail="text is required")
 
-        from src.voice_agent.voiceflow_rag import get_voiceflow_client
+        try:
+            from src.experimental.voice_agent.voiceflow_rag import get_voiceflow_client
+        except ImportError:
+            logger.warning("voiceflow_client_unavailable", reason="experimental module not installed")
+            raise HTTPException(
+                status_code=503,
+                detail="Voice intent recognition is temporarily unavailable",
+            )
 
         client = get_voiceflow_client()
         result = client.recognize_intent(text, user_id=user_id)
