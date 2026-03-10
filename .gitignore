@@ -47,9 +47,8 @@ src/storage/recordings/*
 !src/storage/uploads/.gitkeep
 !src/storage/recordings/.gitkeep
 
-# Digests (опционально - можно включить в репозиторий)
-# digests/*.md
-# digests/*.json
+# Digests (runtime artifacts, не в репозитории)
+digests/
 
 # Logs
 *.log
