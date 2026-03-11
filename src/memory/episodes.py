@@ -39,6 +39,8 @@ STOP_WORDS = {
     "have",
     "just",
 }
+THREAD_CONFIDENCE_THRESHOLD = 0.45
+THREAD_TRUSTED_CONFIDENCE_THRESHOLD = 0.7
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -87,6 +89,69 @@ def _normalize_people(items: list[Any]) -> list[str]:
             seen.add(candidate.lower())
             out.append(candidate)
     return out
+
+
+def _overlap_score(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _commitment_keys(items: list[Any]) -> set[str]:
+    keys: set[str] = set()
+    for item in items:
+        if isinstance(item, str):
+            candidate = item.strip().lower()
+        elif isinstance(item, dict):
+            candidate = str(item.get("text") or item.get("task") or item.get("person") or "").strip().lower()
+        else:
+            candidate = ""
+        if candidate:
+            keys.add(candidate)
+    return keys
+
+
+def _temporal_score(previous_end: datetime | None, current_start: datetime | None) -> float:
+    if not previous_end or not current_start:
+        return 0.0
+    delta = max((current_start - previous_end).total_seconds(), 0.0)
+    if delta <= 0:
+        return 1.0
+    if delta >= 4 * 3600:
+        return 0.0
+    return round(max(0.0, 1.0 - (delta / (4 * 3600))), 3)
+
+
+def _score_episode_for_thread(candidate: dict[str, Any], episode: dict[str, Any]) -> dict[str, float]:
+    candidate_topics = _topic_tokens(candidate.get("clean_text"), candidate.get("summary"), json.dumps(candidate.get("topics", []), ensure_ascii=False))
+    episode_topics = _topic_tokens(episode.get("clean_text"), episode.get("summary"), json.dumps(episode.get("topics", []), ensure_ascii=False))
+    topic_overlap = _overlap_score(candidate_topics, episode_topics)
+    participant_overlap = _overlap_score(
+        {p.lower() for p in candidate.get("participants", [])},
+        {p.lower() for p in episode.get("participants", [])},
+    )
+    commitment_overlap = _overlap_score(
+        _commitment_keys(candidate.get("commitments", [])),
+        _commitment_keys(episode.get("commitments", [])),
+    )
+    temporal_proximity = _temporal_score(
+        _parse_ts(candidate.get("ended_at")),
+        _parse_ts(episode.get("started_at")),
+    )
+    thread_confidence = round(
+        topic_overlap * 0.4
+        + participant_overlap * 0.25
+        + temporal_proximity * 0.25
+        + commitment_overlap * 0.1,
+        3,
+    )
+    return {
+        "topic_overlap_score": round(topic_overlap, 3),
+        "participant_overlap_score": round(participant_overlap, 3),
+        "temporal_proximity_score": round(temporal_proximity, 3),
+        "commitment_overlap_score": round(commitment_overlap, 3),
+        "thread_confidence": thread_confidence,
+    }
 
 
 def _close_stale_episodes(db_path: Path, now: datetime) -> int:
@@ -438,57 +503,129 @@ def refresh_episode_from_event(db_path: Path, transcription_id: str, event: Any)
 
 
 def rebuild_day_threads_for_day(db_path: Path, day_key: str) -> None:
-    """Cluster day episodes into lightweight day threads by top topic."""
+    """Cluster trusted summarized episodes into day-level storyline threads."""
     ensure_ingest_tables(db_path)
     db = get_reflexio_db(db_path)
-    episodes = db.fetchall(
+    rows = db.fetchall(
         """
-        SELECT id, summary, topics_json, commitments_json
+        SELECT id, started_at, ended_at, summary, clean_text, topics_json,
+               participants_json, commitments_json, quality_state, status
         FROM episodes
-        WHERE day_key = ? AND status != 'discarded'
+        WHERE day_key = ?
+          AND status = 'summarized'
+          AND COALESCE(quality_state, 'trusted') = 'trusted'
         ORDER BY started_at ASC
         """,
         (day_key,),
     )
-    grouped: dict[str, dict[str, Any]] = {}
+    episodes = []
+    for row in rows:
+        episode = dict(row)
+        episode["topics"] = [str(v) for v in _safe_json_list(episode.get("topics_json"))]
+        episode["participants"] = _normalize_people(_safe_json_list(episode.get("participants_json")))
+        episode["commitments"] = _safe_json_list(episode.get("commitments_json"))
+        episodes.append(episode)
+
+    threads: list[dict[str, Any]] = []
     for episode in episodes:
-        topics = _safe_json_list(episode["topics_json"])
-        top_topic = (topics[0] if topics else "general") or "general"
-        bucket = grouped.setdefault(
-            top_topic,
-            {
-                "episode_ids": [],
-                "summaries": [],
-                "commitments": [],
-            },
-        )
-        bucket["episode_ids"].append(episode["id"])
-        if episode["summary"]:
-            bucket["summaries"].append(episode["summary"])
-        bucket["commitments"].extend(_safe_json_list(episode["commitments_json"]))
+        best_thread: dict[str, Any] | None = None
+        best_scores: dict[str, float] | None = None
+        for thread in threads:
+            scores = _score_episode_for_thread(thread, episode)
+            if scores["thread_confidence"] < THREAD_CONFIDENCE_THRESHOLD:
+                continue
+            if best_scores is None or scores["thread_confidence"] > best_scores["thread_confidence"]:
+                best_thread = thread
+                best_scores = scores
+
+        if best_thread and best_scores:
+            best_thread["episode_ids"].append(episode["id"])
+            if episode.get("summary"):
+                best_thread["summaries"].append(episode["summary"])
+            best_thread["topics"].extend(episode["topics"])
+            best_thread["participants"].extend(episode["participants"])
+            best_thread["commitments"].extend(episode["commitments"])
+            best_thread["ended_at"] = episode.get("ended_at")
+            count = len(best_thread["episode_ids"])
+            for key, value in best_scores.items():
+                best_thread[key] = round(((best_thread.get(key, 0.0) * (count - 1)) + value) / count, 3)
+        else:
+            thread_id = str(uuid.uuid4())
+            threads.append(
+                {
+                    "id": thread_id,
+                    "episode_ids": [episode["id"]],
+                    "summaries": [episode["summary"]] if episode.get("summary") else [],
+                    "topics": list(episode["topics"]),
+                    "participants": list(episode["participants"]),
+                    "commitments": list(episode["commitments"]),
+                    "started_at": episode.get("started_at"),
+                    "ended_at": episode.get("ended_at"),
+                    "topic_overlap_score": 1.0 if episode["topics"] else 0.0,
+                    "participant_overlap_score": 1.0 if episode["participants"] else 0.0,
+                    "temporal_proximity_score": 1.0,
+                    "commitment_overlap_score": 1.0 if episode["commitments"] else 0.0,
+                    "thread_confidence": 1.0 if episode["topics"] or episode["participants"] or episode["commitments"] else 0.55,
+                }
+            )
 
     with db.transaction():
+        db.execute("UPDATE episodes SET thread_key = NULL WHERE day_key = ?", (day_key,))
         db.execute("DELETE FROM day_threads WHERE day_key = ?", (day_key,))
-        for topic_cluster, payload in grouped.items():
-            thread_id = str(uuid.uuid4())
-            summary = " ".join(payload["summaries"][:3]).strip()
+        for thread in threads:
+            topic_candidates = [topic for topic in thread["topics"] if topic]
+            topic_cluster = topic_candidates[0] if topic_candidates else "general"
+            summary = " ".join(thread["summaries"][:3]).strip()
+            commitments_json = json.dumps(thread["commitments"])
+            thread_id = thread["id"]
             db.execute(
                 """
                 INSERT INTO day_threads (
                     id, day_key, topic_cluster, episode_ids_json, summary,
-                    open_questions, commitments_json, carryover_candidate
-                ) VALUES (?, ?, ?, ?, ?, '', ?, ?)
+                    open_questions, commitments_json, carryover_candidate,
+                    topic_overlap_score, participant_overlap_score,
+                    temporal_proximity_score, commitment_overlap_score,
+                    thread_confidence
+                ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     thread_id,
                     day_key,
-                    topic_cluster,
-                    json.dumps(payload["episode_ids"]),
+                    topic_cluster or "general",
+                    json.dumps(thread["episode_ids"]),
                     summary,
-                    json.dumps(payload["commitments"]),
-                    1 if payload["commitments"] else 0,
+                    commitments_json,
+                    1 if thread["commitments"] else 0,
+                    thread["topic_overlap_score"],
+                    thread["participant_overlap_score"],
+                    thread["temporal_proximity_score"],
+                    thread["commitment_overlap_score"],
+                    thread["thread_confidence"],
                 ),
             )
+            for episode_id in thread["episode_ids"]:
+                db.execute(
+                    "UPDATE episodes SET thread_key = ? WHERE id = ?",
+                    (thread_id, episode_id),
+                )
+
+
+def get_day_threads_for_day(db_path: Path, day_key: str) -> list[dict[str, Any]]:
+    ensure_ingest_tables(db_path)
+    db = get_reflexio_db(db_path)
+    rows = db.fetchall(
+        """
+        SELECT id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+               commitments_json, carryover_candidate, topic_overlap_score,
+               participant_overlap_score, temporal_proximity_score,
+               commitment_overlap_score, thread_confidence
+        FROM day_threads
+        WHERE day_key = ?
+        ORDER BY thread_confidence DESC, id ASC
+        """,
+        (day_key,),
+    )
+    return [dict(row) for row in rows]
 
 
 def get_episodes_for_day(db_path: Path, day_key: str) -> list[dict[str, Any]]:

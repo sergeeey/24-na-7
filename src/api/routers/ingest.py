@@ -120,6 +120,7 @@ async def get_pipeline_status():
             "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0, "quarantine": 0},
             "ingest_stage_counts": {},
             "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
+            "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
         }
 
@@ -166,6 +167,11 @@ async def get_pipeline_status():
             "summarized": db.fetchone("SELECT COUNT(*) FROM episodes WHERE status = 'summarized'")[0],
             "needs_review": db.fetchone("SELECT COUNT(*) FROM episodes WHERE needs_review = 1")[0],
         }
+        day_thread_counts = {
+            "total": db.fetchone("SELECT COUNT(*) FROM day_threads")[0],
+            "trusted": db.fetchone("SELECT COUNT(*) FROM day_threads WHERE thread_confidence >= 0.7")[0],
+            "low_confidence": db.fetchone("SELECT COUNT(*) FROM day_threads WHERE thread_confidence < 0.7")[0],
+        }
         quality_counts = {
             "trusted": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'trusted'")[0],
             "uncertain": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'uncertain'")[0],
@@ -182,6 +188,7 @@ async def get_pipeline_status():
             "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0, "quarantine": 0},
             "ingest_stage_counts": {},
             "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
+            "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
             "_error": str(e),
         }
@@ -194,6 +201,7 @@ async def get_pipeline_status():
         "ingest_queue": q,
         "ingest_stage_counts": stage_counts,
         "episode_counts": episode_counts,
+        "day_thread_counts": day_thread_counts,
         "quality_counts": quality_counts,
     }
 

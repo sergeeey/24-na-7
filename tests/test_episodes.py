@@ -94,6 +94,7 @@ def test_episode_builder_splits_far_transcriptions(tmp_path):
 
 
 def test_query_events_prefers_episodes(tmp_path):
+    from src.memory.episodes import rebuild_day_threads_for_day
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables
     from src.utils.config import settings
@@ -120,7 +121,7 @@ def test_query_events_prefers_episodes(tmp_path):
                     "ep-1",
                     "2026-03-10T12:00:00",
                     "2026-03-10T12:01:00",
-                    "closed",
+                        "summarized",
                     2,
                     '["tr-1","tr-2"]',
                     "обсудили бюджет проекта",
@@ -134,6 +135,7 @@ def test_query_events_prefers_episodes(tmp_path):
                     "2026-03-10",
                 ),
             )
+        rebuild_day_threads_for_day(db_path, "2026-03-10")
         client = TestClient(app)
         response = client.get("/query/events", params={"q": "бюджет", "date": "2026-03-10"})
         assert response.status_code == 200
@@ -141,6 +143,117 @@ def test_query_events_prefers_episodes(tmp_path):
         assert body["data"]["total"] == 1
         event = body["data"]["events"][0]
         assert event["episode_id"] == "ep-1"
+        assert event["day_thread_id"]
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_day_threads_group_trusted_related_episodes(tmp_path):
+    from src.memory.episodes import rebuild_day_threads_for_day, get_day_threads_for_day
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            for episode_id, started_at, summary in [
+                ("ep-1", "2026-03-10T12:00:00", "обсудили бюджет проекта"),
+                ("ep-2", "2026-03-10T12:20:00", "сверили бюджет и сроки проекта"),
+            ]:
+                db.execute(
+                    """
+                    INSERT INTO episodes (
+                        id, started_at, ended_at, status, source_count, transcription_ids_json,
+                        raw_text, clean_text, summary, topics_json, participants_json,
+                        commitments_json, importance_score, needs_review, quality_state, day_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        episode_id,
+                        started_at,
+                        started_at,
+                        "summarized",
+                        1,
+                        "[]",
+                        summary,
+                        summary,
+                        summary,
+                        '["бюджет","проект"]',
+                        '["Марат"]',
+                        '[{"text":"подготовить таблицу"}]',
+                        0.9,
+                        0,
+                        "trusted",
+                        "2026-03-10",
+                    ),
+                )
+
+        rebuild_day_threads_for_day(db_path, "2026-03-10")
+        threads = get_day_threads_for_day(db_path, "2026-03-10")
+        assert len(threads) == 1
+        thread = threads[0]
+        assert thread["thread_confidence"] >= 0.7
+        assert "ep-1" in thread["episode_ids_json"]
+        assert "ep-2" in thread["episode_ids_json"]
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_day_threads_exclude_uncertain_episodes(tmp_path):
+    from src.memory.episodes import rebuild_day_threads_for_day, get_day_threads_for_day
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:00:00",
+                    "summarized",
+                    1,
+                    "[]",
+                    "сомнительный эпизод",
+                    "сомнительный эпизод",
+                    "сомнительный эпизод",
+                    '["шум"]',
+                    "[]",
+                    "[]",
+                    0.3,
+                    1,
+                    "uncertain",
+                    "2026-03-10",
+                ),
+            )
+
+        rebuild_day_threads_for_day(db_path, "2026-03-10")
+        threads = get_day_threads_for_day(db_path, "2026-03-10")
+        assert threads == []
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
@@ -194,6 +307,66 @@ def test_digest_generator_prefers_episode_units(tmp_path):
         assert digest["episodes_used"] == 1
         assert digest["total_recordings"] == 1
         assert digest["incomplete_context"] is False
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_digest_generator_prefers_day_threads_when_available(tmp_path):
+    from src.digest.generator import DigestGenerator
+    from src.memory.episodes import rebuild_day_threads_for_day
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            for episode_id, started_at, summary in [
+                ("ep-1", "2026-03-10T12:00:00", "обсудили бюджет проекта"),
+                ("ep-2", "2026-03-10T12:10:00", "сверили бюджет и сроки проекта"),
+            ]:
+                db.execute(
+                    """
+                    INSERT INTO episodes (
+                        id, started_at, ended_at, status, source_count, transcription_ids_json,
+                        raw_text, clean_text, summary, topics_json, participants_json,
+                        commitments_json, importance_score, needs_review, quality_state, day_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        episode_id,
+                        started_at,
+                        started_at,
+                        "summarized",
+                        1,
+                        "[]",
+                        summary,
+                        summary,
+                        summary,
+                        '["бюджет"]',
+                        '["Марат"]',
+                        '[{"text":"подготовить таблицу"}]',
+                        0.9,
+                        0,
+                        "trusted",
+                        "2026-03-10",
+                    ),
+                )
+
+        rebuild_day_threads_for_day(db_path, "2026-03-10")
+        generator = DigestGenerator(db_path)
+        digest = generator.get_daily_digest_json(__import__("datetime").date(2026, 3, 10))
+        assert digest["source_unit"] == "day_thread"
+        assert digest["thread_count"] == 1
+        assert digest["episodes_used"] == 0
+        assert digest["day_thread_confidence"] >= 0.7
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 

@@ -494,7 +494,7 @@ def _episode_search(db, q: str, start_iso: str, end_iso: str, limit: int) -> lis
     """Episode-first lexical search with transcript fallback kept separate."""
     rows = db.fetchall(
         """
-        SELECT id, id AS episode_id, clean_text AS text, started_at AS created_at,
+        SELECT id, id AS episode_id, thread_key AS day_thread_id, clean_text AS text, started_at AS created_at,
                topics_json, participants_json, commitments_json, summary,
                needs_review, 'neutral' AS sentiment, '[]' AS emotions_json, commitments_json AS tasks
         FROM episodes

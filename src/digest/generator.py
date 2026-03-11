@@ -10,7 +10,7 @@ from src.utils.date_utils import resolve_date_range
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics
 from src.storage.ingest_persist import ensure_ingest_tables
-from src.memory.episodes import get_episodes_for_day
+from src.memory.episodes import get_day_threads_for_day, get_episodes_for_day
 from src.memory.core_memory import get_core_memory
 from src.memory.session_memory import get_session_memory
 
@@ -298,7 +298,59 @@ class DigestGenerator:
         logger.info("episodes_found", date=target_date.isoformat(), count=len(out))
         return out
 
+    def get_day_threads(self, target_date: date) -> List[Dict]:
+        """Возвращает trusted day-thread units за день."""
+        if not self.db_path.parent.exists():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_ingest_tables(self.db_path)
+        if not self.db_path.exists():
+            logger.warning("database_not_found", db_path=str(self.db_path))
+            return []
+
+        threads = get_day_threads_for_day(self.db_path, target_date.isoformat())
+        out: List[Dict] = []
+        for thread in threads:
+            confidence = float(thread.get("thread_confidence") or 0.0)
+            if confidence < 0.45:
+                continue
+            commitments = json.loads(thread.get("commitments_json") or "[]")
+            episode_ids = json.loads(thread.get("episode_ids_json") or "[]")
+            out.append(
+                {
+                    "id": thread["id"],
+                    "day_thread_id": thread["id"],
+                    "text": thread.get("summary") or thread.get("topic_cluster") or "",
+                    "language": "unknown",
+                    "language_probability": 1.0,
+                    "duration": 0.0,
+                    "segments": thread.get("episode_ids_json") or "[]",
+                    "created_at": f"{target_date.isoformat()}T00:00:00",
+                    "summary": thread.get("summary") or "",
+                    "topics_json": json.dumps([thread.get("topic_cluster")] if thread.get("topic_cluster") else []),
+                    "participants_json": "[]",
+                    "commitments_json": thread.get("commitments_json") or "[]",
+                    "needs_review": confidence < 0.7,
+                    "quality_state": "trusted",
+                    "quality_score": confidence,
+                    "quality_reasons_json": "[]",
+                    "source_count": len(episode_ids),
+                    "thread_confidence": confidence,
+                    "topic_overlap_score": float(thread.get("topic_overlap_score") or 0.0),
+                    "participant_overlap_score": float(thread.get("participant_overlap_score") or 0.0),
+                    "temporal_proximity_score": float(thread.get("temporal_proximity_score") or 0.0),
+                    "commitment_overlap_score": float(thread.get("commitment_overlap_score") or 0.0),
+                    "_source_unit": "day_thread",
+                    "_episode_count": len(episode_ids),
+                    "_commitment_count": len(commitments),
+                }
+            )
+        logger.info("day_threads_found", date=target_date.isoformat(), count=len(out))
+        return out
+
     def _get_digest_units(self, target_date: date) -> List[Dict]:
+        day_threads = self.get_day_threads(target_date)
+        if day_threads:
+            return day_threads
         episodes = self.get_episodes(target_date)
         if episodes:
             return episodes
@@ -453,6 +505,8 @@ class DigestGenerator:
         total_duration_sec = sum(t.get("duration", 0) or 0 for t in transcriptions)
         total_recordings = len(transcriptions)
         total_duration_str = f"{int(total_duration_sec // 60)}m {int(total_duration_sec % 60)}s" if total_duration_sec else "0m 0s"
+        thread_units = [item for item in transcriptions if item.get("_source_unit") == "day_thread"]
+        thread_count = len(thread_units)
 
         key_themes: List[str] = []
         emotions: List[str] = []
@@ -589,7 +643,7 @@ class DigestGenerator:
         trusted_units = [
             item for item in transcriptions if (item.get("quality_state") or "trusted") == "trusted"
         ]
-        degraded = any(item.get("_source_unit") != "episode" for item in transcriptions) or (
+        degraded = any(item.get("_source_unit") not in {"episode", "day_thread"} for item in transcriptions) or (
             len(trusted_units) != len(transcriptions)
         )
         evidence_strength = round(
@@ -618,6 +672,14 @@ class DigestGenerator:
             "sources_count": len(transcriptions),
             "source_unit": transcriptions[0].get("_source_unit", "transcription") if transcriptions else "transcription",
             "episodes_used": sum(1 for item in transcriptions if item.get("_source_unit") == "episode"),
+            "thread_count": thread_count,
+            "day_thread_confidence": round(
+                (
+                    sum(float(item.get("thread_confidence") or item.get("quality_score") or 0.0) for item in thread_units)
+                    / len(thread_units)
+                ) if thread_units else 0.0,
+                3,
+            ),
             "incomplete_context": degraded,
             "degraded": degraded,
             "evidence_strength": evidence_strength,

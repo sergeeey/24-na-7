@@ -187,7 +187,12 @@ def _ensure_episodes_tables(conn: sqlite3.Connection) -> None:
             summary TEXT NOT NULL DEFAULT '',
             open_questions TEXT NOT NULL DEFAULT '',
             commitments_json TEXT NOT NULL DEFAULT '[]',
-            carryover_candidate INTEGER NOT NULL DEFAULT 0
+            carryover_candidate INTEGER NOT NULL DEFAULT 0,
+            topic_overlap_score REAL NOT NULL DEFAULT 0.0,
+            participant_overlap_score REAL NOT NULL DEFAULT 0.0,
+            temporal_proximity_score REAL NOT NULL DEFAULT 0.0,
+            commitment_overlap_score REAL NOT NULL DEFAULT 0.0,
+            thread_confidence REAL NOT NULL DEFAULT 0.0
         )
         """
     )
@@ -201,10 +206,22 @@ def _ensure_episodes_tables(conn: sqlite3.Connection) -> None:
             cursor.execute(f"ALTER TABLE episodes ADD COLUMN {col_def}")
         except Exception:
             pass
+    for col_def in [
+        "topic_overlap_score REAL NOT NULL DEFAULT 0.0",
+        "participant_overlap_score REAL NOT NULL DEFAULT 0.0",
+        "temporal_proximity_score REAL NOT NULL DEFAULT 0.0",
+        "commitment_overlap_score REAL NOT NULL DEFAULT 0.0",
+        "thread_confidence REAL NOT NULL DEFAULT 0.0",
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE day_threads ADD COLUMN {col_def}")
+        except Exception:
+            pass
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_day_key ON episodes(day_key, started_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status, ended_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_quality_state ON episodes(quality_state, day_key)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_day_threads_day_key ON day_threads(day_key)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_day_threads_confidence ON day_threads(day_key, thread_confidence)")
     conn.commit()
 
 
