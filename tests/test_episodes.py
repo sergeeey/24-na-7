@@ -570,6 +570,63 @@ def test_refresh_episode_from_event_uses_fallback_topics_when_enrichment_is_spar
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_day_threads_and_long_threads_use_commitment_people_when_participants_empty(tmp_path):
+    from src.memory.episodes import rebuild_day_threads_for_day, rebuild_long_threads_for_window, get_day_threads_for_day, get_long_threads
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-11T09:00:00",
+                    "2026-03-11T09:05:00",
+                    "summarized",
+                    1,
+                    "[]",
+                    "созвониться с Маратом по курсам",
+                    "созвониться с Маратом по курсам",
+                    "обсудить курсы",
+                    '["курсы"]',
+                    "[]",
+                    '[{"person":"Марат","text":"созвониться"}]',
+                    0.9,
+                    0,
+                    "trusted",
+                    "2026-03-11",
+                ),
+            )
+
+        rebuild_day_threads_for_day(db_path, "2026-03-11")
+        day_threads = get_day_threads_for_day(db_path, "2026-03-11")
+        assert len(day_threads) == 1
+        assert json.loads(day_threads[0]["participants_json"]) == ["Марат"]
+
+        rebuild_long_threads_for_window(db_path, "2026-03-11")
+        long_threads = get_long_threads(db_path)
+        assert len(long_threads) == 1
+        assert json.loads(long_threads[0]["participants_json"]) == ["Марат"]
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_digest_generator_prefers_episode_units(tmp_path):
     from src.digest.generator import DigestGenerator
     from src.storage.db import get_reflexio_db

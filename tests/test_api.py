@@ -1126,3 +1126,109 @@ def test_query_threads_returns_empty_for_non_matching_filters(tmp_path):
         assert body["data"]["threads"] == []
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_query_threads_uses_commitment_people_in_participant_payload(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO long_threads (
+                    id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+                    participants_json, topics_json, status, summary, continuity_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "lt-3",
+                    "lt-key-3",
+                    "2026-03-11",
+                    "2026-03-11",
+                    '["dt-3"]',
+                    "[]",
+                    '["курсы"]',
+                    "active",
+                    "линия про курсы",
+                    0.8,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO day_threads (
+                    id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+                    commitments_json, topics_json, participants_json, carryover_candidate,
+                    long_thread_key, topic_overlap_score, participant_overlap_score,
+                    temporal_proximity_score, commitment_overlap_score, thread_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "dt-3",
+                    "2026-03-11",
+                    "courses",
+                    '["ep-3"]',
+                    "линия про курсы",
+                    "",
+                    '[{"person":"Марат","text":"созвониться"}]',
+                    '["курсы"]',
+                    "[]",
+                    1,
+                    "lt-3",
+                    0.8,
+                    0.0,
+                    1.0,
+                    0.8,
+                    0.85,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state,
+                    review_required, day_key, thread_key, long_thread_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-3",
+                    "2026-03-11T10:00:00",
+                    "2026-03-11T10:10:00",
+                    "summarized",
+                    1,
+                    '["tr-3"]',
+                    "созвониться с Маратом по курсам",
+                    "созвониться с Маратом по курсам",
+                    "линия про курсы",
+                    '["курсы"]',
+                    "[]",
+                    '[{"person":"Марат","text":"созвониться"}]',
+                    0.9,
+                    0,
+                    "trusted",
+                    0,
+                    "2026-03-11",
+                    "dt-3",
+                    "lt-3",
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.get("/query/threads", params={"participant": "марат"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["total"] == 1
+        thread = body["data"]["threads"][0]
+        assert thread["participants"] == ["Марат"]
+        assert thread["top_participants"] == ["Марат"]
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)

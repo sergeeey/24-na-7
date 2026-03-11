@@ -78,7 +78,16 @@ def _topic_tokens(*values: str | None) -> set[str]:
 
 
 def _fallback_topics_from_text(*values: str | None, limit: int = 5) -> list[str]:
-    return _rank_strings(list(_topic_tokens(*values)), limit=limit)
+    ordered_tokens: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        for token in TOPIC_WORD_RE.findall(value.lower()):
+            if token not in STOP_WORDS and token not in seen:
+                ordered_tokens.append(token)
+                seen.add(token)
+    return _rank_strings(ordered_tokens, limit=limit)
 
 
 def _normalize_people(items: list[Any]) -> list[str]:
@@ -95,6 +104,10 @@ def _normalize_people(items: list[Any]) -> list[str]:
             seen.add(candidate.lower())
             out.append(candidate)
     return out
+
+
+def _participants_from_commitments(items: list[Any]) -> list[str]:
+    return _normalize_people(items)
 
 
 def _rank_strings(items: list[Any], limit: int = 5) -> list[str]:
@@ -580,7 +593,7 @@ def refresh_episode_from_event(db_path: Path, transcription_id: str, event: Any)
     episode_id = row["episode_id"]
     topic_candidates = list(getattr(event, "topics", []) or [])
     speaker_candidates = list(getattr(event, "speakers", []) or [])
-    speaker_candidates.extend(_normalize_people(getattr(event, "commitments", []) or []))
+    speaker_candidates.extend(_participants_from_commitments(getattr(event, "commitments", []) or []))
     commitment_payload = [
         c.model_dump() if hasattr(c, "model_dump") else c
         for c in (getattr(event, "commitments", []) or [])
@@ -605,7 +618,7 @@ def refresh_episode_from_event(db_path: Path, transcription_id: str, event: Any)
         filter(None, [current["clean_text"], getattr(event, "text", "") or ""])
     ).strip()
     if not merged_topics:
-        merged_topics = _fallback_topics_from_text(summary, clean_text)
+        merged_topics = _fallback_topics_from_text(clean_text, summary)
 
     with db.transaction():
         db.execute(
@@ -657,6 +670,8 @@ def rebuild_day_threads_for_day(db_path: Path, day_key: str) -> None:
         episode["topics"] = [str(v) for v in _safe_json_list(episode.get("topics_json"))]
         episode["participants"] = _normalize_people(_safe_json_list(episode.get("participants_json")))
         episode["commitments"] = _safe_json_list(episode.get("commitments_json"))
+        if not episode["participants"]:
+            episode["participants"] = _participants_from_commitments(episode["commitments"])
         episodes.append(episode)
 
     threads: list[dict[str, Any]] = []
@@ -819,6 +834,8 @@ def rebuild_long_threads_for_window(db_path: Path, anchor_day_key: str, lookback
         candidate["topics"] = [str(v) for v in _safe_json_list(candidate.get("topics_json"))]
         candidate["participants"] = _normalize_people(_safe_json_list(candidate.get("participants_json")))
         candidate["commitments"] = _safe_json_list(candidate.get("commitments_json"))
+        if not candidate["participants"]:
+            candidate["participants"] = _participants_from_commitments(candidate["commitments"])
         candidate["episode_ids"] = _safe_json_list(candidate.get("episode_ids_json"))
         best_thread: dict[str, Any] | None = None
         best_scores: dict[str, float] | None = None
@@ -989,6 +1006,8 @@ def get_long_thread_details(db_path: Path, long_thread_id: str) -> dict[str, Any
         thread_payload["topics"] = [str(v) for v in _safe_json_list(thread_payload.get("topics_json")) if str(v).strip()]
         thread_payload["participants"] = _normalize_people(_safe_json_list(thread_payload.get("participants_json")))
         thread_payload["commitments"] = _safe_json_list(thread_payload.get("commitments_json"))
+        if not thread_payload["participants"]:
+            thread_payload["participants"] = _participants_from_commitments(thread_payload["commitments"])
         day_threads.append(thread_payload)
         for episode_id in thread_payload["episode_ids"]:
             if episode_id not in episode_ids:
@@ -1013,10 +1032,20 @@ def get_long_thread_details(db_path: Path, long_thread_id: str) -> dict[str, Any
         episode_payload["topics"] = [str(v) for v in _safe_json_list(episode_payload.get("topics_json")) if str(v).strip()]
         episode_payload["participants"] = _normalize_people(_safe_json_list(episode_payload.get("participants_json")))
         episode_payload["commitments"] = _safe_json_list(episode_payload.get("commitments_json"))
+        if not episode_payload["participants"]:
+            episode_payload["participants"] = _participants_from_commitments(episode_payload["commitments"])
         episodes.append(episode_payload)
 
     payload["day_threads"] = day_threads
     payload["episodes"] = episodes
+    if not payload["participants"]:
+        participant_candidates: list[Any] = []
+        for thread in day_threads:
+            participant_candidates.extend(thread.get("participants", []))
+        if not participant_candidates:
+            for episode in episodes:
+                participant_candidates.extend(episode.get("participants", []))
+        payload["participants"] = _rank_strings(participant_candidates, limit=5)
     payload["day_keys"] = [str(thread.get("day_key")) for thread in day_threads if str(thread.get("day_key") or "").strip()]
     payload["top_topics"] = _rank_strings(payload["topics"], limit=3)
     payload["top_participants"] = _rank_strings(payload["participants"], limit=3)
