@@ -235,7 +235,8 @@ def get_episode_context(db_path: Path, episode_id: str | None) -> dict[str, Any]
         """
         SELECT id, started_at, ended_at, status, source_count, transcription_ids_json,
                raw_text, clean_text, summary, topics_json, participants_json,
-               commitments_json, importance_score, needs_review, day_key, thread_key
+               commitments_json, importance_score, needs_review, quality_state,
+               quality_score, quality_reasons_json, review_required, day_key, thread_key
         FROM episodes
         WHERE id = ?
         LIMIT 1
@@ -258,6 +259,9 @@ def attach_transcription_to_episode(db_path: Path, transcription_id: str) -> str
                t.transcript_clean,
                t.quality_score,
                t.needs_recheck,
+               t.quality_state,
+               t.quality_reasons_json,
+               t.review_required,
                COALESCE(i.captured_at, t.created_at) AS effective_ts
         FROM transcriptions t
         LEFT JOIN ingest_queue i ON t.ingest_id = i.id
@@ -278,7 +282,8 @@ def attach_transcription_to_episode(db_path: Path, transcription_id: str) -> str
     candidates = db.fetchall(
         """
         SELECT id, started_at, ended_at, transcription_ids_json, raw_text, clean_text,
-               topics_json, participants_json, commitments_json, importance_score, needs_review
+               topics_json, participants_json, commitments_json, importance_score, needs_review,
+               quality_state, quality_score, quality_reasons_json, review_required
         FROM episodes
         WHERE status='open' AND day_key = ?
         ORDER BY ended_at DESC
@@ -388,6 +393,7 @@ def refresh_episode_from_event(db_path: Path, transcription_id: str, event: Any)
     current = db.fetchone(
         """
         SELECT topics_json, participants_json, commitments_json, summary, clean_text, day_key
+             , quality_state, quality_score, quality_reasons_json, review_required
         FROM episodes WHERE id = ?
         """,
         (episode_id,),
@@ -492,7 +498,8 @@ def get_episodes_for_day(db_path: Path, day_key: str) -> list[dict[str, Any]]:
         """
         SELECT id, started_at, ended_at, status, source_count, transcription_ids_json,
                raw_text, clean_text, summary, topics_json, participants_json,
-               commitments_json, importance_score, needs_review, day_key, thread_key
+               commitments_json, importance_score, needs_review, quality_state,
+               quality_score, quality_reasons_json, review_required, day_key, thread_key
         FROM episodes
         WHERE day_key = ?
         ORDER BY started_at ASC

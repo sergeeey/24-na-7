@@ -26,6 +26,7 @@ from src.memory.episodes import (
     get_episode_context,
     refresh_episode_from_event,
 )
+from src.memory.truth import apply_episode_truth_state, evaluate_episode_truth
 from src.memory.semantic_memory import consolidate_to_memory_node, ensure_semantic_memory_tables
 from src.security.privacy_pipeline import apply_privacy_mode
 from src.storage.db import get_reflexio_db
@@ -359,6 +360,59 @@ def _mark_transcription_for_review(
             )
 
 
+def _apply_episode_truth_gate(
+    db_path: Path,
+    ingest_id: str,
+    transcription_id: str | None,
+    episode_id: str | None,
+    *,
+    source: str = "gate",
+) -> dict[str, Any] | None:
+    if not transcription_id or not episode_id:
+        return None
+    truth = evaluate_episode_truth(db_path, episode_id)
+    if not truth:
+        return None
+    apply_episode_truth_state(db_path, episode_id, truth, source=source)
+    quality_state = truth["quality_state"]
+    if quality_state == "quarantined":
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "quarantined",
+            "episode_quality_quarantined",
+            transport_status="server_acked",
+            processing_status="quarantined",
+            error_code="episode_quality_quarantined",
+            quarantine_reason="episode_quality_quarantined",
+            quality_score=truth["quality_score"],
+            needs_recheck=True,
+        )
+    elif quality_state == "garbage":
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "filtered",
+            "episode_quality_garbage",
+            transport_status="server_acked",
+            processing_status="filtered",
+            error_code="episode_quality_garbage",
+            quality_score=truth["quality_score"],
+            needs_recheck=True,
+        )
+    else:
+        _mark_ingest_status(
+            db_path,
+            ingest_id,
+            "transcribed",
+            transport_status="server_acked",
+            processing_status="transcribed",
+            quality_score=truth["quality_score"],
+            needs_recheck=truth["needs_recheck"],
+        )
+    return truth
+
+
 def _episode_duration_seconds(episode_context: dict[str, Any] | None, fallback: float) -> float:
     if not episode_context:
         return fallback
@@ -409,6 +463,18 @@ def _run_enrichment_sync(
     episode_id = refresh_episode_from_event(db_path, transcription_id, event)
     if episode_id:
         result["episode_id"] = episode_id
+        truth = _apply_episode_truth_gate(
+            db_path,
+            result.get("ingest_id", transcription_id),
+            transcription_id,
+            episode_id,
+            source="gate",
+        )
+        if truth:
+            result["quality_state"] = truth["quality_state"]
+            result["quality_score"] = truth["quality_score"]
+            result["quality_reasons_json"] = truth["quality_reasons_json"]
+            result["needs_recheck"] = truth["needs_recheck"]
     log_event(
         result.get("ingest_id", transcription_id),
         STAGE_ENRICHED,
@@ -861,6 +927,43 @@ def process_audio_from_artifact_sync(
                     "result": result,
                 }
 
+        truth = _apply_episode_truth_gate(
+            db_path,
+            ingest_id,
+            transcription_id,
+            episode_id,
+            source="gate",
+        )
+        if truth:
+            result["quality_state"] = truth["quality_state"]
+            result["quality_score"] = truth["quality_score"]
+            result["quality_reasons_json"] = truth["quality_reasons_json"]
+            result["needs_recheck"] = truth["needs_recheck"]
+            quality_score = truth["quality_score"]
+            needs_recheck = truth["needs_recheck"]
+            if truth["quality_state"] == "quarantined":
+                if delete_audio_after:
+                    file_path.unlink(missing_ok=True)
+                return {
+                    "status": "quarantined",
+                    "reason": "episode_quality_quarantined",
+                    "ingest_id": ingest_id,
+                    "filename": filename,
+                    "transcription_id": transcription_id,
+                    "result": result,
+                }
+            if truth["quality_state"] == "garbage":
+                if delete_audio_after:
+                    file_path.unlink(missing_ok=True)
+                return {
+                    "status": "filtered",
+                    "reason": "episode_quality_garbage",
+                    "ingest_id": ingest_id,
+                    "filename": filename,
+                    "transcription_id": transcription_id,
+                    "result": result,
+                }
+
         if settings.INTEGRITY_CHAIN_ENABLED:
             append_integrity_event(
                 db_path=db_path,
@@ -1282,6 +1385,43 @@ async def process_audio_bytes(
                 return {
                     "status": "quarantined",
                     "reason": quarantine_reason,
+                    "ingest_id": ingest_id,
+                    "filename": filename,
+                    "transcription_id": transcription_id,
+                    "result": result,
+                }
+
+        truth = _apply_episode_truth_gate(
+            db_path,
+            ingest_id,
+            transcription_id,
+            episode_id,
+            source="gate",
+        )
+        if truth:
+            result["quality_state"] = truth["quality_state"]
+            result["quality_score"] = truth["quality_score"]
+            result["quality_reasons_json"] = truth["quality_reasons_json"]
+            result["needs_recheck"] = truth["needs_recheck"]
+            quality_score = truth["quality_score"]
+            needs_recheck = truth["needs_recheck"]
+            if truth["quality_state"] == "quarantined":
+                if delete_audio_after:
+                    dest_path.unlink(missing_ok=True)
+                return {
+                    "status": "quarantined",
+                    "reason": "episode_quality_quarantined",
+                    "ingest_id": ingest_id,
+                    "filename": filename,
+                    "transcription_id": transcription_id,
+                    "result": result,
+                }
+            if truth["quality_state"] == "garbage":
+                if delete_audio_after:
+                    dest_path.unlink(missing_ok=True)
+                return {
+                    "status": "filtered",
+                    "reason": "episode_quality_garbage",
                     "ingest_id": ingest_id,
                     "filename": filename,
                     "transcription_id": transcription_id,

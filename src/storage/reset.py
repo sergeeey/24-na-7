@@ -21,6 +21,7 @@ USER_DATA_TABLES = (
     "recording_analyses",
     "day_threads",
     "episodes",
+    "quality_state_transition_log",
     "structured_events",
     "transcriptions",
     "ingest_queue",

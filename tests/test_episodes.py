@@ -301,6 +301,156 @@ def test_contextual_transcription_risk_detects_repeated_neighbors(tmp_path):
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_evaluate_episode_truth_marks_repeated_noise_as_garbage(tmp_path):
+    from src.memory.truth import evaluate_episode_truth
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:01:00",
+                    "closed",
+                    1,
+                    '["tr-1"]',
+                    "Роман Роман ты где Роман Роман",
+                    "Роман Роман ты где Роман Роман",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.3,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+
+        truth = evaluate_episode_truth(db_path, "ep-1")
+        assert truth is not None
+        assert truth["quality_state"] == "garbage"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_evaluate_episode_truth_marks_low_information_as_uncertain(tmp_path):
+    from src.memory.truth import evaluate_episode_truth
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:00:20",
+                    "closed",
+                    1,
+                    '["tr-1"]',
+                    "угу окей",
+                    "угу окей",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.2,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+
+        truth = evaluate_episode_truth(db_path, "ep-1")
+        assert truth is not None
+        assert truth["quality_state"] == "uncertain"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_evaluate_episode_truth_marks_coherent_episode_as_trusted(tmp_path):
+    from src.memory.truth import evaluate_episode_truth
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:02:00",
+                    "summarized",
+                    2,
+                    '["tr-1","tr-2"]',
+                    "обсудили бюджет проекта и договорились отправить таблицу Марату",
+                    "обсудили бюджет проекта и договорились отправить таблицу Марату",
+                    "созвон по бюджету",
+                    '["бюджет"]',
+                    '["Марат"]',
+                    '[{"person":"Марат","text":"отправить таблицу"}]',
+                    0.9,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+
+        truth = evaluate_episode_truth(db_path, "ep-1")
+        assert truth is not None
+        assert truth["quality_state"] == "trusted"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_run_enrichment_sync_uses_episode_text(tmp_path):
     from datetime import datetime
     from unittest.mock import patch

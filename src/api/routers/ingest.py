@@ -120,6 +120,7 @@ async def get_pipeline_status():
             "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0, "quarantine": 0},
             "ingest_stage_counts": {},
             "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
+            "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
         }
 
     db = get_reflexio_db(db_path)
@@ -165,6 +166,12 @@ async def get_pipeline_status():
             "summarized": db.fetchone("SELECT COUNT(*) FROM episodes WHERE status = 'summarized'")[0],
             "needs_review": db.fetchone("SELECT COUNT(*) FROM episodes WHERE needs_review = 1")[0],
         }
+        quality_counts = {
+            "trusted": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'trusted'")[0],
+            "uncertain": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'uncertain'")[0],
+            "garbage": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'garbage'")[0],
+            "quarantined": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'quarantined'")[0],
+        }
     except Exception as e:
         logger.warning("pipeline_status_failed", error=str(e))
         return {
@@ -175,6 +182,7 @@ async def get_pipeline_status():
             "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0, "quarantine": 0},
             "ingest_stage_counts": {},
             "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
+            "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
             "_error": str(e),
         }
 
@@ -186,6 +194,7 @@ async def get_pipeline_status():
         "ingest_queue": q,
         "ingest_stage_counts": stage_counts,
         "episode_counts": episode_counts,
+        "quality_counts": quality_counts,
     }
 
 

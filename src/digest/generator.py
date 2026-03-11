@@ -217,6 +217,9 @@ class DigestGenerator:
                 t.text,
                 t.language,
                 t.language_probability,
+                t.quality_state,
+                t.quality_score,
+                t.quality_reasons_json,
                 t.duration,
                 t.segments,
                 t.created_at,
@@ -250,7 +253,9 @@ class DigestGenerator:
         episodes = get_episodes_for_day(self.db_path, target_date.isoformat())
         out: List[Dict] = []
         for episode in episodes:
-            if episode.get("status") != "summarized" or bool(episode.get("needs_review")):
+            if episode.get("status") != "summarized":
+                continue
+            if (episode.get("quality_state") or "trusted") != "trusted":
                 continue
             started_at = episode.get("started_at")
             ended_at = episode.get("ended_at")
@@ -282,6 +287,9 @@ class DigestGenerator:
                     "participants_json": episode.get("participants_json") or "[]",
                     "commitments_json": episode.get("commitments_json") or "[]",
                     "needs_review": bool(episode.get("needs_review")),
+                    "quality_state": episode.get("quality_state") or "trusted",
+                    "quality_score": float(episode.get("quality_score") or 1.0),
+                    "quality_reasons_json": episode.get("quality_reasons_json") or "[]",
                     "source_count": episode.get("source_count") or 0,
                     "_source_unit": "episode",
                 }
@@ -297,7 +305,12 @@ class DigestGenerator:
         transcriptions = self.get_transcriptions(target_date)
         for row in transcriptions:
             row["_source_unit"] = "transcription"
-        return transcriptions
+            row["quality_state"] = row.get("quality_state") or "trusted"
+        return [
+            row
+            for row in transcriptions
+            if row.get("quality_state") not in {"garbage", "quarantined"}
+        ]
     
     def extract_facts(self, transcriptions: List[Dict], use_llm: bool = True) -> List[Dict]:
         """
@@ -572,6 +585,23 @@ class DigestGenerator:
             except Exception as e:
                 logger.warning("novelty_detection_failed", error=str(e))
 
+        trusted_units = [
+            item for item in transcriptions if (item.get("quality_state") or "trusted") == "trusted"
+        ]
+        degraded = any(item.get("_source_unit") != "episode" for item in transcriptions) or (
+            len(trusted_units) != len(transcriptions)
+        )
+        evidence_strength = round(
+            (
+                sum(float(item.get("quality_score") or 1.0) for item in trusted_units) / len(trusted_units)
+            ) if trusted_units else 0.0,
+            3,
+        )
+        instability_markers = {
+            "day_context_fragility": degraded,
+            "trusted_fraction": round((len(trusted_units) / len(transcriptions)) if transcriptions else 0.0, 3),
+        }
+
         return {
             "date": target_date.isoformat(),
             "summary_text": summary_text,
@@ -587,10 +617,10 @@ class DigestGenerator:
             "sources_count": len(transcriptions),
             "source_unit": transcriptions[0].get("_source_unit", "transcription") if transcriptions else "transcription",
             "episodes_used": sum(1 for item in transcriptions if item.get("_source_unit") == "episode"),
-            "incomplete_context": any(
-                bool(item.get("needs_review")) or item.get("_source_unit") != "episode"
-                for item in transcriptions
-            ),
+            "incomplete_context": degraded,
+            "degraded": degraded,
+            "evidence_strength": evidence_strength,
+            "instability_markers": instability_markers,
             # WOW fields (nullable — backward compatible)
             # ПОЧЕМУ `or []` для day_map: Kotlin DailyDigestData.day_map = List<DayMapPoint>
             # (non-null). JSON null → optJSONArray возвращает null → emptyList(), но лучше

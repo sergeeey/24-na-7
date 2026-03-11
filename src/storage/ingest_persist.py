@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -23,6 +24,8 @@ except Exception:
 
 
 logger = get_logger("storage.ingest_persist")
+
+QUALITY_STATES = ("trusted", "uncertain", "garbage", "quarantined")
 
 
 def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
@@ -49,7 +52,10 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
             error_message TEXT,
             quarantine_reason TEXT,
             quality_score REAL,
-            needs_recheck INTEGER NOT NULL DEFAULT 0
+            needs_recheck INTEGER NOT NULL DEFAULT 0,
+            quality_state TEXT NOT NULL DEFAULT 'trusted',
+            quality_reasons_json TEXT NOT NULL DEFAULT '[]',
+            review_required INTEGER NOT NULL DEFAULT 0
         )
         """
     )
@@ -65,6 +71,9 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
         "quarantine_reason TEXT",
         "quality_score REAL",
         "needs_recheck INTEGER NOT NULL DEFAULT 0",
+        "quality_state TEXT NOT NULL DEFAULT 'trusted'",
+        "quality_reasons_json TEXT NOT NULL DEFAULT '[]'",
+        "review_required INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             cursor.execute(f"ALTER TABLE ingest_queue ADD COLUMN {col_def}")
@@ -88,6 +97,9 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
             garbage_flag INTEGER NOT NULL DEFAULT 0,
             quality_score REAL,
             needs_recheck INTEGER NOT NULL DEFAULT 0,
+            quality_state TEXT NOT NULL DEFAULT 'trusted',
+            quality_reasons_json TEXT NOT NULL DEFAULT '[]',
+            review_required INTEGER NOT NULL DEFAULT 0,
             duration REAL,
             segments TEXT,
             created_at TEXT
@@ -103,11 +115,16 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
         "garbage_flag INTEGER NOT NULL DEFAULT 0",
         "quality_score REAL",
         "needs_recheck INTEGER NOT NULL DEFAULT 0",
+        "quality_state TEXT NOT NULL DEFAULT 'trusted'",
+        "quality_reasons_json TEXT NOT NULL DEFAULT '[]'",
+        "review_required INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             cursor.execute(f"ALTER TABLE transcriptions ADD COLUMN {col_def}")
         except Exception:
             pass
+    _ensure_digest_cache_table(conn)
+    _ensure_quality_transition_table(conn)
     conn.commit()
 
 
@@ -151,6 +168,10 @@ def _ensure_episodes_tables(conn: sqlite3.Connection) -> None:
             commitments_json TEXT NOT NULL DEFAULT '[]',
             importance_score REAL DEFAULT 0.0,
             needs_review INTEGER NOT NULL DEFAULT 0,
+            quality_state TEXT NOT NULL DEFAULT 'trusted',
+            quality_score REAL DEFAULT 1.0,
+            quality_reasons_json TEXT NOT NULL DEFAULT '[]',
+            review_required INTEGER NOT NULL DEFAULT 0,
             day_key TEXT NOT NULL,
             thread_key TEXT
         )
@@ -170,9 +191,74 @@ def _ensure_episodes_tables(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    for col_def in [
+        "quality_state TEXT NOT NULL DEFAULT 'trusted'",
+        "quality_score REAL DEFAULT 1.0",
+        "quality_reasons_json TEXT NOT NULL DEFAULT '[]'",
+        "review_required INTEGER NOT NULL DEFAULT 0",
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE episodes ADD COLUMN {col_def}")
+        except Exception:
+            pass
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_day_key ON episodes(day_key, started_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status, ended_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_quality_state ON episodes(quality_state, day_key)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_day_threads_day_key ON day_threads(day_key)")
+    conn.commit()
+
+
+def _ensure_digest_cache_table(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS digest_cache (
+            date TEXT PRIMARY KEY,
+            digest_json TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'ready',
+            previous_digest_id TEXT,
+            rebuild_reason TEXT,
+            rebuilt_at TEXT,
+            changed_source_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    for col_def in [
+        "previous_digest_id TEXT",
+        "rebuild_reason TEXT",
+        "rebuilt_at TEXT",
+        "changed_source_count INTEGER NOT NULL DEFAULT 0",
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE digest_cache ADD COLUMN {col_def}")
+        except Exception:
+            pass
+    conn.commit()
+
+
+def _ensure_quality_transition_table(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS quality_state_transition_log (
+            id TEXT PRIMARY KEY,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            old_state TEXT,
+            new_state TEXT NOT NULL,
+            reason_codes_json TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_quality_transition_entity
+        ON quality_state_transition_log(entity_type, entity_id, created_at)
+        """
+    )
     conn.commit()
 
 
@@ -450,6 +536,41 @@ def ensure_ingest_tables(db_path: Path) -> None:
     _ensure_structured_events_table(db.conn)
 
 
+def write_digest_cache(
+    db_path: Path,
+    *,
+    day_key: str,
+    digest_json: str,
+    status: str = "ready",
+    previous_digest_id: str | None = None,
+    rebuild_reason: str | None = None,
+    rebuilt_at: str | None = None,
+    changed_source_count: int = 0,
+) -> None:
+    db = get_reflexio_db(db_path)
+    _ensure_digest_cache_table(db.conn)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    with db.transaction():
+        db.execute(
+            """
+            INSERT OR REPLACE INTO digest_cache (
+                date, digest_json, generated_at, status,
+                previous_digest_id, rebuild_reason, rebuilt_at, changed_source_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                day_key,
+                digest_json,
+                generated_at,
+                status,
+                previous_digest_id,
+                rebuild_reason,
+                rebuilt_at,
+                changed_source_count,
+            ),
+        )
+
+
 def get_existing_ingest(db_path: Path, *, segment_id: str | None = None) -> Optional[sqlite3.Row]:
     """Вернуть существующий ingest row по segment_id, если он уже был принят."""
     if not segment_id:
@@ -470,7 +591,7 @@ def get_transcription_by_ingest_id(db_path: Path, ingest_id: str) -> Optional[di
     _ensure_sqlite_ingest_tables(db.conn)
     row = db.fetchone(
         """
-        SELECT text, transcript_clean, language, language_probability, quality_score, needs_recheck
+        SELECT text, transcript_clean, language, language_probability, quality_score, needs_recheck, quality_state
         FROM transcriptions
         WHERE ingest_id = ?
         ORDER BY created_at DESC
@@ -486,6 +607,7 @@ def get_transcription_by_ingest_id(db_path: Path, ingest_id: str) -> Optional[di
         "language_probability": row["language_probability"],
         "quality_score": row["quality_score"],
         "needs_recheck": bool(row["needs_recheck"]),
+        "quality_state": row["quality_state"] or "trusted",
     }
 
 
@@ -573,8 +695,9 @@ def persist_ws_transcription(
                         id, filename, file_path, file_size, status,
                         transport_status, processing_status, created_at, processed_at,
                         quality_score, needs_recheck
+                    , quality_state, quality_reasons_json, review_required
                     )
-                    VALUES (?, ?, ?, ?, 'transcribed', 'server_acked', 'transcribed', ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, 'transcribed', 'server_acked', 'transcribed', ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         file_id,
@@ -585,6 +708,9 @@ def persist_ws_transcription(
                         now,
                         result.get("quality_score"),
                         1 if result.get("needs_recheck") else 0,
+                        result.get("quality_state") or "trusted",
+                        json.dumps(result.get("quality_reasons_json") or []),
+                        1 if result.get("review_required") else 0,
                     ),
                 )
             else:
@@ -598,13 +724,19 @@ def persist_ws_transcription(
                         error_code=NULL,
                         error_message=NULL,
                         quality_score=?,
-                        needs_recheck=?
+                        needs_recheck=?,
+                        quality_state=?,
+                        quality_reasons_json=?,
+                        review_required=?
                     WHERE id=?
                     """,
                     (
                         datetime.now(timezone.utc).isoformat(),
                         result.get("quality_score"),
                         1 if result.get("needs_recheck") else 0,
+                        result.get("quality_state") or "trusted",
+                        json.dumps(result.get("quality_reasons_json") or []),
+                        1 if result.get("review_required") else 0,
                         file_id,
                     ),
                 )
@@ -654,9 +786,10 @@ def persist_ws_transcription(
                     id, ingest_id, text, transcript_raw, transcript_clean,
                     language, language_probability, asr_model, asr_confidence,
                     garbage_flag, quality_score, needs_recheck,
+                    quality_state, quality_reasons_json, review_required,
                     duration, segments, created_at, speaker_id, is_user, speaker_confidence, episode_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     transcription_id,
@@ -671,6 +804,9 @@ def persist_ws_transcription(
                     garbage_flag,
                     quality_score,
                     needs_recheck,
+                    result.get("quality_state") or "trusted",
+                    json.dumps(result.get("quality_reasons_json") or []),
+                    1 if result.get("review_required") else 0,
                     duration,
                     segments_str,
                     datetime.now(timezone.utc).isoformat(),

@@ -48,6 +48,45 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
                     ),
                 )
 
+            episode_rows = [
+                ("ep-trusted", "summarized", "trusted", 0),
+                ("ep-uncertain", "closed", "uncertain", 1),
+                ("ep-garbage", "open", "garbage", 1),
+                ("ep-quarantined", "summarized", "quarantined", 1),
+            ]
+            for episode_id, status, quality_state, needs_review in episode_rows:
+                db.execute(
+                    """
+                    INSERT INTO episodes (
+                        id, started_at, ended_at, status, source_count, transcription_ids_json,
+                        raw_text, clean_text, summary, topics_json, participants_json,
+                        commitments_json, importance_score, needs_review, quality_state,
+                        quality_score, quality_reasons_json, review_required, day_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        episode_id,
+                        "2026-03-10T12:00:00",
+                        "2026-03-10T12:01:00",
+                        status,
+                        1,
+                        '["tr-1"]',
+                        "текст",
+                        "текст",
+                        "summary",
+                        '["work"]',
+                        "[]",
+                        "[]",
+                        0.8,
+                        needs_review,
+                        quality_state,
+                        0.8,
+                        "[]",
+                        needs_review,
+                        "2026-03-10",
+                    ),
+                )
+
         client = TestClient(app)
         response = client.get("/ingest/pipeline-status")
         assert response.status_code == 200
@@ -64,9 +103,13 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         assert payload["ingest_stage_counts"]["event_ready"] == 1
         assert payload["ingest_stage_counts"]["retryable_error"] == 1
         assert payload["ingest_stage_counts"]["quarantined"] == 1
-        assert payload["episode_counts"]["open"] == 0
-        assert payload["episode_counts"]["closed"] == 0
-        assert payload["episode_counts"]["summarized"] == 0
-        assert payload["episode_counts"]["needs_review"] == 0
+        assert payload["episode_counts"]["open"] == 1
+        assert payload["episode_counts"]["closed"] == 1
+        assert payload["episode_counts"]["summarized"] == 2
+        assert payload["episode_counts"]["needs_review"] == 3
+        assert payload["quality_counts"]["trusted"] == 1
+        assert payload["quality_counts"]["uncertain"] == 1
+        assert payload["quality_counts"]["garbage"] == 1
+        assert payload["quality_counts"]["quarantined"] == 1
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
