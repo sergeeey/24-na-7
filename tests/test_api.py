@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from src.api.main import app
 from src.utils.config import settings
+from src.utils.rate_limiter import RateLimitConfig
 
 
 def test_ingest_audio(tmp_path):
@@ -88,6 +89,71 @@ def test_ingest_audio_rejects_non_wav(tmp_path):
     assert resp.status_code == 400
     body = resp.json()
     assert body["detail"] == "Invalid WAV file signature"
+
+
+def test_ingest_audio_rejects_oversized_payload_in_strict_safe_mode(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    wav_header = (
+        b"RIFF$\x00\x00\x00WAVEfmt "
+        + b"\x10\x00\x00\x00\x01\x00\x01\x00"
+        + b"\x44\xAC\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00"
+        + b"data\x00\x00\x00\x00"
+    )
+
+    class _FakeSafeChecker:
+        def check_file_extension(self, path):
+            return True, None
+
+        def check_file_size(self, path):
+            return False, "payload_too_large"
+
+    old_safe_mode = os.getenv("SAFE_MODE")
+    os.environ["SAFE_MODE"] = "strict"
+    try:
+        with patch.object(settings, "UPLOADS_PATH", tmp_path), patch(
+            "src.api.routers.ingest.get_safe_checker",
+            return_value=_FakeSafeChecker(),
+        ):
+            client = TestClient(app)
+            files = {"file": ("test.wav", wav_header, "audio/wav")}
+            resp = client.post("/ingest/audio", files=files)
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "SAFE validation failed: payload_too_large"
+    finally:
+        if old_safe_mode is None:
+            os.environ.pop("SAFE_MODE", None)
+        else:
+            os.environ["SAFE_MODE"] = old_safe_mode
+
+
+def test_ingest_audio_rate_limit_contract(tmp_path):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    wav_header = (
+        b"RIFF$\x00\x00\x00WAVEfmt "
+        + b"\x10\x00\x00\x00\x01\x00\x01\x00"
+        + b"\x44\xAC\x00\x00\x88\x58\x01\x00\x02\x00\x10\x00"
+        + b"data\x00\x00\x00\x00"
+    )
+
+    old_api_key = settings.API_KEY
+    old_limiter_enabled = app.state.limiter.enabled
+    object.__setattr__(settings, "API_KEY", None)
+    app.state.limiter.enabled = True
+
+    try:
+        app.state.limiter._storage.reset()
+        with patch.object(settings, "UPLOADS_PATH", tmp_path):
+            client = TestClient(app)
+            files = {"file": ("test.wav", wav_header, "audio/wav")}
+            responses = [client.post("/ingest/audio", files=files) for _ in range(11)]
+        limited = next((resp for resp in responses if resp.status_code == 429), None)
+        assert limited is not None
+        assert limited.status_code == 429
+        assert "Rate limit exceeded" in limited.text
+        assert "X-RateLimit-Limit" in responses[0].headers
+    finally:
+        object.__setattr__(settings, "API_KEY", old_api_key)
+        app.state.limiter.enabled = old_limiter_enabled
 
 
 def test_ingest_status():
