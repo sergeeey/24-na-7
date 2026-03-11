@@ -1,6 +1,7 @@
 """Роутер для загрузки и обработки аудио."""
 import json
 import os
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
@@ -76,6 +77,78 @@ def _build_slo_state(
             "day_threads_trusted": int(day_thread_counts.get("trusted", 0)),
         },
     }
+
+
+def _build_recent_day_trends(db, *, days_back: int) -> list[dict[str, object]]:
+    today = date.today()
+    digest_rows = {
+        row["date"]: row["digest_json"]
+        for row in db.fetchall(
+            """
+            SELECT date, digest_json
+            FROM digest_cache
+            WHERE date BETWEEN ? AND ?
+            """,
+            (
+                (today - timedelta(days=days_back - 1)).isoformat(),
+                today.isoformat(),
+            ),
+        )
+    }
+
+    recent_days: list[dict[str, object]] = []
+    for offset in range(days_back):
+        day_key = (today - timedelta(days=offset)).isoformat()
+        trusted_count = db.fetchone(
+            "SELECT COUNT(*) FROM episodes WHERE day_key = ? AND quality_state = 'trusted'",
+            (day_key,),
+        )[0]
+        uncertain_count = db.fetchone(
+            "SELECT COUNT(*) FROM episodes WHERE day_key = ? AND quality_state = 'uncertain'",
+            (day_key,),
+        )[0]
+        garbage_count = db.fetchone(
+            "SELECT COUNT(*) FROM episodes WHERE day_key = ? AND quality_state = 'garbage'",
+            (day_key,),
+        )[0]
+        quarantined_count = db.fetchone(
+            "SELECT COUNT(*) FROM episodes WHERE day_key = ? AND quality_state = 'quarantined'",
+            (day_key,),
+        )[0]
+        day_thread_count = db.fetchone(
+            "SELECT COUNT(*) FROM day_threads WHERE day_key = ?",
+            (day_key,),
+        )[0]
+        long_thread_count = db.fetchone(
+            """
+            SELECT COUNT(DISTINCT long_thread_key)
+            FROM day_threads
+            WHERE day_key = ? AND long_thread_key IS NOT NULL AND long_thread_key != ''
+            """,
+            (day_key,),
+        )[0]
+        digest_payload = {}
+        if day_key in digest_rows:
+            try:
+                digest_payload = json.loads(digest_rows[day_key] or "{}")
+            except Exception:
+                digest_payload = {}
+        recent_days.append(
+            {
+                "day": day_key,
+                "trusted_count": trusted_count,
+                "uncertain_count": uncertain_count,
+                "garbage_count": garbage_count,
+                "quarantined_count": quarantined_count,
+                "review_count": uncertain_count + garbage_count + quarantined_count,
+                "day_thread_count": day_thread_count,
+                "long_thread_count": long_thread_count,
+                "degraded_digest": bool(
+                    digest_payload.get("degraded") or digest_payload.get("incomplete_context")
+                ),
+            }
+        )
+    return recent_days
 
 
 @router.post("/audio")
@@ -355,6 +428,29 @@ async def get_pipeline_status():
         "quality_counts": quality_counts,
         "memory_health": memory_health,
         "slo_state": slo_state,
+    }
+
+
+@router.get("/pipeline-trends")
+async def get_pipeline_trends(days_back: int = 7):
+    """Read-only trends for recent episodic memory health by day."""
+    days_back = max(1, min(days_back, 30))
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    if not db_path.exists():
+        return {"days_back": days_back, "recent_days": []}
+
+    from src.storage.db import get_reflexio_db
+
+    db = get_reflexio_db(db_path)
+    try:
+        recent_days = _build_recent_day_trends(db, days_back=days_back)
+    except Exception as e:
+        logger.warning("pipeline_trends_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to build pipeline trends") from e
+
+    return {
+        "days_back": days_back,
+        "recent_days": recent_days,
     }
 
 

@@ -180,6 +180,168 @@ def test_ingest_status_v1():
     assert data["status"] == "pending"
 
 
+def test_pipeline_trends_returns_recent_day_aggregates(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state,
+                    quality_score, quality_reasons_json, review_required, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-trusted",
+                    "2026-03-11T10:00:00",
+                    "2026-03-11T10:05:00",
+                    "summarized",
+                    1,
+                    '["tr-1"]',
+                    "raw",
+                    "clean",
+                    "summary",
+                    '["work"]',
+                    "[]",
+                    "[]",
+                    0.9,
+                    0,
+                    "trusted",
+                    0.9,
+                    "[]",
+                    0,
+                    "2026-03-11",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state,
+                    quality_score, quality_reasons_json, review_required, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-garbage",
+                    "2026-03-10T10:00:00",
+                    "2026-03-10T10:05:00",
+                    "summarized",
+                    1,
+                    '["tr-2"]',
+                    "raw",
+                    "clean",
+                    "summary",
+                    '["noise"]',
+                    "[]",
+                    "[]",
+                    0.1,
+                    1,
+                    "garbage",
+                    0.1,
+                    '[{"code":"LOW_INFORMATION","severity":"medium","score_delta":-0.5,"details":{}}]',
+                    1,
+                    "2026-03-10",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO day_threads (
+                    id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+                    commitments_json, topics_json, participants_json, carryover_candidate,
+                    topic_overlap_score, participant_overlap_score,
+                    temporal_proximity_score, commitment_overlap_score,
+                    thread_confidence, long_thread_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "dt-1",
+                    "2026-03-11",
+                    "work",
+                    '["ep-trusted"]',
+                    "line",
+                    "",
+                    "[]",
+                    '["work"]',
+                    "[]",
+                    0,
+                    1.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.9,
+                    "lt-1",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO long_threads (
+                    id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+                    participants_json, topics_json, status, summary, continuity_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "lt-1",
+                    "lt-work",
+                    "2026-03-11",
+                    "2026-03-11",
+                    '["dt-1"]',
+                    "[]",
+                    '["work"]',
+                    "active",
+                    "work line",
+                    0.8,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO digest_cache (
+                    date, digest_json, generated_at, status,
+                    previous_digest_id, rebuild_reason, rebuilt_at, changed_source_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2026-03-10",
+                    '{"degraded": true, "incomplete_context": true}',
+                    "2026-03-10T12:00:00Z",
+                    "ready",
+                    None,
+                    None,
+                    None,
+                    0,
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.get("/ingest/pipeline-trends?days_back=2")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["days_back"] == 2
+        assert len(payload["recent_days"]) == 2
+        by_day = {item["day"]: item for item in payload["recent_days"]}
+        assert by_day["2026-03-11"]["trusted_count"] == 1
+        assert by_day["2026-03-11"]["day_thread_count"] == 1
+        assert by_day["2026-03-11"]["long_thread_count"] == 1
+        assert by_day["2026-03-11"]["degraded_digest"] is False
+        assert by_day["2026-03-10"]["garbage_count"] == 1
+        assert by_day["2026-03-10"]["review_count"] == 1
+        assert by_day["2026-03-10"]["degraded_digest"] is True
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_reprocess_ingest_requeues_retryable_item(tmp_path):
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables
