@@ -189,6 +189,45 @@ def test_rate_limiter_create_limiter():
     assert limiter is not None
 
 
+def test_enrich_transcription_preserves_structured_speakers(monkeypatch):
+    from datetime import datetime
+
+    from src.enrichment.enricher import enrich_transcription
+
+    monkeypatch.setattr(
+        "src.enrichment.enricher._run_analysis_with_retry",
+        lambda _text: (
+            {
+                "summary": "Обсудили бюджет Q2 с Маратом",
+                "topics": ["бюджет", "Q2"],
+                "emotions": ["уверенность"],
+                "urgency": "medium",
+                "actions": [],
+                "commitments": [{"person": "Марат", "action": "подготовить таблицу"}],
+                "speakers": ["Я", "Марат"],
+            },
+            12.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "src.enrichment.enricher.classify_domains",
+        lambda text, topics, db_path: ["work"],
+    )
+
+    event = enrich_transcription(
+        transcription_id="tr-1",
+        episode_id="ep-1",
+        text="Обсудили бюджет Q2 с Маратом",
+        timestamp=datetime.fromisoformat("2026-03-11T10:00:00"),
+        duration_sec=12.0,
+        language="ru",
+        asr_confidence=0.9,
+    )
+
+    assert event.speakers == ["Я", "Марат"]
+    assert event.commitments[0].person == "Марат"
+
+
 def test_api_density_analysis(tmp_path):
     """Эндпоинт density с моком analyzer."""
     from fastapi.testclient import TestClient
@@ -240,18 +279,23 @@ def test_digest_get_transcriptions_with_db(tmp_path):
     """DigestGenerator.get_transcriptions при наличии БД с таблицами."""
     import sqlite3
     from src.digest.generator import DigestGenerator
+    from src.storage.ingest_persist import ensure_ingest_tables
     db_path = tmp_path / "reflexio.db"
+    ensure_ingest_tables(db_path)
     conn = sqlite3.connect(str(db_path))
-    conn.execute("""
-        CREATE TABLE transcriptions (
-            id TEXT, ingest_id TEXT, text TEXT, language TEXT, language_probability REAL,
-            duration REAL, segments TEXT, created_at TEXT
-        )
-    """)
-    conn.execute("CREATE TABLE ingest_queue (id TEXT, filename TEXT, file_size INTEGER)")
     conn.execute(
-        "INSERT INTO transcriptions (id, text, created_at) VALUES (?, ?, ?)",
-        ("t1", "Hello world", "2026-01-15T10:00:00"),
+        """
+        INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("ing-1", "test.wav", "/tmp/test.wav", 44, "received", "2026-01-15T10:00:00"),
+    )
+    conn.execute(
+        """
+        INSERT INTO transcriptions (id, ingest_id, text, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        ("t1", "ing-1", "Hello world", "2026-01-15T10:00:00"),
     )
     conn.commit()
     conn.close()
