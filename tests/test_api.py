@@ -472,6 +472,7 @@ def test_admin_reclassify_dry_run_does_not_mutate(tmp_path):
         body = resp.json()
         assert body["mode"] == "dry_run"
         assert body["affected_episodes"] == 1
+        assert body["affected_transcriptions"] == 0
         row = db.fetchone("SELECT quality_state FROM episodes WHERE id = ?", ("ep-1",))
         assert row["quality_state"] == "trusted"
     finally:
@@ -524,6 +525,8 @@ def test_admin_reclassify_apply_updates_quality_state_and_digest_cache(tmp_path)
         client = TestClient(app)
         resp = client.post("/admin/reclassify", json={"mode": "apply", "date": "2026-03-10"})
         assert resp.status_code == 200
+        body = resp.json()
+        assert body["affected_transcriptions"] == 0
         row = db.fetchone("SELECT quality_state FROM episodes WHERE id = ?", ("ep-1",))
         assert row["quality_state"] in {"garbage", "quarantined"}
         digest_row = db.fetchone(
@@ -533,6 +536,116 @@ def test_admin_reclassify_apply_updates_quality_state_and_digest_cache(tmp_path)
         assert digest_row["rebuild_reason"] == "truth_reclassify"
         assert digest_row["changed_source_count"] >= 1
         transitions = db.fetchone("SELECT COUNT(*) AS c FROM quality_state_transition_log")
+        assert transitions["c"] >= 1
+    finally:
+        os.chdir(old_cwd)
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_admin_reclassify_dry_run_reports_orphan_transcriptions_without_mutation(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                """
+                INSERT INTO transcriptions (
+                    id, ingest_id, text, transcript_clean, language_probability,
+                    created_at, quality_state, review_required
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "tr-1",
+                    "ing-1",
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    0.99,
+                    "2026-03-10T12:00:00",
+                    "trusted",
+                    0,
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.post("/admin/reclassify", json={"mode": "dry_run", "date": "2026-03-10"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["affected_episodes"] == 0
+        assert body["affected_transcriptions"] == 1
+        assert body["proposed_transcription_state_counts"]["garbage"] == 1
+        row = db.fetchone("SELECT quality_state FROM transcriptions WHERE id = ?", ("tr-1",))
+        assert row["quality_state"] == "trusted"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_admin_reclassify_apply_updates_orphan_transcriptions(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    old_cwd = Path.cwd()
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        os.chdir(tmp_path)
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                """
+                INSERT INTO transcriptions (
+                    id, ingest_id, text, transcript_clean, language_probability,
+                    created_at, quality_state, review_required
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "tr-1",
+                    "ing-1",
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    0.99,
+                    "2026-03-10T12:00:00",
+                    "trusted",
+                    0,
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.post("/admin/reclassify", json={"mode": "apply", "date": "2026-03-10"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["affected_transcriptions"] == 1
+        assert body["transitions_written"] >= 1
+        row = db.fetchone("SELECT quality_state FROM transcriptions WHERE id = ?", ("tr-1",))
+        assert row["quality_state"] in {"garbage", "quarantined"}
+        transitions = db.fetchone(
+            """
+            SELECT COUNT(*) AS c FROM quality_state_transition_log
+            WHERE entity_type = 'transcription' AND entity_id = ?
+            """,
+            ("tr-1",),
+        )
         assert transitions["c"] >= 1
     finally:
         os.chdir(old_cwd)

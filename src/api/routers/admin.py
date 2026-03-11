@@ -59,7 +59,9 @@ class ReclassifyResponse(BaseModel):
     range_end: str
     affected_days: list[str]
     proposed_state_counts: dict[str, int]
+    proposed_transcription_state_counts: dict[str, int]
     affected_episodes: int
+    affected_transcriptions: int
     digest_rebuilds: int
     transitions_written: int = 0
 
@@ -123,9 +125,14 @@ async def reclassify_truth_layer(request: Request, response: Response, body: Rec
         range_end=end_day,
         affected_days=preview["affected_days"],
         proposed_state_counts=preview["state_counts"],
+        proposed_transcription_state_counts=preview["transcription_state_counts"],
         affected_episodes=len(preview["episodes"]),
+        affected_transcriptions=len(preview["transcriptions"]),
         digest_rebuilds=digest_rebuilds,
-        transitions_written=len([row for row in preview["episodes"] if row["old_state"] != row["new_state"]])
+        transitions_written=(
+            len([row for row in preview["episodes"] if row["old_state"] != row["new_state"]])
+            + len([row for row in preview["transcriptions"] if row["old_state"] != row["new_state"]])
+        )
         if body.mode == "apply"
         else 0,
     )

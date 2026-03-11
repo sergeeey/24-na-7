@@ -52,6 +52,128 @@ def _instability_markers(reasons: list[dict[str, Any]], score: float) -> dict[st
     }
 
 
+def evaluate_transcription_truth(
+    db_path: Path,
+    transcription_id: str,
+) -> dict[str, Any] | None:
+    ensure_ingest_tables(db_path)
+    db = get_reflexio_db(db_path)
+    row = db.fetchone(
+        """
+        SELECT id, episode_id, created_at, text, transcript_clean, quality_state
+        FROM transcriptions
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (transcription_id,),
+    )
+    if not row:
+        return None
+
+    text = (row["transcript_clean"] or row["text"] or "").strip()
+    tokens = _tokens(text)
+    token_count = len(tokens)
+    unique_count = len(set(tokens))
+    unique_ratio = (unique_count / token_count) if token_count else 0.0
+    counts = Counter(tokens)
+    dominant_share = (max(counts.values()) / token_count) if token_count else 0.0
+    bigrams = list(zip(tokens, tokens[1:]))
+    repeated_bigram_count = max(Counter(bigrams).values(), default=0)
+
+    reasons: list[dict[str, Any]] = []
+    score = 1.0
+
+    if token_count == 0:
+        reasons.append(_reason("EMPTY_TRANSCRIPT", "high", -1.0, token_count=0))
+        score = 0.0
+    elif token_count < 4 or unique_ratio < 0.4:
+        reasons.append(
+            _reason(
+                "LOW_INFORMATION",
+                "medium",
+                -0.35,
+                token_count=token_count,
+                unique_tokens=unique_count,
+                unique_ratio=round(unique_ratio, 3),
+            )
+        )
+        score -= 0.35
+
+    repeated_phrase = token_count >= 5 and (dominant_share >= 0.45 or repeated_bigram_count >= 2)
+    if repeated_phrase:
+        reasons.append(
+            _reason(
+                "REPEATED_PHRASE",
+                "high",
+                -0.45,
+                dominant_share=round(dominant_share, 3),
+                repeated_bigram_count=repeated_bigram_count,
+            )
+        )
+        score -= 0.45
+
+    duplicate_neighbors = 0
+    signature = _signature(text)
+    if signature and row["created_at"]:
+        recent_rows = db.fetchall(
+            """
+            SELECT id, text, transcript_clean
+            FROM transcriptions
+            WHERE id != ?
+              AND created_at >= datetime(?, '-30 minutes')
+              AND created_at <= datetime(?, '+30 minutes')
+            ORDER BY created_at DESC
+            LIMIT 12
+            """,
+            (transcription_id, row["created_at"], row["created_at"]),
+        )
+        for recent in recent_rows:
+            if _signature(recent["transcript_clean"] or recent["text"] or "") == signature:
+                duplicate_neighbors += 1
+    if duplicate_neighbors >= 1:
+        reasons.append(
+            _reason(
+                "DUPLICATE_NEIGHBOR",
+                "high",
+                -0.3,
+                duplicate_neighbors=duplicate_neighbors,
+            )
+        )
+        score -= 0.3
+
+    contradiction = bool(repeated_phrase and duplicate_neighbors >= 2)
+    if contradiction:
+        reasons.append(
+            _reason(
+                "TRANSCRIPT_CONTRADICTION",
+                "medium",
+                -0.15,
+                duplicate_neighbors=duplicate_neighbors,
+            )
+        )
+        score -= 0.15
+
+    score = max(0.0, min(1.0, score))
+    if contradiction and duplicate_neighbors >= 2:
+        quality_state = "quarantined"
+    elif repeated_phrase or token_count == 0:
+        quality_state = "garbage"
+    elif score < 0.72:
+        quality_state = "uncertain"
+    else:
+        quality_state = "trusted"
+
+    return {
+        "quality_state": quality_state if quality_state in QUALITY_STATES else "uncertain",
+        "quality_score": round(score, 3),
+        "quality_reasons_json": reasons,
+        "review_required": quality_state != "trusted",
+        "needs_recheck": quality_state != "trusted",
+        "instability_markers": _instability_markers(reasons, score),
+        "evidence_strength": round(score, 3),
+    }
+
+
 def evaluate_episode_truth(db_path: Path, episode_id: str) -> dict[str, Any] | None:
     ensure_ingest_tables(db_path)
     db = get_reflexio_db(db_path)
@@ -296,6 +418,55 @@ def apply_episode_truth_state(
     return truth
 
 
+def apply_transcription_truth_state(
+    db_path: Path,
+    transcription_id: str,
+    truth: dict[str, Any],
+    *,
+    source: str = "gate",
+) -> dict[str, Any]:
+    ensure_ingest_tables(db_path)
+    db = get_reflexio_db(db_path)
+    reasons = truth.get("quality_reasons_json") or []
+    with db.transaction():
+        current = db.fetchone(
+            "SELECT quality_state FROM transcriptions WHERE id = ?",
+            (transcription_id,),
+        )
+        if not current:
+            return truth
+        new_state = truth["quality_state"]
+        review_required = 1 if truth.get("review_required") else 0
+        needs_recheck = 1 if truth.get("needs_recheck") else 0
+        db.execute(
+            """
+            UPDATE transcriptions
+            SET quality_state = ?, quality_score = ?, quality_reasons_json = ?,
+                review_required = ?, needs_recheck = ?, garbage_flag = ?
+            WHERE id = ?
+            """,
+            (
+                new_state,
+                truth.get("quality_score"),
+                json.dumps(reasons),
+                review_required,
+                needs_recheck,
+                1 if new_state in {"garbage", "quarantined"} else 0,
+                transcription_id,
+            ),
+        )
+        _log_transition(
+            db,
+            entity_type="transcription",
+            entity_id=transcription_id,
+            old_state=current["quality_state"],
+            new_state=new_state,
+            reasons=reasons,
+            source=source,
+        )
+    return truth
+
+
 def get_quality_counts(db_path: Path) -> dict[str, int]:
     ensure_ingest_tables(db_path)
     db = get_reflexio_db(db_path)
@@ -329,7 +500,9 @@ def reclassify_episodes_for_range(
         (start_day, end_day),
     )
     proposals: list[dict[str, Any]] = []
+    transcription_proposals: list[dict[str, Any]] = []
     affected_days: set[str] = set()
+    changed_episode_ids: set[str] = set()
     for row in rows:
         truth = evaluate_episode_truth(db_path, row["id"])
         if not truth:
@@ -345,13 +518,60 @@ def reclassify_episodes_for_range(
         )
         if (row["quality_state"] or "trusted") != truth["quality_state"]:
             affected_days.add(row["day_key"])
+            changed_episode_ids.add(row["id"])
             if apply_changes:
                 apply_episode_truth_state(db_path, row["id"], truth, source="reclassify")
+
+    transcription_rows = db.fetchall(
+        """
+        SELECT t.id, t.episode_id, t.created_at, t.quality_state,
+               COALESCE(date(t.created_at), '') AS day_key
+        FROM transcriptions t
+        LEFT JOIN episodes e ON t.episode_id = e.id
+        WHERE date(t.created_at) BETWEEN ? AND ?
+          AND (
+              t.episode_id IS NULL
+              OR e.id IS NULL
+              OR e.status != 'summarized'
+              OR COALESCE(e.quality_state, 'trusted') != 'trusted'
+          )
+        ORDER BY t.created_at ASC
+        """,
+        (start_day, end_day),
+    )
+    for row in transcription_rows:
+        truth = evaluate_transcription_truth(db_path, row["id"])
+        if not truth:
+            continue
+        transcription_proposals.append(
+            {
+                "transcription_id": row["id"],
+                "episode_id": row["episode_id"],
+                "day_key": row["day_key"],
+                "old_state": row["quality_state"] or "trusted",
+                "new_state": truth["quality_state"],
+                "reason_codes": _reason_codes(truth["quality_reasons_json"]),
+            }
+        )
+        if (row["quality_state"] or "trusted") != truth["quality_state"]:
+            if row["day_key"]:
+                affected_days.add(row["day_key"])
+            if apply_changes:
+                apply_transcription_truth_state(db_path, row["id"], truth, source="reclassify")
     return {
         "episodes": proposals,
+        "transcriptions": transcription_proposals,
         "affected_days": sorted(affected_days),
         "state_counts": {
             state: sum(1 for proposal in proposals if proposal["new_state"] == state)
             for state in QUALITY_STATES
         },
+        "transcription_state_counts": {
+            state: sum(1 for proposal in transcription_proposals if proposal["new_state"] == state)
+            for state in QUALITY_STATES
+        },
+        "changed_episode_count": len(changed_episode_ids),
+        "changed_transcription_count": sum(
+            1 for proposal in transcription_proposals if proposal["old_state"] != proposal["new_state"]
+        ),
     }
