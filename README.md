@@ -213,13 +213,14 @@ All screenshots are in [`docs/screenshots/`](docs/screenshots/).
 
 ## Current Release Snapshot
 
-`v0.5.0-beta` reflects the current production direction:
+`v0.5.1-beta` reflects the current production direction:
 
 - trusted episodic memory with explicit truth states
 - day-level storyline grouping via `day_threads`
 - cross-day continuity via `long_threads`
 - truth-aware digest and selective `reclassify` / `recheck`
 - operational visibility through `pipeline-status`, `pipeline-trends`, and `slo_state`
+- semantic golden regression for the memory pipeline and a reproducible benchmark smoke script
 
 This is no longer just a voice diary backend; it is a beta platform for **trusted episodic life memory**.
 
