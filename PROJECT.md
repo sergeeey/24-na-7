@@ -260,6 +260,42 @@ ToolResult(
 | GET | `/search/trace/{id}` | 60/min | Lifecycle одного аудио (все стадии + latency_ms) |
 | GET | `/search/errors` | 30/min | Мониторинг ошибок pipeline |
 
+---
+
+## P1 Runtime Indicators
+
+Минимальный operational contract строится на `GET /ingest/pipeline-status`.
+
+### SLI v1
+
+- `ingest accept rate`
+  - прокси: `processed / (processed + error + quarantine)`
+- `episode finalization health`
+  - `episode_counts.open / closed / summarized`
+- `truth quality mix`
+  - `quality_counts.trusted / uncertain / garbage / quarantined`
+- `day-thread coverage`
+  - `day_thread_counts.trusted`
+  - `memory_health.thread_coverage`
+- `digest degradation`
+  - `memory_health.digest_incomplete_context_total`
+  - `memory_health.degraded_digest_candidate`
+
+### Beta thresholds
+
+- `memory_health.trusted_fraction` не должен устойчиво падать ниже `0.5` без расследования
+- `memory_health.review_fraction` не должен устойчиво расти день-к-дню без расследования
+- всплеск `quality_counts.quarantined` или `ingest_queue.quarantine` требует проверки truth-layer и ASR gate
+
+### Runbook order
+
+Если episodic loop деградирует, проверять в таком порядке:
+1. `ingest_stage_counts`
+2. `quality_counts`
+3. `episode_counts`
+4. `day_thread_counts`
+5. `memory_health`
+
 ### Balance Wheel
 | Метод | Endpoint | Rate | Описание |
 |-------|----------|------|----------|

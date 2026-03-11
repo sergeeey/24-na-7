@@ -16,6 +16,32 @@
 | **API перегрузка** | DDoS атаки | Rate limiting, SAFE payload validation |
 | **Несанкционированный доступ** | Доступ к API без авторизации | RLS политики в Supabase, Domain allowlist |
 
+### Trust Boundaries и Data Flow
+
+**Edge / Android**
+- Локальная очередь сегментов, foreground recording, store-and-forward.
+- Основные риски: потеря сегментов, повторная отправка, локальный доступ к устройству.
+
+**Public API / FastAPI ingress**
+- HTTP и WebSocket ingress для ingest/admin/query paths.
+- Основные риски: отсутствие Bearer auth, upload abuse, oversized payloads, rate-limit bypass.
+
+**Processing / Memory Pipeline**
+- ASR → episode → truth gate → digest.
+- Основные риски: ложная память из шумного ASR, speculative digest claims, тихая деградация quality layer.
+
+**Persistent Storage**
+- SQLite, digest cache, episodic memory, transition logs.
+- Основные риски: несогласованность truth-state и digest cache, опасные destructive admin actions, утечка PII в артефактах.
+
+### Abuse Cases v1
+
+- auth bypass на protected endpoints
+- destructive misuse `POST /admin/reset-all` и `POST /admin/reclassify`
+- malformed / non-WAV / oversized ingest payloads
+- false-memory pollution через garbage/duplicate transcripts
+- overclaiming digest under fragmented or degraded context
+
 ---
 
 ## 🔐 Работа с секретами
@@ -165,6 +191,15 @@ pip audit  # или safety check
 ### Penetration Testing
 
 Рекомендуется внешний аудит безопасности перед production deploy.
+
+### Negative Test Contract
+
+Минимальный обязательный негативный набор:
+- protected endpoint без Bearer token -> `401`
+- protected endpoint с неверным Bearer token -> `401`
+- destructive admin endpoint без explicit confirm -> `400`
+- `POST /admin/reclassify` в режиме `dry_run` не меняет truth-state
+- ingest invalid payloads отклоняются до normal memory path
 
 ---
 

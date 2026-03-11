@@ -425,6 +425,32 @@ def test_admin_reset_all_rejects_missing_bearer_auth_when_api_key_enabled(tmp_pa
         object.__setattr__(settings, "API_KEY", old_api_key)
 
 
+def test_admin_reset_all_rejects_wrong_bearer_auth_when_api_key_enabled(tmp_path):
+    old_storage = settings.STORAGE_PATH
+    old_api_key = settings.API_KEY
+    old_limiter_enabled = app.state.limiter.enabled
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "API_KEY", "secret-test-key")
+    app.state.limiter.enabled = False
+
+    try:
+        client = TestClient(app)
+        resp = client.post(
+            "/admin/reset-all",
+            json={"confirm": "RESET_ALL_DATA"},
+            headers={"Authorization": "Bearer wrong-key"},
+        )
+        assert resp.status_code == 401
+        assert resp.headers["WWW-Authenticate"] == "Bearer"
+        assert resp.json()["error"] == "Invalid or missing API key"
+    finally:
+        app.state.limiter.enabled = old_limiter_enabled
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "API_KEY", old_api_key)
+
+
 def test_admin_reclassify_dry_run_does_not_mutate(tmp_path):
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables
@@ -477,6 +503,53 @@ def test_admin_reclassify_dry_run_does_not_mutate(tmp_path):
         assert row["quality_state"] == "trusted"
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_admin_reclassify_rejects_missing_bearer_auth_when_api_key_enabled(tmp_path):
+    old_storage = settings.STORAGE_PATH
+    old_api_key = settings.API_KEY
+    old_limiter_enabled = app.state.limiter.enabled
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "API_KEY", "secret-test-key")
+    app.state.limiter.enabled = False
+
+    try:
+        client = TestClient(app)
+        resp = client.post("/admin/reclassify", json={"mode": "dry_run", "date": "2026-03-10"})
+        assert resp.status_code == 401
+        assert resp.headers["WWW-Authenticate"] == "Bearer"
+        assert resp.json()["error"] == "Invalid or missing API key"
+    finally:
+        app.state.limiter.enabled = old_limiter_enabled
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "API_KEY", old_api_key)
+
+
+def test_pipeline_status_rejects_wrong_bearer_auth_when_api_key_enabled(tmp_path):
+    old_storage = settings.STORAGE_PATH
+    old_api_key = settings.API_KEY
+    old_limiter_enabled = app.state.limiter.enabled
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "API_KEY", "secret-test-key")
+    app.state.limiter.enabled = False
+
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/ingest/pipeline-status",
+            headers={"Authorization": "Bearer wrong-key"},
+        )
+        assert resp.status_code == 401
+        assert resp.headers["WWW-Authenticate"] == "Bearer"
+        assert resp.json()["error"] == "Invalid or missing API key"
+    finally:
+        app.state.limiter.enabled = old_limiter_enabled
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "API_KEY", old_api_key)
 
 
 def test_admin_reclassify_apply_updates_quality_state_and_digest_cache(tmp_path):
