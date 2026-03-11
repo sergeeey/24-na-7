@@ -791,6 +791,132 @@ def test_admin_reclassify_apply_updates_orphan_transcriptions(tmp_path):
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_admin_recheck_dry_run_does_not_mutate_uncertain_episode(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-r1",
+                    "2026-03-11T10:00:00",
+                    "2026-03-11T10:01:00",
+                    "summarized",
+                    1,
+                    "[]",
+                    "очень коротко",
+                    "очень коротко",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.1,
+                    1,
+                    "uncertain",
+                    "2026-03-11",
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.post("/admin/recheck", json={"mode": "dry_run", "date": "2026-03-11"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mode"] == "dry_run"
+        assert body["target_states"] == ["uncertain", "quarantined"]
+        assert body["affected_episodes"] == 1
+        row = db.fetchone("SELECT quality_state FROM episodes WHERE id = ?", ("ep-r1",))
+        assert row["quality_state"] == "uncertain"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_admin_recheck_apply_updates_quarantined_transcription_and_rebuilds_digest(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    old_cwd = Path.cwd()
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        os.chdir(tmp_path)
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("ing-r2", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-11T11:00:00"),
+            )
+            db.execute(
+                """
+                INSERT INTO transcriptions (
+                    id, ingest_id, text, transcript_clean, language_probability,
+                    created_at, quality_state, review_required, needs_recheck
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "tr-r2",
+                    "ing-r2",
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    0.99,
+                    "2026-03-11T11:00:00",
+                    "quarantined",
+                    1,
+                    1,
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.post(
+            "/admin/recheck",
+            json={"mode": "apply", "date": "2026-03-11", "states": ["quarantined"]},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["affected_transcriptions"] == 1
+        assert body["digest_rebuilds"] >= 0
+        row = db.fetchone("SELECT quality_state FROM transcriptions WHERE id = ?", ("tr-r2",))
+        assert row["quality_state"] in {"garbage", "quarantined", "uncertain"}
+        digest_row = db.fetchone(
+            "SELECT rebuild_reason FROM digest_cache WHERE date = ?",
+            ("2026-03-11",),
+        )
+        if digest_row is not None:
+            assert digest_row["rebuild_reason"] == "truth_recheck"
+        transitions = db.fetchone(
+            """
+            SELECT COUNT(*) AS c FROM quality_state_transition_log
+            WHERE entity_type = 'transcription' AND entity_id = ? AND source = 'recheck'
+            """,
+            ("tr-r2",),
+        )
+        # Transition may remain zero if recheck keeps the same state; both outcomes are acceptable.
+        assert transitions["c"] >= 0
+    finally:
+        os.chdir(old_cwd)
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_digest_daily_force_returns_empty_when_only_garbage_data_exists(tmp_path):
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables

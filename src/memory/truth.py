@@ -585,3 +585,109 @@ def reclassify_episodes_for_range(
             1 for proposal in transcription_proposals if proposal["old_state"] != proposal["new_state"]
         ),
     }
+
+
+def recheck_non_trusted_for_range(
+    db_path: Path,
+    *,
+    start_day: str,
+    end_day: str,
+    apply_changes: bool,
+    target_states: tuple[str, ...] = ("uncertain", "quarantined"),
+) -> dict[str, Any]:
+    """Selective second-pass for already non-trusted items."""
+    ensure_ingest_tables(db_path)
+    db = get_reflexio_db(db_path)
+    allowed_states = tuple(state for state in target_states if state in QUALITY_STATES and state != "trusted")
+    if not allowed_states:
+        allowed_states = ("uncertain", "quarantined")
+    state_placeholders = ",".join("?" for _ in allowed_states)
+
+    episode_rows = db.fetchall(
+        f"""
+        SELECT id, day_key, quality_state
+        FROM episodes
+        WHERE day_key BETWEEN ? AND ?
+          AND quality_state IN ({state_placeholders})
+        ORDER BY day_key ASC, started_at ASC
+        """,
+        (start_day, end_day, *allowed_states),
+    )
+    proposals: list[dict[str, Any]] = []
+    transcription_proposals: list[dict[str, Any]] = []
+    affected_days: set[str] = set()
+    changed_episode_ids: set[str] = set()
+    for row in episode_rows:
+        truth = evaluate_episode_truth(db_path, row["id"])
+        if not truth:
+            continue
+        proposals.append(
+            {
+                "episode_id": row["id"],
+                "day_key": row["day_key"],
+                "old_state": row["quality_state"] or "trusted",
+                "new_state": truth["quality_state"],
+                "reason_codes": _reason_codes(truth["quality_reasons_json"]),
+            }
+        )
+        if (row["quality_state"] or "trusted") != truth["quality_state"]:
+            affected_days.add(row["day_key"])
+            changed_episode_ids.add(row["id"])
+            if apply_changes:
+                apply_episode_truth_state(db_path, row["id"], truth, source="recheck")
+
+    transcription_rows = db.fetchall(
+        f"""
+        SELECT t.id, t.episode_id, t.created_at, t.quality_state,
+               COALESCE(date(t.created_at), '') AS day_key
+        FROM transcriptions t
+        LEFT JOIN episodes e ON t.episode_id = e.id
+        WHERE date(t.created_at) BETWEEN ? AND ?
+          AND t.quality_state IN ({state_placeholders})
+          AND (
+              t.episode_id IS NULL
+              OR e.id IS NULL
+              OR e.status != 'summarized'
+              OR COALESCE(e.quality_state, 'trusted') != 'trusted'
+          )
+        ORDER BY t.created_at ASC
+        """,
+        (start_day, end_day, *allowed_states),
+    )
+    for row in transcription_rows:
+        truth = evaluate_transcription_truth(db_path, row["id"])
+        if not truth:
+            continue
+        transcription_proposals.append(
+            {
+                "transcription_id": row["id"],
+                "episode_id": row["episode_id"],
+                "day_key": row["day_key"],
+                "old_state": row["quality_state"] or "trusted",
+                "new_state": truth["quality_state"],
+                "reason_codes": _reason_codes(truth["quality_reasons_json"]),
+            }
+        )
+        if (row["quality_state"] or "trusted") != truth["quality_state"]:
+            if row["day_key"]:
+                affected_days.add(row["day_key"])
+            if apply_changes:
+                apply_transcription_truth_state(db_path, row["id"], truth, source="recheck")
+
+    return {
+        "episodes": proposals,
+        "transcriptions": transcription_proposals,
+        "affected_days": sorted(affected_days),
+        "state_counts": {
+            state: sum(1 for proposal in proposals if proposal["new_state"] == state)
+            for state in QUALITY_STATES
+        },
+        "transcription_state_counts": {
+            state: sum(1 for proposal in transcription_proposals if proposal["new_state"] == state)
+            for state in QUALITY_STATES
+        },
+        "changed_episode_count": len(changed_episode_ids),
+        "changed_transcription_count": sum(
+            1 for proposal in transcription_proposals if proposal["old_state"] != proposal["new_state"]
+        ),
+    }
