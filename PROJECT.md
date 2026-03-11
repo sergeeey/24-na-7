@@ -572,6 +572,103 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
 ---
 
+## Episodic Runbook
+
+### Как читать `pipeline-status`
+- `quality_counts`: truth-layer по эпизодам. Норма для рабочего дня — рост `trusted`, а не `garbage/quarantined`.
+- `day_thread_counts`: покрытие дневных сюжетов. Если trusted threads почти нет, день ещё не собран в осмысленные линии.
+- `memory_health.trusted_fraction`: доля trusted episodes среди всех quality-classified episodes.
+- `memory_health.review_fraction`: доля episodes, требующих review (`uncertain`, `garbage`, `quarantined`).
+- `memory_health.thread_coverage`: сколько summarized episodes уже покрыты trusted day threads.
+- `memory_health.digest_incomplete_context_total`: сколько дней сейчас отдаются как degraded/incomplete digest.
+- `slo_state`: компактный operational verdict. Это read-only индикатор, а не источник истины; источник истины — БД и truth-layer статусы.
+
+### Как отличать historical debt от active regression
+1. Сначала смотри свежий день против исторического дня.
+2. Если новый день даёт `trusted` episodes и trusted `day_threads`, а `slo_state` всё ещё `attention`, это почти всегда historical debt.
+3. Если свежий день сразу уходит в `garbage/quarantined` или не собирает `day_threads`, это active regression.
+
+### Текущие alert'ы и что с ними делать
+
+#### `low_trusted_fraction`
+- Сигнал: trusted episodes слишком мало относительно `garbage/quarantined`.
+- Частая причина: старые шумные дни после reclassify всё ещё участвуют в общей картине.
+- Сначала проверить:
+  - распределение `episodes.quality_state` по `day_key`
+  - есть ли свежие trusted episodes за текущий день
+- Безопасное действие:
+  - не ослаблять truth gate сразу
+  - сначала отделить historical debt от свежего потока
+
+#### `high_review_fraction`
+- Сигнал: слишком много episodes требуют review.
+- Частая причина: исторический шумный день, уже переведённый в `garbage/quarantined`.
+- Сначала проверить:
+  - какие дни дают основную массу `needs_review`
+- Безопасное действие:
+  - reclassify/rebuild только по конкретному дню
+  - не делать широкий reclassify всего диапазона без dry-run
+
+#### `episodes_quarantined_present`
+- Сигнал: в truth layer есть хотя бы один `episode.quality_state='quarantined'`.
+- Частая причина: contextual repeated-phrase или сильный contradiction case.
+- Сначала проверить:
+  - это свежий эпизод или historical debt
+  - есть ли transition log с `source='gate'` или `source='backfill'`
+- Безопасное действие:
+  - если это исторический долг, не трогать thresholds
+  - если это свежий день, проверять свежие транскрипты и quarantine reason
+
+#### `ingest_quarantine_present`
+- Сигнал: в `ingest_queue` есть `status='quarantined'`.
+- Частая причина: `repeated_phrase_pattern`.
+- Сначала проверить:
+  - последние quarantine rows
+  - `quarantine_reason`
+  - совпадает ли `quality_state` с `status`
+- Безопасное действие:
+  - если `status='quarantined'`, но `quality_state='trusted'`, нужен data backfill или кодовый sync fix
+  - если свежий quarantine корректно синхронизирован, это просто сигнал active noise filtering, не обязательно regression
+
+#### `low_day_thread_coverage`
+- Сигнал: summarized episodes ещё не собираются в trusted day threads.
+- Частая причина:
+  - мало trusted episodes
+  - day thread builder не находит достаточного overlap
+- Сначала проверить:
+  - `day_thread_counts`
+  - trusted episodes по текущему дню
+- Безопасное действие:
+  - не расширять thread grouping агрессивно, пока truth layer ещё тонкий
+  - сначала поднять долю trusted episodes
+
+#### `degraded_digest_present`
+- Сигнал: есть хотя бы один день, который отдаётся как degraded fallback.
+- Частая причина: день без trusted summarized episodes, но с допустимым transcript fallback.
+- Сначала проверить:
+  - какой именно `date` в `digest_cache` имеет `degraded=true`
+  - это исторический день или текущий
+- Безопасное действие:
+  - если это historical debt, просто зафиксировать как known degraded day
+  - если это свежий день, расследовать truth/day-thread pipeline
+
+### Порядок triage
+1. `GET /ingest/pipeline-status`
+2. Проверить, свежий ли день даёт trusted episodes
+3. Проверить `day_thread_counts` и `digest_cache` по текущему дню
+4. Проверить `ingest_queue` quarantine reasons
+5. Только потом решать:
+   - threshold tuning
+   - reclassify/backfill
+   - кодовый фикс
+
+### Чего не делать
+- Не ослаблять truth gate только ради “красивого” `slo_state`
+- Не делать глобальный reclassify без `dry_run`
+- Не считать degraded digest ошибкой, пока не подтверждено, что это свежий день, а не historical debt
+
+---
+
 ## Дорожная карта
 
 ### v0.5.0 (следующий спринт)
