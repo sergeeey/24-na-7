@@ -750,6 +750,138 @@ def test_evaluate_transcription_truth_preserves_coherent_orphan_as_trusted(tmp_p
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_contextual_quarantine_syncs_ingest_and_truth_states(tmp_path):
+    from src.core.audio_processing import _mark_ingest_status, _mark_transcription_for_review
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO ingest_queue (
+                    id, filename, file_path, file_size, status, created_at, quality_state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ing-1",
+                    "a.wav",
+                    "/tmp/a.wav",
+                    10,
+                    "asr_pending",
+                    "2026-03-11T12:00:00",
+                    "trusted",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-11T12:00:00",
+                    "2026-03-11T12:00:30",
+                    "open",
+                    1,
+                    '["tr-1"]',
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.2,
+                    0,
+                    "trusted",
+                    "2026-03-11",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO transcriptions (
+                    id, ingest_id, episode_id, text, transcript_clean, created_at, quality_state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "tr-1",
+                    "ing-1",
+                    "ep-1",
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    "2026-03-11T12:00:00",
+                    "trusted",
+                ),
+            )
+
+        _mark_transcription_for_review(
+            db_path,
+            "tr-1",
+            "ep-1",
+            0.4,
+            quarantine_reason="repeated_phrase_pattern",
+        )
+        _mark_ingest_status(
+            db_path,
+            "ing-1",
+            "quarantined",
+            "repeated_phrase_pattern",
+            transport_status="server_acked",
+            processing_status="quarantined",
+            error_code="repeated_phrase_pattern",
+            quarantine_reason="repeated_phrase_pattern",
+            quality_score=0.4,
+            needs_recheck=True,
+            quality_state="quarantined",
+            quality_reasons_json=[
+                {
+                    "code": "REPEATED_PHRASE_PATTERN",
+                    "severity": "high",
+                    "score_delta": 0.0,
+                    "details": {"source": "contextual_transcription_risk"},
+                }
+            ],
+            review_required=True,
+        )
+
+        ingest_row = db.fetchone(
+            "SELECT status, quality_state, review_required FROM ingest_queue WHERE id = ?",
+            ("ing-1",),
+        )
+        transcription_row = db.fetchone(
+            "SELECT quality_state, review_required, needs_recheck FROM transcriptions WHERE id = ?",
+            ("tr-1",),
+        )
+        episode_row = db.fetchone(
+            "SELECT quality_state, review_required, needs_review FROM episodes WHERE id = ?",
+            ("ep-1",),
+        )
+
+        assert ingest_row["status"] == "quarantined"
+        assert ingest_row["quality_state"] == "quarantined"
+        assert ingest_row["review_required"] == 1
+        assert transcription_row["quality_state"] == "quarantined"
+        assert transcription_row["review_required"] == 1
+        assert transcription_row["needs_recheck"] == 1
+        assert episode_row["quality_state"] == "quarantined"
+        assert episode_row["review_required"] == 1
+        assert episode_row["needs_review"] == 1
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_run_enrichment_sync_uses_episode_text(tmp_path):
     from datetime import datetime
     from unittest.mock import patch

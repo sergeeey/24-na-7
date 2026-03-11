@@ -26,7 +26,11 @@ from src.memory.episodes import (
     get_episode_context,
     refresh_episode_from_event,
 )
-from src.memory.truth import apply_episode_truth_state, evaluate_episode_truth
+from src.memory.truth import (
+    apply_episode_truth_state,
+    apply_transcription_truth_state,
+    evaluate_episode_truth,
+)
 from src.memory.semantic_memory import consolidate_to_memory_node, ensure_semantic_memory_tables
 from src.security.privacy_pipeline import apply_privacy_mode
 from src.storage.db import get_reflexio_db
@@ -155,6 +159,9 @@ def _mark_ingest_status(
     quarantine_reason: str | None = None,
     quality_score: float | None = None,
     needs_recheck: bool | None = None,
+    quality_state: str | None = None,
+    quality_reasons_json: list[dict[str, Any]] | None = None,
+    review_required: bool | None = None,
 ) -> None:
     try:
         db = get_reflexio_db(db_path)
@@ -170,7 +177,10 @@ def _mark_ingest_status(
                     error_code=COALESCE(?, error_code),
                     quarantine_reason=COALESCE(?, quarantine_reason),
                     quality_score=COALESCE(?, quality_score),
-                    needs_recheck=COALESCE(?, needs_recheck)
+                    needs_recheck=COALESCE(?, needs_recheck),
+                    quality_state=COALESCE(?, quality_state),
+                    quality_reasons_json=COALESCE(?, quality_reasons_json),
+                    review_required=COALESCE(?, review_required)
                 WHERE id=?
                 """,
                 (
@@ -183,6 +193,9 @@ def _mark_ingest_status(
                     quarantine_reason,
                     quality_score,
                     None if needs_recheck is None else int(needs_recheck),
+                    quality_state,
+                    None if quality_reasons_json is None else json.dumps(quality_reasons_json),
+                    None if review_required is None else int(review_required),
                     ingest_id,
                 ),
             )
@@ -340,24 +353,46 @@ def _mark_transcription_for_review(
     transcription_id: str,
     episode_id: str | None,
     quality_score: float,
+    *,
+    quarantine_reason: str | None = None,
 ) -> None:
-    db = get_reflexio_db(db_path)
-    with db.transaction():
-        db.execute(
-            """
-            UPDATE transcriptions
-            SET quality_score = ?,
-                needs_recheck = 1,
-                garbage_flag = 1
-            WHERE id = ?
-            """,
-            (quality_score, transcription_id),
+    reason_code = (quarantine_reason or "contextual_risk").upper()
+    reasons = [
+        {
+            "code": reason_code,
+            "severity": "high",
+            "score_delta": 0.0,
+            "details": {"source": "contextual_transcription_risk"},
+        }
+    ]
+    truth = {
+        "quality_state": "quarantined",
+        "quality_score": quality_score,
+        "quality_reasons_json": reasons,
+        "review_required": True,
+        "needs_recheck": True,
+        "evidence_strength": quality_score,
+        "instability_markers": {
+            "context_instability_score": round(max(0.0, 1.0 - quality_score), 3),
+            "episode_instability": True,
+            "day_context_fragility": False,
+            "turning_point": False,
+            "mode_shift": True,
+        },
+    }
+    apply_transcription_truth_state(
+        db_path,
+        transcription_id,
+        truth,
+        source="contextual_quarantine",
+    )
+    if episode_id:
+        apply_episode_truth_state(
+            db_path,
+            episode_id,
+            truth,
+            source="contextual_quarantine",
         )
-        if episode_id:
-            db.execute(
-                "UPDATE episodes SET needs_review = 1 WHERE id = ?",
-                (episode_id,),
-            )
 
 
 def _apply_episode_truth_gate(
@@ -896,7 +931,21 @@ def process_audio_from_artifact_sync(
                 result["quality_score"] = quality_score
                 result["needs_recheck"] = True
                 result["garbage_flag"] = True
-                _mark_transcription_for_review(db_path, transcription_id, episode_id, quality_score)
+                quarantine_reasons = [
+                    {
+                        "code": (quarantine_reason or "contextual_risk").upper(),
+                        "severity": "high",
+                        "score_delta": 0.0,
+                        "details": {"source": "contextual_transcription_risk"},
+                    }
+                ]
+                _mark_transcription_for_review(
+                    db_path,
+                    transcription_id,
+                    episode_id,
+                    quality_score,
+                    quarantine_reason=quarantine_reason,
+                )
                 _mark_ingest_status(
                     db_path,
                     ingest_id,
@@ -908,6 +957,9 @@ def process_audio_from_artifact_sync(
                     quarantine_reason=quarantine_reason,
                     quality_score=quality_score,
                     needs_recheck=True,
+                    quality_state="quarantined",
+                    quality_reasons_json=quarantine_reasons,
+                    review_required=True,
                 )
                 if delete_audio_after:
                     file_path.unlink(missing_ok=True)
@@ -1360,7 +1412,21 @@ async def process_audio_bytes(
                 result["quality_score"] = quality_score
                 result["needs_recheck"] = True
                 result["garbage_flag"] = True
-                _mark_transcription_for_review(db_path, transcription_id, episode_id, quality_score)
+                quarantine_reasons = [
+                    {
+                        "code": (quarantine_reason or "contextual_risk").upper(),
+                        "severity": "high",
+                        "score_delta": 0.0,
+                        "details": {"source": "contextual_transcription_risk"},
+                    }
+                ]
+                _mark_transcription_for_review(
+                    db_path,
+                    transcription_id,
+                    episode_id,
+                    quality_score,
+                    quarantine_reason=quarantine_reason,
+                )
                 _mark_ingest_status(
                     db_path,
                     ingest_id,
@@ -1372,6 +1438,9 @@ async def process_audio_bytes(
                     quarantine_reason=quarantine_reason,
                     quality_score=quality_score,
                     needs_recheck=True,
+                    quality_state="quarantined",
+                    quality_reasons_json=quarantine_reasons,
+                    review_required=True,
                 )
                 if delete_audio_after:
                     dest_path.unlink(missing_ok=True)
