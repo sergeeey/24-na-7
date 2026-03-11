@@ -93,6 +93,36 @@ def _normalize_people(items: list[Any]) -> list[str]:
     return out
 
 
+def _rank_strings(items: list[Any], limit: int = 5) -> list[str]:
+    counts: dict[str, int] = {}
+    canonical: dict[str, str] = {}
+    first_seen: dict[str, int] = {}
+    for index, item in enumerate(items):
+        value = str(item or "").strip()
+        if not value:
+            continue
+        key = value.casefold()
+        counts[key] = counts.get(key, 0) + 1
+        canonical.setdefault(key, value)
+        first_seen.setdefault(key, index)
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], first_seen[pair[0]], pair[0]))
+    return [canonical[key] for key, _ in ranked[:limit]]
+
+
+def _merge_thread_summary(summaries: list[Any], topics: list[Any], participants: list[Any]) -> str:
+    ranked_summaries = _rank_strings(summaries, limit=3)
+    if ranked_summaries:
+        return " ".join(ranked_summaries).strip()
+    ranked_topics = _rank_strings(topics, limit=2)
+    ranked_participants = _rank_strings(participants, limit=2)
+    parts: list[str] = []
+    if ranked_topics:
+        parts.append("Темы: " + ", ".join(ranked_topics))
+    if ranked_participants:
+        parts.append("Участники: " + ", ".join(ranked_participants))
+    return ". ".join(parts).strip()
+
+
 def _overlap_score(left: set[str], right: set[str]) -> float:
     if not left or not right:
         return 0.0
@@ -795,6 +825,7 @@ def rebuild_long_threads_for_window(db_path: Path, anchor_day_key: str, lookback
                 best_scores = scores
         if best_thread and best_scores:
             best_thread["day_thread_ids"].append(candidate["id"])
+            best_thread["day_keys"].append(candidate["day_key"])
             best_thread["topics"].extend(candidate["topics"])
             best_thread["participants"].extend(candidate["participants"])
             best_thread["commitments"].extend(candidate["commitments"])
@@ -811,6 +842,7 @@ def rebuild_long_threads_for_window(db_path: Path, anchor_day_key: str, lookback
                     "id": str(uuid.uuid4()),
                     "thread_key": str(uuid.uuid4()),
                     "day_thread_ids": [candidate["id"]],
+                    "day_keys": [candidate["day_key"]],
                     "topics": list(candidate["topics"]),
                     "participants": list(candidate["participants"]),
                     "commitments": list(candidate["commitments"]),
@@ -842,9 +874,9 @@ def rebuild_long_threads_for_window(db_path: Path, anchor_day_key: str, lookback
                 status = "dormant"
             elif abs((anchor_dt.date() - datetime.fromisoformat(thread["last_seen_at"]).date()).days) > LONG_THREAD_ACTIVE_DAYS:
                 status = "dormant"
-            summary = " ".join(thread["summaries"][:3]).strip()
-            topics = list(dict.fromkeys([topic for topic in thread["topics"] if topic]))
-            participants = _normalize_people(thread["participants"])
+            summary = _merge_thread_summary(thread["summaries"], thread["topics"], thread["participants"])
+            topics = _rank_strings(thread["topics"], limit=5)
+            participants = _rank_strings(_normalize_people(thread["participants"]), limit=5)
             db.execute(
                 """
                 INSERT INTO long_threads (
@@ -979,4 +1011,16 @@ def get_long_thread_details(db_path: Path, long_thread_id: str) -> dict[str, Any
 
     payload["day_threads"] = day_threads
     payload["episodes"] = episodes
+    payload["day_keys"] = [str(thread.get("day_key")) for thread in day_threads if str(thread.get("day_key") or "").strip()]
+    payload["top_topics"] = _rank_strings(payload["topics"], limit=3)
+    payload["top_participants"] = _rank_strings(payload["participants"], limit=3)
+    sorted_day_threads = sorted(day_threads, key=lambda item: str(item.get("day_key") or ""), reverse=True)
+    payload["latest_summary"] = next(
+        (
+            str(thread.get("summary") or "").strip()
+            for thread in sorted_day_threads
+            if str(thread.get("summary") or "").strip()
+        ),
+        str(payload.get("summary") or "").strip(),
+    )
     return payload

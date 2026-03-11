@@ -227,14 +227,18 @@ async def query_threads(
                         "long_thread_id": details["id"],
                         "thread_key": details.get("thread_key"),
                         "summary": details.get("summary", ""),
+                        "latest_summary": details.get("latest_summary", details.get("summary", "")),
                         "continuity_score": float(details.get("continuity_score") or 0.0),
                         "first_seen_at": details.get("first_seen_at"),
                         "last_seen_at": details.get("last_seen_at"),
                         "status": details.get("status", "active"),
                         "day_count": len(day_threads),
                         "day_thread_ids": details.get("day_thread_ids", []),
+                        "day_keys": details.get("day_keys", []),
                         "participants": participants,
                         "topics": topics,
+                        "top_participants": details.get("top_participants", participants[:3]),
+                        "top_topics": details.get("top_topics", topics[:3]),
                     }
                 )
 

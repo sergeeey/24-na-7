@@ -337,6 +337,9 @@ def test_long_threads_group_related_day_threads_across_days(tmp_path):
         assert len(long_threads) == 1
         assert long_threads[0]["status"] == "active"
         assert json.loads(long_threads[0]["day_thread_ids_json"]) == ["dt-1", "dt-2"]
+        assert json.loads(long_threads[0]["participants_json"]) == ["Марат"]
+        assert json.loads(long_threads[0]["topics_json"]) == ["бюджет", "проект"]
+        assert "обсуждение бюджета проекта" in long_threads[0]["summary"]
         day_threads = get_day_threads_for_day(db_path, "2026-03-10")
         assert day_threads[0]["long_thread_key"] == long_threads[0]["id"]
     finally:
@@ -493,6 +496,10 @@ def test_get_long_thread_details_expands_day_threads_and_episodes(tmp_path):
         assert details["id"] == "lt-1"
         assert details["participants"] == ["Айнур"]
         assert details["topics"] == ["курсы"]
+        assert details["top_participants"] == ["Айнур"]
+        assert details["top_topics"] == ["курсы"]
+        assert details["day_keys"] == ["2026-03-10"]
+        assert details["latest_summary"] == "линия про курсы"
         assert len(details["day_threads"]) == 1
         assert details["day_threads"][0]["id"] == "dt-1"
         assert len(details["episodes"]) == 1

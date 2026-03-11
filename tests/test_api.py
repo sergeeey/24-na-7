@@ -1075,6 +1075,10 @@ def test_query_threads_returns_trusted_long_thread_with_filters(tmp_path):
         assert thread["day_count"] == 1
         assert "Марат" in thread["participants"]
         assert "бюджет" in thread["topics"]
+        assert thread["top_participants"] == ["Марат"]
+        assert thread["top_topics"] == ["бюджет", "Q2"]
+        assert thread["day_keys"] == ["2026-03-10"]
+        assert thread["latest_summary"] == "обсуждение бюджета"
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
