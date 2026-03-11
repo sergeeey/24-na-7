@@ -16,6 +16,7 @@ Query Engine — 5 унифицированных тулов, каждый во�
 from __future__ import annotations
 
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -172,6 +173,90 @@ async def query_events(
         db_query_ms=timer.elapsed_ms,
         ui_hint=ui_hint,
         evidence_metadata=evidence_metadata,
+    )
+    return result.to_api_dict(include_evidence=include_evidence)
+
+
+@router.get("/threads", response_model=None)
+async def query_threads(
+    days_back: int = Query(30, ge=1, le=365, description="Последние N дней для continuity lines"),
+    topic: Optional[str] = Query(None, description="Фильтр по теме long thread"),
+    participant: Optional[str] = Query(None, description="Фильтр по участнику"),
+    status: Optional[str] = Query(None, pattern="^(active|dormant|resolved)$"),
+    limit: int = Query(20, ge=1, le=100),
+    include_evidence: bool = Query(False),
+) -> dict:
+    """Trusted continuity lines across recent days."""
+    with ToolTimer() as timer:
+        try:
+            from pathlib import Path
+
+            from src.memory.episodes import get_long_thread_details, get_long_threads
+            from src.utils.config import settings
+
+            db_path = Path(settings.STORAGE_PATH) / "reflexio.db"
+            cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days_back)
+            cutoff_key = cutoff_dt.date().isoformat()
+
+            rows = get_long_threads(db_path)
+            filtered: list[dict] = []
+            topic_filter = (topic or "").strip().lower()
+            participant_filter = (participant or "").strip().lower()
+            status_filter = (status or "").strip().lower()
+
+            for row in rows:
+                if status_filter and str(row.get("status") or "").lower() != status_filter:
+                    continue
+                if str(row.get("last_seen_at") or "") < cutoff_key:
+                    continue
+
+                details = get_long_thread_details(db_path, str(row["id"]))
+                if not details:
+                    continue
+
+                topics = [str(v) for v in details.get("topics", []) if str(v).strip()]
+                participants = [str(v) for v in details.get("participants", []) if str(v).strip()]
+                if topic_filter and not any(topic_filter in value.lower() for value in topics):
+                    continue
+                if participant_filter and not any(participant_filter in value.lower() for value in participants):
+                    continue
+
+                day_threads = details.get("day_threads", [])
+                filtered.append(
+                    {
+                        "long_thread_id": details["id"],
+                        "thread_key": details.get("thread_key"),
+                        "summary": details.get("summary", ""),
+                        "continuity_score": float(details.get("continuity_score") or 0.0),
+                        "first_seen_at": details.get("first_seen_at"),
+                        "last_seen_at": details.get("last_seen_at"),
+                        "status": details.get("status", "active"),
+                        "day_count": len(day_threads),
+                        "day_thread_ids": details.get("day_thread_ids", []),
+                        "participants": participants,
+                        "topics": topics,
+                    }
+                )
+
+            filtered = filtered[:limit]
+            evidence_ids = [
+                day_thread_id
+                for item in filtered
+                for day_thread_id in item.get("day_thread_ids", [])
+            ]
+            conf = single_confidence(len(filtered))
+
+        except Exception as e:
+            logger.error("query_threads_failed", error=str(e))
+            return ToolResult.error_result("query_threads", str(e)).to_api_dict()
+
+    result = ToolResult(
+        data={"threads": filtered, "total": len(filtered), "days_back": days_back},
+        evidence_ids=evidence_ids,
+        confidence=conf,
+        tool_name="query_threads",
+        db_query_ms=timer.elapsed_ms,
+        ui_hint=UIHint.TIMELINE,
     )
     return result.to_api_dict(include_evidence=include_evidence)
 

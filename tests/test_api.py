@@ -839,3 +839,160 @@ def test_digest_daily_force_returns_empty_when_only_garbage_data_exists(tmp_path
     finally:
         os.chdir(old_cwd)
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_query_threads_returns_trusted_long_thread_with_filters(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state,
+                    review_required, day_key, thread_key, long_thread_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T10:00:00",
+                    "2026-03-10T10:10:00",
+                    "summarized",
+                    1,
+                    '["tr-1"]',
+                    "обсуждали бюджет Q2 с Маратом",
+                    "обсуждали бюджет Q2 с Маратом",
+                    "бюджет с Маратом",
+                    '["бюджет","Q2"]',
+                    '["Марат"]',
+                    "[]",
+                    0.9,
+                    0,
+                    "trusted",
+                    0,
+                    "2026-03-10",
+                    "dt-1",
+                    "lt-1",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO day_threads (
+                    id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+                    commitments_json, topics_json, participants_json, carryover_candidate,
+                    long_thread_key, topic_overlap_score, participant_overlap_score,
+                    temporal_proximity_score, commitment_overlap_score, thread_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "dt-1",
+                    "2026-03-10",
+                    "budget",
+                    '["ep-1"]',
+                    "обсуждение бюджета",
+                    "",
+                    "[]",
+                    '["бюджет","Q2"]',
+                    '["Марат"]',
+                    1,
+                    "lt-1",
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0,
+                    0.9,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO long_threads (
+                    id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+                    participants_json, topics_json, status, summary, continuity_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "lt-1",
+                    "lt-key-1",
+                    "2026-03-10",
+                    "2026-03-10",
+                    '["dt-1"]',
+                    '["Марат"]',
+                    '["бюджет","Q2"]',
+                    "active",
+                    "линия обсуждений бюджета",
+                    0.8,
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.get(
+            "/query/threads",
+            params={"days_back": 30, "topic": "бюджет", "participant": "марат", "status": "active"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["tool"] == "query_threads"
+        assert body["data"]["total"] == 1
+        thread = body["data"]["threads"][0]
+        assert thread["long_thread_id"] == "lt-1"
+        assert thread["day_count"] == 1
+        assert "Марат" in thread["participants"]
+        assert "бюджет" in thread["topics"]
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_query_threads_returns_empty_for_non_matching_filters(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO long_threads (
+                    id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+                    participants_json, topics_json, status, summary, continuity_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "lt-2",
+                    "lt-key-2",
+                    "2026-03-10",
+                    "2026-03-10",
+                    "[]",
+                    '["Алия"]',
+                    '["найм"]',
+                    "active",
+                    "линия про найм",
+                    0.7,
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.get("/query/threads", params={"participant": "марат"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["data"]["total"] == 0
+        assert body["data"]["threads"] == []
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)

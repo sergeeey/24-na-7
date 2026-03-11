@@ -904,3 +904,79 @@ def get_long_threads(db_path: Path) -> list[dict[str, Any]]:
         """
     )
     return [dict(row) for row in rows]
+
+
+def get_long_thread_details(db_path: Path, long_thread_id: str) -> dict[str, Any] | None:
+    """Expand a long thread into linked day threads and episodes."""
+    ensure_ingest_tables(db_path)
+    db = get_reflexio_db(db_path)
+    row = db.fetchone(
+        """
+        SELECT id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+               participants_json, topics_json, status, summary, continuity_score
+        FROM long_threads
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (long_thread_id,),
+    )
+    if not row:
+        return None
+
+    payload = dict(row)
+    day_thread_ids = [str(v) for v in _safe_json_list(payload.get("day_thread_ids_json")) if str(v).strip()]
+    payload["day_thread_ids"] = day_thread_ids
+    payload["participants"] = _normalize_people(_safe_json_list(payload.get("participants_json")))
+    payload["topics"] = [str(v) for v in _safe_json_list(payload.get("topics_json")) if str(v).strip()]
+
+    day_threads: list[dict[str, Any]] = []
+    episode_ids: list[str] = []
+    for day_thread_id in day_thread_ids:
+        thread_row = db.fetchone(
+            """
+            SELECT id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+                   commitments_json, topics_json, participants_json, carryover_candidate,
+                   long_thread_key, topic_overlap_score, participant_overlap_score,
+                   temporal_proximity_score, commitment_overlap_score, thread_confidence
+            FROM day_threads
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (day_thread_id,),
+        )
+        if not thread_row:
+            continue
+        thread_payload = dict(thread_row)
+        thread_payload["episode_ids"] = [str(v) for v in _safe_json_list(thread_payload.get("episode_ids_json")) if str(v).strip()]
+        thread_payload["topics"] = [str(v) for v in _safe_json_list(thread_payload.get("topics_json")) if str(v).strip()]
+        thread_payload["participants"] = _normalize_people(_safe_json_list(thread_payload.get("participants_json")))
+        thread_payload["commitments"] = _safe_json_list(thread_payload.get("commitments_json"))
+        day_threads.append(thread_payload)
+        for episode_id in thread_payload["episode_ids"]:
+            if episode_id not in episode_ids:
+                episode_ids.append(episode_id)
+
+    episodes: list[dict[str, Any]] = []
+    for episode_id in episode_ids:
+        episode_row = db.fetchone(
+            """
+            SELECT id, started_at, ended_at, status, summary, clean_text,
+                   topics_json, participants_json, commitments_json, day_key,
+                   thread_key, long_thread_key, quality_state
+            FROM episodes
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (episode_id,),
+        )
+        if not episode_row:
+            continue
+        episode_payload = dict(episode_row)
+        episode_payload["topics"] = [str(v) for v in _safe_json_list(episode_payload.get("topics_json")) if str(v).strip()]
+        episode_payload["participants"] = _normalize_people(_safe_json_list(episode_payload.get("participants_json")))
+        episode_payload["commitments"] = _safe_json_list(episode_payload.get("commitments_json"))
+        episodes.append(episode_payload)
+
+    payload["day_threads"] = day_threads
+    payload["episodes"] = episodes
+    return payload

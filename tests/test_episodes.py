@@ -392,6 +392,115 @@ def test_long_threads_exclude_low_confidence_day_threads(tmp_path):
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_get_long_thread_details_expands_day_threads_and_episodes(tmp_path):
+    from src.memory.episodes import get_long_thread_details
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state,
+                    review_required, day_key, thread_key, long_thread_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:05:00",
+                    "summarized",
+                    1,
+                    '["tr-1"]',
+                    "обсуждали курсы с Айнур",
+                    "обсуждали курсы с Айнур",
+                    "про курсы",
+                    '["курсы"]',
+                    '["Айнур"]',
+                    '["созвониться"]',
+                    0.9,
+                    0,
+                    "trusted",
+                    0,
+                    "2026-03-10",
+                    "dt-1",
+                    "lt-1",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO day_threads (
+                    id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+                    commitments_json, topics_json, participants_json, carryover_candidate,
+                    long_thread_key, topic_overlap_score, participant_overlap_score,
+                    temporal_proximity_score, commitment_overlap_score, thread_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "dt-1",
+                    "2026-03-10",
+                    "courses",
+                    '["ep-1"]',
+                    "линия про курсы",
+                    "",
+                    '["созвониться"]',
+                    '["курсы"]',
+                    '["Айнур"]',
+                    1,
+                    "lt-1",
+                    0.8,
+                    0.9,
+                    1.0,
+                    0.8,
+                    0.85,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO long_threads (
+                    id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+                    participants_json, topics_json, status, summary, continuity_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "lt-1",
+                    "lt-key-1",
+                    "2026-03-10",
+                    "2026-03-10",
+                    '["dt-1"]',
+                    '["Айнур"]',
+                    '["курсы"]',
+                    "active",
+                    "долгая линия про курсы",
+                    0.8,
+                ),
+            )
+
+        details = get_long_thread_details(db_path, "lt-1")
+        assert details is not None
+        assert details["id"] == "lt-1"
+        assert details["participants"] == ["Айнур"]
+        assert details["topics"] == ["курсы"]
+        assert len(details["day_threads"]) == 1
+        assert details["day_threads"][0]["id"] == "dt-1"
+        assert len(details["episodes"]) == 1
+        assert details["episodes"][0]["id"] == "ep-1"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_digest_generator_prefers_episode_units(tmp_path):
     from src.digest.generator import DigestGenerator
     from src.storage.db import get_reflexio_db
