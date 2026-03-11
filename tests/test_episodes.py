@@ -508,6 +508,68 @@ def test_get_long_thread_details_expands_day_threads_and_episodes(tmp_path):
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_refresh_episode_from_event_uses_fallback_topics_when_enrichment_is_sparse(tmp_path):
+    from src.enrichment.schema import StructuredEvent
+    from src.memory.episodes import attach_transcription_to_episode, refresh_episode_from_event, get_episodes_for_day, rebuild_day_threads_for_day, rebuild_long_threads_for_window, get_long_threads
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at, quality_state) VALUES (?, ?, ?, ?, ?, ?)",
+                ("tr-1", "ing-1", "обсуждали бюджет проекта и сроки релиза", "обсуждали бюджет проекта и сроки релиза", "2026-03-10T12:00:00", "trusted"),
+            )
+
+        episode_id = attach_transcription_to_episode(db_path, "tr-1")
+        event = StructuredEvent(
+            id="evt-1",
+            transcription_id="tr-1",
+            timestamp="2026-03-10T12:00:00",
+            text="обсуждали бюджет проекта и сроки релиза",
+            summary="обсуждение бюджета проекта и сроков релиза",
+            topics=[],
+            speakers=[],
+            decisions=[],
+            tasks=[],
+            commitments=[],
+            emotions=[],
+            sentiment="neutral",
+            urgency="low",
+            enrichment_confidence=0.9,
+        )
+        refreshed_id = refresh_episode_from_event(db_path, "tr-1", event)
+        assert refreshed_id == episode_id
+
+        episodes = get_episodes_for_day(db_path, "2026-03-10")
+        assert len(episodes) == 1
+        assert episodes[0]["topics_json"] != "[]"
+        assert "бюджет" in json.loads(episodes[0]["topics_json"])
+
+        with db.transaction():
+            db.execute("UPDATE episodes SET status = 'summarized' WHERE id = ?", (episode_id,))
+        rebuild_day_threads_for_day(db_path, "2026-03-10")
+        rebuild_long_threads_for_window(db_path, "2026-03-10")
+        long_threads = get_long_threads(db_path)
+        assert len(long_threads) == 1
+        assert "бюджет" in json.loads(long_threads[0]["topics_json"])
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_digest_generator_prefers_episode_units(tmp_path):
     from src.digest.generator import DigestGenerator
     from src.storage.db import get_reflexio_db

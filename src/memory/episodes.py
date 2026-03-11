@@ -77,6 +77,10 @@ def _topic_tokens(*values: str | None) -> set[str]:
     return tokens
 
 
+def _fallback_topics_from_text(*values: str | None, limit: int = 5) -> list[str]:
+    return _rank_strings(list(_topic_tokens(*values)), limit=limit)
+
+
 def _normalize_people(items: list[Any]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -600,6 +604,8 @@ def refresh_episode_from_event(db_path: Path, transcription_id: str, event: Any)
     clean_text = "\n".join(
         filter(None, [current["clean_text"], getattr(event, "text", "") or ""])
     ).strip()
+    if not merged_topics:
+        merged_topics = _fallback_topics_from_text(summary, clean_text)
 
     with db.transaction():
         db.execute(
