@@ -18,6 +18,20 @@
 
 ---
 
+## Текущее состояние (после карантина и гигиены)
+
+**Reflexio** — бэкенд персональной «цифровой памяти» по речи: пассивная запись с телефона/ПК → транскрипция → обогащение (темы, эмоции, задачи) → хранение → дневной дайджест и единый вопрос-ответ через **One Interface** (`POST /ask`). Продакшен (Beta): VPS reflexio247.duckdns.org, Caddy + SSL, FastAPI, SQLite/SQLCipher, Redis, APScheduler. Клиент: Android (Kotlin, Jetpack Compose) — VAD, WebSocket-стрим, экраны Спросить | Запись | Итог | Аналитика | Голос.
+
+**Что доработали:** (1) Декомпозиция `main.py`: lifecycle вынесен в `src/core/bootstrap.py`, DI — в `src/api/dependencies.py`. (2) Карантин R&D: пакет `src/experimental/` (voice_agent, explainability), ядро не импортирует experimental. (3) Флаг `EXPERIMENTAL_VOICE_INTENT_ENABLED` — `/voice/intent` доступен только при включённом флаге. (4) Гигиена репо: `digests/` в .gitignore и сняты с отслеживания, runtime-артефакты зафиксированы.
+
+**Функции:** приём аудио (POST /ingest/audio, WebSocket /ws/ingest), единый пайплайн (SpeechFilter → ASR → enrichment → SQLite + vec), zero-retention и orphan sweep, POST /ask (Orchestrator, query_events, get_digest, get_person_insights), дайджест дня с кешем и precompute в 18:00, Social Graph и Balance Wheel, compliance (KZ GDPR), rate limits и permission gate. Experimental: /voice/intent при флаге и установленном voice_agent.
+
+**Структура backend:** api (main, dependencies, роутеры, middleware), core (bootstrap, orchestrator, tool_result, confidence, audio_processing), storage, asr, enrichment, digest, summarizer, llm, speaker, persongraph, balance, memory, experimental (voice_agent, explainability).
+
+**Версия/статус:** в коде /health отдаёт 0.2.0; документация 0.4.0/0.4.1. Импорт app, GET /health, тесты health+api, ruff по api/core/storage/utils — проходят.
+
+---
+
 ## Архитектура
 
 ```
