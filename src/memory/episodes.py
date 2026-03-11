@@ -157,6 +157,15 @@ def _score_episode_for_thread(candidate: dict[str, Any], episode: dict[str, Any]
 def _close_stale_episodes(db_path: Path, now: datetime) -> int:
     db = get_reflexio_db(db_path)
     cutoff = (now - timedelta(seconds=MERGE_WINDOW_SECONDS)).isoformat()
+    rows = db.fetchall(
+        """
+        SELECT id, day_key
+        FROM episodes
+        WHERE status='open' AND ended_at < ?
+        ORDER BY ended_at ASC
+        """,
+        (cutoff,),
+    )
     with db.transaction():
         result = db.execute(
             """
@@ -166,7 +175,16 @@ def _close_stale_episodes(db_path: Path, now: datetime) -> int:
             """,
             (cutoff,),
         )
-    return result.rowcount if hasattr(result, "rowcount") and result.rowcount is not None else 0
+    closed = result.rowcount if hasattr(result, "rowcount") and result.rowcount is not None else len(rows)
+    if closed:
+        logger.info(
+            "episodes_closed_stale",
+            count=closed,
+            cutoff=cutoff,
+            episode_ids=[row["id"] for row in rows[:10]],
+            day_keys=sorted({row["day_key"] for row in rows if row["day_key"]}),
+        )
+    return closed
 
 
 def close_stale_episodes(db_path: Path, now: datetime | None = None) -> int:
@@ -289,6 +307,13 @@ def finalize_closed_episodes(db_path: Path) -> int:
         finalized += 1
         day_key = _day_key(started_at)
         affected_days.add(day_key)
+        logger.info(
+            "episode_summarized",
+            episode_id=row["id"],
+            transcription_id=representative_transcription_id,
+            day_key=day_key,
+            duration_sec=round(duration_sec, 3),
+        )
 
     for day_key in sorted(affected_days):
         rebuild_day_threads_for_day(db_path, day_key)
@@ -407,6 +432,13 @@ def attach_transcription_to_episode(db_path: Path, transcription_id: str) -> str
                 ),
             )
             episode_id = chosen["id"]
+            logger.info(
+                "episode_extended",
+                episode_id=episode_id,
+                transcription_id=transcription_id,
+                source_count=len(transcription_ids),
+                day_key=day_key,
+            )
         else:
             episode_id = str(uuid.uuid4())
             db.execute(
@@ -429,6 +461,12 @@ def attach_transcription_to_episode(db_path: Path, transcription_id: str) -> str
                     1 if row["needs_recheck"] else 0,
                     day_key,
                 ),
+            )
+            logger.info(
+                "episode_created",
+                episode_id=episode_id,
+                transcription_id=transcription_id,
+                day_key=day_key,
             )
 
         db.execute(
@@ -614,6 +652,19 @@ def rebuild_day_threads_for_day(db_path: Path, day_key: str) -> None:
                     "UPDATE episodes SET thread_key = ? WHERE id = ?",
                     (thread_id, episode_id),
                 )
+    if threads or episodes:
+        trusted_threads = sum(
+            1 for thread in threads
+            if float(thread.get("thread_confidence") or 0.0) >= THREAD_TRUSTED_CONFIDENCE_THRESHOLD
+        )
+        logger.info(
+            "day_threads_rebuilt",
+            day_key=day_key,
+            episode_count=len(episodes),
+            thread_count=len(threads),
+            trusted_thread_count=trusted_threads,
+            low_confidence_thread_count=max(len(threads) - trusted_threads, 0),
+        )
 
 
 def get_day_threads_for_day(db_path: Path, day_key: str) -> list[dict[str, Any]]:

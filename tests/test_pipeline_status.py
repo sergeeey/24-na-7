@@ -86,6 +86,50 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
                         "2026-03-10",
                     ),
                 )
+            db.execute(
+                """
+                INSERT INTO day_threads (
+                    id, day_key, topic_cluster, episode_ids_json, summary,
+                    open_questions, commitments_json, carryover_candidate,
+                    topic_overlap_score, participant_overlap_score,
+                    temporal_proximity_score, commitment_overlap_score,
+                    thread_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "thread-1",
+                    "2026-03-10",
+                    "work",
+                    '["ep-trusted"]',
+                    "storyline",
+                    "",
+                    "[]",
+                    0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0,
+                    0.9,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO digest_cache (
+                    date, digest_json, generated_at, status,
+                    previous_digest_id, rebuild_reason, rebuilt_at, changed_source_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2026-03-10",
+                    '{"incomplete_context": true, "degraded": true}',
+                    "2026-03-10T13:00:00Z",
+                    "ready",
+                    None,
+                    None,
+                    None,
+                    0,
+                ),
+            )
 
         client = TestClient(app)
         response = client.get("/ingest/pipeline-status")
@@ -111,5 +155,13 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         assert payload["quality_counts"]["uncertain"] == 1
         assert payload["quality_counts"]["garbage"] == 1
         assert payload["quality_counts"]["quarantined"] == 1
+        assert payload["day_thread_counts"]["total"] == 1
+        assert payload["day_thread_counts"]["trusted"] == 1
+        assert payload["day_thread_counts"]["low_confidence"] == 0
+        assert payload["memory_health"]["trusted_fraction"] == 0.25
+        assert payload["memory_health"]["review_fraction"] == 0.75
+        assert payload["memory_health"]["thread_coverage"] == 0.5
+        assert payload["memory_health"]["digest_incomplete_context_total"] == 1
+        assert payload["memory_health"]["degraded_digest_candidate"] is True
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)

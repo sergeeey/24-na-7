@@ -315,6 +315,7 @@ def _log_transition(
 ) -> None:
     if old_state == new_state:
         return
+    reason_codes = _reason_codes(reasons)
     db.execute(
         """
         INSERT INTO quality_state_transition_log (
@@ -328,10 +329,19 @@ def _log_transition(
             entity_id,
             old_state,
             new_state,
-            json.dumps(_reason_codes(reasons)),
+            json.dumps(reason_codes),
             source,
             datetime.now(timezone.utc).isoformat(),
         ),
+    )
+    logger.info(
+        "quality_state_transition",
+        entity_type=entity_type,
+        entity_id=entity_id,
+        old_state=old_state,
+        new_state=new_state,
+        source=source,
+        reason_codes=reason_codes,
     )
 
 

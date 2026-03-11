@@ -1,4 +1,5 @@
 """Роутер для загрузки и обработки аудио."""
+import json
 import os
 from pathlib import Path
 
@@ -178,6 +179,31 @@ async def get_pipeline_status():
             "garbage": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'garbage'")[0],
             "quarantined": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'quarantined'")[0],
         }
+        digest_rows = db.fetchall("SELECT digest_json FROM digest_cache")
+        digest_incomplete_context_total = 0
+        for row in digest_rows:
+            try:
+                payload = json.loads(row["digest_json"] or "{}")
+            except Exception:
+                continue
+            if payload.get("incomplete_context") or payload.get("degraded"):
+                digest_incomplete_context_total += 1
+        trusted_total = quality_counts["trusted"]
+        review_total = quality_counts["uncertain"] + quality_counts["garbage"] + quality_counts["quarantined"]
+        quality_total = trusted_total + review_total
+        summarized_total = episode_counts["summarized"]
+        trusted_threads = day_thread_counts["trusted"]
+        memory_health = {
+            "trusted_fraction": round((trusted_total / quality_total), 3) if quality_total else 0.0,
+            "review_fraction": round((review_total / quality_total), 3) if quality_total else 0.0,
+            "thread_coverage": round((trusted_threads / summarized_total), 3) if summarized_total else 0.0,
+            "digest_incomplete_context_total": digest_incomplete_context_total,
+            "degraded_digest_candidate": bool(
+                digest_incomplete_context_total > 0
+                or quality_counts["uncertain"] > 0
+                or quality_counts["quarantined"] > 0
+            ),
+        }
     except Exception as e:
         logger.warning("pipeline_status_failed", error=str(e))
         return {
@@ -190,6 +216,13 @@ async def get_pipeline_status():
             "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
             "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
+            "memory_health": {
+                "trusted_fraction": 0.0,
+                "review_fraction": 0.0,
+                "thread_coverage": 0.0,
+                "digest_incomplete_context_total": 0,
+                "degraded_digest_candidate": False,
+            },
             "_error": str(e),
         }
 
@@ -203,6 +236,7 @@ async def get_pipeline_status():
         "episode_counts": episode_counts,
         "day_thread_counts": day_thread_counts,
         "quality_counts": quality_counts,
+        "memory_health": memory_health,
     }
 
 
