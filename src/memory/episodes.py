@@ -231,6 +231,7 @@ def finalize_closed_episodes(db_path: Path) -> int:
     )
 
     finalized = 0
+    affected_days: set[str] = set()
     for row in rows:
         transcription_ids = _safe_json_list(row["transcription_ids_json"])
         representative_transcription_id = (
@@ -286,6 +287,11 @@ def finalize_closed_episodes(db_path: Path) -> int:
                 (row["id"],),
             )
         finalized += 1
+        day_key = _day_key(started_at)
+        affected_days.add(day_key)
+
+    for day_key in sorted(affected_days):
+        rebuild_day_threads_for_day(db_path, day_key)
 
     return finalized
 

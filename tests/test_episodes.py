@@ -971,5 +971,12 @@ def test_finalize_closed_episodes_marks_summarized(tmp_path):
         assert current["version"] == 2
         previous = db.fetchone("SELECT is_current FROM structured_events WHERE id = ?", ("ev-1",))
         assert previous["is_current"] == 0
+        thread = db.fetchone(
+            "SELECT thread_confidence, episode_ids_json FROM day_threads WHERE day_key = ?",
+            ("2026-03-10",),
+        )
+        assert thread is not None
+        assert thread["thread_confidence"] >= 0.45
+        assert "ep-1" in thread["episode_ids_json"]
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
