@@ -287,6 +287,21 @@ ToolResult(
 - `memory_health.review_fraction` не должен устойчиво расти день-к-дню без расследования
 - всплеск `quality_counts.quarantined` или `ingest_queue.quarantine` требует проверки truth-layer и ASR gate
 
+### `slo_state` API summary
+
+`GET /ingest/pipeline-status` теперь возвращает компактный `slo_state`:
+
+- `status`
+  - `healthy`
+  - `degraded`
+  - `attention`
+- `alerts`
+  - например: `low_trusted_fraction`, `high_review_fraction`, `degraded_digest_present`
+- `beta_thresholds`
+  - текущие пороги beta-режима
+- `snapshot`
+  - минимальный срез, на котором основано решение
+
 ### Runbook order
 
 Если episodic loop деградирует, проверять в таком порядке:

@@ -19,6 +19,65 @@ limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
+def _build_slo_state(
+    *,
+    ingest_queue: dict[str, int],
+    episode_counts: dict[str, int],
+    day_thread_counts: dict[str, int],
+    quality_counts: dict[str, int],
+    memory_health: dict[str, float | int | bool],
+) -> dict[str, object]:
+    alerts: list[str] = []
+    trusted_fraction = float(memory_health.get("trusted_fraction", 0.0) or 0.0)
+    review_fraction = float(memory_health.get("review_fraction", 0.0) or 0.0)
+    thread_coverage = float(memory_health.get("thread_coverage", 0.0) or 0.0)
+    digest_incomplete = int(memory_health.get("digest_incomplete_context_total", 0) or 0)
+
+    if trusted_fraction < 0.5:
+        alerts.append("low_trusted_fraction")
+    if review_fraction > 0.5:
+        alerts.append("high_review_fraction")
+    if int(quality_counts.get("quarantined", 0)) > 0:
+        alerts.append("episodes_quarantined_present")
+    if int(ingest_queue.get("quarantine", 0)) > 0:
+        alerts.append("ingest_quarantine_present")
+    if int(episode_counts.get("summarized", 0)) > 0 and thread_coverage < 0.5:
+        alerts.append("low_day_thread_coverage")
+    if digest_incomplete > 0:
+        alerts.append("degraded_digest_present")
+
+    status = "healthy"
+    if alerts:
+        status = "degraded"
+    if any(
+        code in alerts
+        for code in (
+            "episodes_quarantined_present",
+            "ingest_quarantine_present",
+        )
+    ):
+        status = "attention"
+
+    return {
+        "status": status,
+        "alerts": alerts,
+        "beta_thresholds": {
+            "min_trusted_fraction": 0.5,
+            "max_review_fraction": 0.5,
+            "min_thread_coverage": 0.5,
+            "max_digest_incomplete_context_total": 0,
+        },
+        "snapshot": {
+            "trusted_fraction": trusted_fraction,
+            "review_fraction": review_fraction,
+            "thread_coverage": thread_coverage,
+            "digest_incomplete_context_total": digest_incomplete,
+            "episodes_summarized": int(episode_counts.get("summarized", 0)),
+            "day_threads_trusted": int(day_thread_counts.get("trusted", 0)),
+        },
+    }
+
+
 @router.post("/audio")
 @limiter.limit(RateLimitConfig.INGEST_AUDIO_LIMIT)
 async def ingest_audio(request: Request, response: Response, file: UploadFile = File(...)):
@@ -123,6 +182,31 @@ async def get_pipeline_status():
             "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
             "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
+            "memory_health": {
+                "trusted_fraction": 0.0,
+                "review_fraction": 0.0,
+                "thread_coverage": 0.0,
+                "digest_incomplete_context_total": 0,
+                "degraded_digest_candidate": False,
+            },
+            "slo_state": {
+                "status": "healthy",
+                "alerts": [],
+                "beta_thresholds": {
+                    "min_trusted_fraction": 0.5,
+                    "max_review_fraction": 0.5,
+                    "min_thread_coverage": 0.5,
+                    "max_digest_incomplete_context_total": 0,
+                },
+                "snapshot": {
+                    "trusted_fraction": 0.0,
+                    "review_fraction": 0.0,
+                    "thread_coverage": 0.0,
+                    "digest_incomplete_context_total": 0,
+                    "episodes_summarized": 0,
+                    "day_threads_trusted": 0,
+                },
+            },
         }
 
     db = get_reflexio_db(db_path)
@@ -204,6 +288,13 @@ async def get_pipeline_status():
                 or quality_counts["quarantined"] > 0
             ),
         }
+        slo_state = _build_slo_state(
+            ingest_queue=q,
+            episode_counts=episode_counts,
+            day_thread_counts=day_thread_counts,
+            quality_counts=quality_counts,
+            memory_health=memory_health,
+        )
     except Exception as e:
         logger.warning("pipeline_status_failed", error=str(e))
         return {
@@ -223,6 +314,24 @@ async def get_pipeline_status():
                 "digest_incomplete_context_total": 0,
                 "degraded_digest_candidate": False,
             },
+            "slo_state": {
+                "status": "healthy",
+                "alerts": [],
+                "beta_thresholds": {
+                    "min_trusted_fraction": 0.5,
+                    "max_review_fraction": 0.5,
+                    "min_thread_coverage": 0.5,
+                    "max_digest_incomplete_context_total": 0,
+                },
+                "snapshot": {
+                    "trusted_fraction": 0.0,
+                    "review_fraction": 0.0,
+                    "thread_coverage": 0.0,
+                    "digest_incomplete_context_total": 0,
+                    "episodes_summarized": 0,
+                    "day_threads_trusted": 0,
+                },
+            },
             "_error": str(e),
         }
 
@@ -237,6 +346,7 @@ async def get_pipeline_status():
         "day_thread_counts": day_thread_counts,
         "quality_counts": quality_counts,
         "memory_health": memory_health,
+        "slo_state": slo_state,
     }
 
 

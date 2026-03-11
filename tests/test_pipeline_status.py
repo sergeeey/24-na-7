@@ -163,5 +163,12 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         assert payload["memory_health"]["thread_coverage"] == 0.5
         assert payload["memory_health"]["digest_incomplete_context_total"] == 1
         assert payload["memory_health"]["degraded_digest_candidate"] is True
+        assert payload["slo_state"]["status"] == "attention"
+        assert "low_trusted_fraction" in payload["slo_state"]["alerts"]
+        assert "ingest_quarantine_present" in payload["slo_state"]["alerts"]
+        assert "degraded_digest_present" in payload["slo_state"]["alerts"]
+        assert payload["slo_state"]["beta_thresholds"]["min_trusted_fraction"] == 0.5
+        assert payload["slo_state"]["snapshot"]["episodes_summarized"] == 2
+        assert payload["slo_state"]["snapshot"]["day_threads_trusted"] == 1
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
