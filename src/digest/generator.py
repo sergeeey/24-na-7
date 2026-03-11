@@ -412,7 +412,7 @@ class DigestGenerator:
         return metrics
     
     def _get_recording_analyses_for_date(self, target_date: date) -> List[Dict]:
-        """Возвращает анализы записей (recording_analyses) за день по транскрипциям."""
+        """Возвращает анализы записей за день только для trusted транскрипций."""
         if not self.db_path.exists():
             return []
         db = get_reflexio_db(self.db_path)
@@ -424,6 +424,7 @@ class DigestGenerator:
                 FROM recording_analyses ra
                 INNER JOIN transcriptions t ON ra.transcription_id = t.id
                 WHERE t.created_at BETWEEN ? AND ?
+                  AND COALESCE(t.quality_state, 'trusted') = 'trusted'
                 ORDER BY t.created_at ASC
             """, (start_utc, end_utc))
             out = []
@@ -448,7 +449,7 @@ class DigestGenerator:
         Возвращает: date, summary_text, key_themes, emotions, actions, total_recordings, total_duration, repetitions.
         """
         transcriptions = self._get_digest_units(target_date)
-        analyses = self._get_recording_analyses_for_date(target_date)
+        analyses = self._get_recording_analyses_for_date(target_date) if transcriptions else []
         total_duration_sec = sum(t.get("duration", 0) or 0 for t in transcriptions)
         total_recordings = len(transcriptions)
         total_duration_str = f"{int(total_duration_sec // 60)}m {int(total_duration_sec % 60)}s" if total_duration_sec else "0m 0s"

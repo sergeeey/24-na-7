@@ -259,6 +259,55 @@ def test_digest_generator_falls_back_when_episode_not_finalized(tmp_path):
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_digest_generator_ignores_garbage_analyses_without_trusted_units(tmp_path):
+    from src.digest.generator import DigestGenerator
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                """
+                INSERT INTO transcriptions (
+                    id, ingest_id, text, transcript_clean, language_probability,
+                    created_at, quality_state, review_required
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("tr-1", "ing-1", "Роман Роман ты где Роман", "Роман Роман ты где Роман", 0.99, "2026-03-10T12:00:00", "garbage", 1),
+            )
+            db.execute(
+                """
+                INSERT INTO recording_analyses (
+                    id, transcription_id, summary, emotions, actions, topics, urgency, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("ra-1", "tr-1", "Шумный старый итог", "[]", "[]", "[\"шум\"]", "low", "2026-03-10T12:00:05"),
+            )
+
+        generator = DigestGenerator(db_path)
+        digest = generator.get_daily_digest_json(__import__("datetime").date(2026, 3, 10))
+        assert digest["total_recordings"] == 0
+        assert digest["episodes_used"] == 0
+        assert digest["summary_text"] == "Нет записей за день."
+        assert digest["source_unit"] == "transcription"
+        assert digest["evidence_strength"] == 0.0
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_contextual_transcription_risk_detects_repeated_neighbors(tmp_path):
     from src.core.audio_processing import _assess_contextual_transcription_risk
     from src.storage.db import get_reflexio_db

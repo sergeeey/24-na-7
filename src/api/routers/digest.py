@@ -10,6 +10,7 @@ from src.utils.logging import get_logger
 from src.digest.generator import DigestGenerator
 from src.digest.analyzer import InformationDensityAnalyzer
 from src.storage.db import get_reflexio_db
+from src.storage.ingest_persist import write_digest_cache
 
 logger = get_logger("api.digest")
 router = APIRouter(prefix="/digest", tags=["digest"])
@@ -36,6 +37,25 @@ def _get_cached_digest(target_date: str) -> dict | None:
     except Exception as e:
         logger.debug("digest_cache_read_failed", date=target_date, error=str(e))
     return None
+
+
+def _is_effectively_empty_digest(result: dict, parsed_date: date) -> bool:
+    """Определяет, есть ли у дайджеста достаточно trusted-контекста для обычного ответа."""
+    total_recordings = int(result.get("total_recordings") or 0)
+    episodes_used = int(result.get("episodes_used") or 0)
+    source_unit = result.get("source_unit") or "transcription"
+    degraded = bool(result.get("degraded"))
+    evidence_strength = float(result.get("evidence_strength") or 0.0)
+    summary_text = (result.get("summary_text") or "").strip()
+    if total_recordings <= 0:
+        return True
+    if source_unit == "episode" and episodes_used <= 0:
+        return True
+    if degraded and source_unit == "transcription" and evidence_strength <= 0.0:
+        return True
+    if summary_text.startswith("Нет записей за день"):
+        return True
+    return False
 
 
 @router.get("/daily")
@@ -69,10 +89,7 @@ async def get_digest_daily(
     try:
         generator = DigestGenerator()
         result = generator.get_daily_digest_json(parsed_date, user_id=user_id)
-        has_content = (result.get("total_recordings") or 0) > 0 or bool(
-            (result.get("summary_text") or "").strip()
-        )
-        if not has_content:
+        if _is_effectively_empty_digest(result, parsed_date):
             today = datetime.now().date()
             notice = (
                 "Пока нет записей за сегодня."
@@ -96,11 +113,22 @@ async def get_digest_daily(
         # Кешируем для следующих запросов
         try:
             db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
-            db.execute(
-                "INSERT OR REPLACE INTO digest_cache (date, digest_json, generated_at, status) VALUES (?, ?, ?, ?)",
-                (date, _json.dumps(result, ensure_ascii=False), datetime.now().isoformat(), "ready"),
+            previous = db.fetchone(
+                "SELECT generated_at FROM digest_cache WHERE date = ?",
+                (date,),
             )
-            db.conn.commit()
+            write_digest_cache(
+                settings.STORAGE_PATH / "reflexio.db",
+                day_key=date,
+                digest_json=_json.dumps(result, ensure_ascii=False),
+                status="ready",
+                previous_digest_id=(
+                    f"digest:{date}:{previous['generated_at']}" if previous and previous["generated_at"] else None
+                ),
+                rebuild_reason="digest_daily_force" if force else "digest_daily_live",
+                rebuilt_at=datetime.now().isoformat(),
+                changed_source_count=int(result.get("total_recordings") or 0),
+            )
         except Exception as e:
             logger.warning("digest_cache_write_failed", date=date, error=str(e))
         return result

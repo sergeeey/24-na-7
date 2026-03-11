@@ -537,3 +537,53 @@ def test_admin_reclassify_apply_updates_quality_state_and_digest_cache(tmp_path)
     finally:
         os.chdir(old_cwd)
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_digest_daily_force_returns_empty_when_only_garbage_data_exists(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    old_cwd = Path.cwd()
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        os.chdir(tmp_path)
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00"),
+            )
+            db.execute(
+                """
+                INSERT INTO transcriptions (
+                    id, ingest_id, text, transcript_clean, language_probability,
+                    created_at, quality_state, review_required
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("tr-1", "ing-1", "Роман Роман ты где Роман", "Роман Роман ты где Роман", 0.99, "2026-03-10T12:00:00", "garbage", 1),
+            )
+            db.execute(
+                """
+                INSERT INTO recording_analyses (
+                    id, transcription_id, summary, emotions, actions, topics, urgency, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("ra-1", "tr-1", "Шумный старый итог", "[]", "[]", "[\"шум\"]", "low", "2026-03-10T12:00:05"),
+            )
+
+        client = TestClient(app)
+        resp = client.get("/digest/daily", params={"date": "2026-03-10", "format": "json", "force": "true"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["_status"] == "empty"
+        assert body["total_recordings"] == 0
+        assert body["summary_text"] == ""
+    finally:
+        os.chdir(old_cwd)
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
