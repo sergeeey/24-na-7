@@ -19,6 +19,7 @@ USER_DATA_TABLES = (
     "digests",
     "facts",
     "recording_analyses",
+    "long_threads",
     "day_threads",
     "episodes",
     "quality_state_transition_log",

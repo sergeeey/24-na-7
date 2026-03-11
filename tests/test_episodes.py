@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from src.api.main import app
@@ -254,6 +256,138 @@ def test_day_threads_exclude_uncertain_episodes(tmp_path):
         rebuild_day_threads_for_day(db_path, "2026-03-10")
         threads = get_day_threads_for_day(db_path, "2026-03-10")
         assert threads == []
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_long_threads_group_related_day_threads_across_days(tmp_path):
+    from src.memory.episodes import rebuild_long_threads_for_window, get_day_threads_for_day, get_long_threads
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            for thread_id, day_key in [("dt-1", "2026-03-10"), ("dt-2", "2026-03-11")]:
+                db.execute(
+                    """
+                    INSERT INTO day_threads (
+                        id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+                        commitments_json, topics_json, participants_json, carryover_candidate,
+                        topic_overlap_score, participant_overlap_score, temporal_proximity_score,
+                        commitment_overlap_score, thread_confidence
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        thread_id,
+                        day_key,
+                        "бюджет",
+                        '["ep-1"]',
+                        "обсуждение бюджета проекта",
+                        "",
+                        '[{"text":"отправить таблицу"}]',
+                        '["бюджет","проект"]',
+                        '["Марат"]',
+                        1,
+                        1.0,
+                        1.0,
+                        0.9,
+                        1.0,
+                        0.95,
+                    ),
+                )
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state, day_key, thread_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-1",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:01:00",
+                    "summarized",
+                    1,
+                    "[]",
+                    "обсудили бюджет",
+                    "обсудили бюджет",
+                    "бюджет",
+                    '["бюджет"]',
+                    '["Марат"]',
+                    '[{"text":"отправить таблицу"}]',
+                    0.9,
+                    0,
+                    "trusted",
+                    "2026-03-10",
+                    "dt-1",
+                ),
+            )
+        rebuild_long_threads_for_window(db_path, "2026-03-11")
+        long_threads = get_long_threads(db_path)
+        assert len(long_threads) == 1
+        assert long_threads[0]["status"] == "active"
+        assert json.loads(long_threads[0]["day_thread_ids_json"]) == ["dt-1", "dt-2"]
+        day_threads = get_day_threads_for_day(db_path, "2026-03-10")
+        assert day_threads[0]["long_thread_key"] == long_threads[0]["id"]
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_long_threads_exclude_low_confidence_day_threads(tmp_path):
+    from src.memory.episodes import rebuild_long_threads_for_window, get_long_threads
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO day_threads (
+                    id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+                    commitments_json, topics_json, participants_json, carryover_candidate,
+                    topic_overlap_score, participant_overlap_score, temporal_proximity_score,
+                    commitment_overlap_score, thread_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "dt-1",
+                    "2026-03-10",
+                    "шум",
+                    '["ep-1"]',
+                    "сомнительная линия",
+                    "",
+                    "[]",
+                    '["шум"]',
+                    "[]",
+                    0,
+                    0.1,
+                    0.0,
+                    0.1,
+                    0.0,
+                    0.4,
+                ),
+            )
+        rebuild_long_threads_for_window(db_path, "2026-03-10")
+        assert get_long_threads(db_path) == []
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 

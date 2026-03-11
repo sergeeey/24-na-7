@@ -181,6 +181,7 @@ async def get_pipeline_status():
             "ingest_stage_counts": {},
             "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
             "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
+            "long_thread_counts": {"total": 0, "active": 0, "resolved": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
             "memory_health": {
                 "trusted_fraction": 0.0,
@@ -257,6 +258,11 @@ async def get_pipeline_status():
             "trusted": db.fetchone("SELECT COUNT(*) FROM day_threads WHERE thread_confidence >= 0.7")[0],
             "low_confidence": db.fetchone("SELECT COUNT(*) FROM day_threads WHERE thread_confidence < 0.7")[0],
         }
+        long_thread_counts = {
+            "total": db.fetchone("SELECT COUNT(*) FROM long_threads")[0],
+            "active": db.fetchone("SELECT COUNT(*) FROM long_threads WHERE status = 'active'")[0],
+            "resolved": db.fetchone("SELECT COUNT(*) FROM long_threads WHERE status = 'resolved'")[0],
+        }
         quality_counts = {
             "trusted": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'trusted'")[0],
             "uncertain": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'uncertain'")[0],
@@ -306,6 +312,7 @@ async def get_pipeline_status():
             "ingest_stage_counts": {},
             "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
             "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
+            "long_thread_counts": {"total": 0, "active": 0, "resolved": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
             "memory_health": {
                 "trusted_fraction": 0.0,
@@ -344,6 +351,7 @@ async def get_pipeline_status():
         "ingest_stage_counts": stage_counts,
         "episode_counts": episode_counts,
         "day_thread_counts": day_thread_counts,
+        "long_thread_counts": long_thread_counts,
         "quality_counts": quality_counts,
         "memory_health": memory_health,
         "slo_state": slo_state,

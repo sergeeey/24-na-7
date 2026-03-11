@@ -10,7 +10,7 @@ from src.utils.date_utils import resolve_date_range
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics
 from src.storage.ingest_persist import ensure_ingest_tables
-from src.memory.episodes import get_day_threads_for_day, get_episodes_for_day
+from src.memory.episodes import get_day_threads_for_day, get_episodes_for_day, get_long_threads as get_long_thread_rows
 from src.memory.core_memory import get_core_memory
 from src.memory.session_memory import get_session_memory
 
@@ -342,9 +342,41 @@ class DigestGenerator:
                     "_source_unit": "day_thread",
                     "_episode_count": len(episode_ids),
                     "_commitment_count": len(commitments),
+                    "long_thread_id": thread.get("long_thread_key"),
                 }
             )
         logger.info("day_threads_found", date=target_date.isoformat(), count=len(out))
+        return out
+
+    def get_long_threads(self, target_date: date) -> List[Dict]:
+        """Возвращает continuity lines, которые затрагивают доверенные day threads дня."""
+        if not self.db_path.parent.exists():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_ingest_tables(self.db_path)
+        if not self.db_path.exists():
+            logger.warning("database_not_found", db_path=str(self.db_path))
+            return []
+
+        day_key = target_date.isoformat()
+        db = get_reflexio_db(self.db_path)
+        out: List[Dict] = []
+        for thread in get_long_thread_rows(self.db_path):
+            if float(thread.get("continuity_score") or 0.0) < 0.5:
+                continue
+            day_thread_ids = json.loads(thread.get("day_thread_ids_json") or "[]")
+            if not day_thread_ids:
+                continue
+            placeholders = ",".join("?" for _ in day_thread_ids)
+            row = db.fetchone(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM day_threads
+                WHERE id IN ({placeholders}) AND day_key = ?
+                """,
+                (*day_thread_ids, day_key),
+            )
+            if row and int(row["count"] or 0) > 0:
+                out.append(dict(thread))
         return out
 
     def _get_digest_units(self, target_date: date) -> List[Dict]:
@@ -507,6 +539,7 @@ class DigestGenerator:
         total_duration_str = f"{int(total_duration_sec // 60)}m {int(total_duration_sec % 60)}s" if total_duration_sec else "0m 0s"
         thread_units = [item for item in transcriptions if item.get("_source_unit") == "day_thread"]
         thread_count = len(thread_units)
+        long_threads = self.get_long_threads(target_date) if thread_units else []
 
         key_themes: List[str] = []
         emotions: List[str] = []
@@ -655,6 +688,7 @@ class DigestGenerator:
         instability_markers = {
             "day_context_fragility": degraded,
             "trusted_fraction": round((len(trusted_units) / len(transcriptions)) if transcriptions else 0.0, 3),
+            "long_threads_present": len(long_threads),
         }
 
         return {
@@ -673,6 +707,7 @@ class DigestGenerator:
             "source_unit": transcriptions[0].get("_source_unit", "transcription") if transcriptions else "transcription",
             "episodes_used": sum(1 for item in transcriptions if item.get("_source_unit") == "episode"),
             "thread_count": thread_count,
+            "long_thread_count": len(long_threads),
             "day_thread_confidence": round(
                 (
                     sum(float(item.get("thread_confidence") or item.get("quality_score") or 0.0) for item in thread_units)

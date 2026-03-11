@@ -41,6 +41,8 @@ STOP_WORDS = {
 }
 THREAD_CONFIDENCE_THRESHOLD = 0.45
 THREAD_TRUSTED_CONFIDENCE_THRESHOLD = 0.7
+LONG_THREAD_CONFIDENCE_THRESHOLD = 0.5
+LONG_THREAD_ACTIVE_DAYS = 7
 
 
 def _parse_ts(value: str | None) -> datetime | None:
@@ -122,6 +124,22 @@ def _temporal_score(previous_end: datetime | None, current_start: datetime | Non
     return round(max(0.0, 1.0 - (delta / (4 * 3600))), 3)
 
 
+def _temporal_day_score(previous_day: str | None, current_day: str | None) -> float:
+    if not previous_day or not current_day:
+        return 0.0
+    try:
+        previous = datetime.fromisoformat(previous_day)
+        current = datetime.fromisoformat(current_day)
+    except ValueError:
+        return 0.0
+    delta_days = abs((current.date() - previous.date()).days)
+    if delta_days == 0:
+        return 1.0
+    if delta_days >= 30:
+        return 0.0
+    return round(max(0.0, 1.0 - (delta_days / 30)), 3)
+
+
 def _score_episode_for_thread(candidate: dict[str, Any], episode: dict[str, Any]) -> dict[str, float]:
     candidate_topics = _topic_tokens(candidate.get("clean_text"), candidate.get("summary"), json.dumps(candidate.get("topics", []), ensure_ascii=False))
     episode_topics = _topic_tokens(episode.get("clean_text"), episode.get("summary"), json.dumps(episode.get("topics", []), ensure_ascii=False))
@@ -151,6 +169,41 @@ def _score_episode_for_thread(candidate: dict[str, Any], episode: dict[str, Any]
         "temporal_proximity_score": round(temporal_proximity, 3),
         "commitment_overlap_score": round(commitment_overlap, 3),
         "thread_confidence": thread_confidence,
+    }
+
+
+def _score_day_thread_for_long_thread(candidate: dict[str, Any], thread: dict[str, Any]) -> dict[str, float]:
+    candidate_topics = _topic_tokens(
+        candidate.get("summary"),
+        json.dumps(candidate.get("topics", []), ensure_ascii=False),
+    )
+    thread_topics = _topic_tokens(
+        thread.get("summary"),
+        json.dumps(thread.get("topics", []), ensure_ascii=False),
+    )
+    topic_overlap = _overlap_score(candidate_topics, thread_topics)
+    participant_overlap = _overlap_score(
+        {p.lower() for p in candidate.get("participants", [])},
+        {p.lower() for p in thread.get("participants", [])},
+    )
+    commitment_overlap = _overlap_score(
+        _commitment_keys(candidate.get("commitments", [])),
+        _commitment_keys(thread.get("commitments", [])),
+    )
+    temporal_proximity = _temporal_day_score(candidate.get("last_day_key"), thread.get("day_key"))
+    continuity_score = round(
+        topic_overlap * 0.4
+        + participant_overlap * 0.3
+        + commitment_overlap * 0.2
+        + temporal_proximity * 0.1,
+        3,
+    )
+    return {
+        "topic_overlap_score": round(topic_overlap, 3),
+        "participant_overlap_score": round(participant_overlap, 3),
+        "temporal_proximity_score": round(temporal_proximity, 3),
+        "commitment_overlap_score": round(commitment_overlap, 3),
+        "continuity_score": continuity_score,
     }
 
 
@@ -621,16 +674,18 @@ def rebuild_day_threads_for_day(db_path: Path, day_key: str) -> None:
             topic_cluster = topic_candidates[0] if topic_candidates else "general"
             summary = " ".join(thread["summaries"][:3]).strip()
             commitments_json = json.dumps(thread["commitments"])
+            topics_json = json.dumps(list(dict.fromkeys(topic_candidates)))
+            participants_json = json.dumps(_normalize_people(thread["participants"]))
             thread_id = thread["id"]
             db.execute(
                 """
                 INSERT INTO day_threads (
                     id, day_key, topic_cluster, episode_ids_json, summary,
-                    open_questions, commitments_json, carryover_candidate,
+                    open_questions, commitments_json, topics_json, participants_json, carryover_candidate,
                     topic_overlap_score, participant_overlap_score,
                     temporal_proximity_score, commitment_overlap_score,
                     thread_confidence
-                ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     thread_id,
@@ -639,6 +694,8 @@ def rebuild_day_threads_for_day(db_path: Path, day_key: str) -> None:
                     json.dumps(thread["episode_ids"]),
                     summary,
                     commitments_json,
+                    topics_json,
+                    participants_json,
                     1 if thread["commitments"] else 0,
                     thread["topic_overlap_score"],
                     thread["participant_overlap_score"],
@@ -652,6 +709,7 @@ def rebuild_day_threads_for_day(db_path: Path, day_key: str) -> None:
                     "UPDATE episodes SET thread_key = ? WHERE id = ?",
                     (thread_id, episode_id),
                 )
+    rebuild_long_threads_for_window(db_path, day_key)
     if threads or episodes:
         trusted_threads = sum(
             1 for thread in threads
@@ -673,7 +731,7 @@ def get_day_threads_for_day(db_path: Path, day_key: str) -> list[dict[str, Any]]
     rows = db.fetchall(
         """
         SELECT id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
-               commitments_json, carryover_candidate, topic_overlap_score,
+               commitments_json, topics_json, participants_json, carryover_candidate, long_thread_key, topic_overlap_score,
                participant_overlap_score, temporal_proximity_score,
                commitment_overlap_score, thread_confidence
         FROM day_threads
@@ -693,11 +751,156 @@ def get_episodes_for_day(db_path: Path, day_key: str) -> list[dict[str, Any]]:
         SELECT id, started_at, ended_at, status, source_count, transcription_ids_json,
                raw_text, clean_text, summary, topics_json, participants_json,
                commitments_json, importance_score, needs_review, quality_state,
-               quality_score, quality_reasons_json, review_required, day_key, thread_key
+               quality_score, quality_reasons_json, review_required, day_key, thread_key, long_thread_key
         FROM episodes
         WHERE day_key = ?
         ORDER BY started_at ASC
         """,
         (day_key,),
+    )
+    return [dict(row) for row in rows]
+
+
+def rebuild_long_threads_for_window(db_path: Path, anchor_day_key: str, lookback_days: int = 30) -> None:
+    ensure_ingest_tables(db_path)
+    db = get_reflexio_db(db_path)
+    anchor_dt = datetime.fromisoformat(anchor_day_key)
+    start_day_key = (anchor_dt - timedelta(days=lookback_days)).date().isoformat()
+    rows = db.fetchall(
+        """
+        SELECT id, day_key, topic_cluster, summary, episode_ids_json, commitments_json,
+               topics_json, participants_json, thread_confidence
+        FROM day_threads
+        WHERE day_key BETWEEN ? AND ?
+          AND thread_confidence >= ?
+        ORDER BY day_key ASC, id ASC
+        """,
+        (start_day_key, anchor_day_key, THREAD_TRUSTED_CONFIDENCE_THRESHOLD),
+    )
+    threads: list[dict[str, Any]] = []
+    for row in rows:
+        candidate = dict(row)
+        candidate["topics"] = [str(v) for v in _safe_json_list(candidate.get("topics_json"))]
+        candidate["participants"] = _normalize_people(_safe_json_list(candidate.get("participants_json")))
+        candidate["commitments"] = _safe_json_list(candidate.get("commitments_json"))
+        candidate["episode_ids"] = _safe_json_list(candidate.get("episode_ids_json"))
+        best_thread: dict[str, Any] | None = None
+        best_scores: dict[str, float] | None = None
+        for existing in threads:
+            scores = _score_day_thread_for_long_thread(existing, candidate)
+            if scores["continuity_score"] < LONG_THREAD_CONFIDENCE_THRESHOLD:
+                continue
+            if best_scores is None or scores["continuity_score"] > best_scores["continuity_score"]:
+                best_thread = existing
+                best_scores = scores
+        if best_thread and best_scores:
+            best_thread["day_thread_ids"].append(candidate["id"])
+            best_thread["topics"].extend(candidate["topics"])
+            best_thread["participants"].extend(candidate["participants"])
+            best_thread["commitments"].extend(candidate["commitments"])
+            if candidate.get("summary"):
+                best_thread["summaries"].append(candidate["summary"])
+            best_thread["last_seen_at"] = candidate["day_key"]
+            best_thread["last_day_key"] = candidate["day_key"]
+            count = len(best_thread["day_thread_ids"])
+            for key, value in best_scores.items():
+                best_thread[key] = round(((best_thread.get(key, 0.0) * (count - 1)) + value) / count, 3)
+        else:
+            threads.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "thread_key": str(uuid.uuid4()),
+                    "day_thread_ids": [candidate["id"]],
+                    "topics": list(candidate["topics"]),
+                    "participants": list(candidate["participants"]),
+                    "commitments": list(candidate["commitments"]),
+                    "summaries": [candidate["summary"]] if candidate.get("summary") else [],
+                    "first_seen_at": candidate["day_key"],
+                    "last_seen_at": candidate["day_key"],
+                    "last_day_key": candidate["day_key"],
+                    "status": "active",
+                    "continuity_score": 1.0 if candidate["topics"] or candidate["participants"] or candidate["commitments"] else 0.6,
+                }
+            )
+
+    with db.transaction():
+        db.execute(
+            "UPDATE day_threads SET long_thread_key = NULL WHERE day_key BETWEEN ? AND ?",
+            (start_day_key, anchor_day_key),
+        )
+        db.execute(
+            "UPDATE episodes SET long_thread_key = NULL WHERE day_key BETWEEN ? AND ?",
+            (start_day_key, anchor_day_key),
+        )
+        db.execute(
+            "DELETE FROM long_threads WHERE first_seen_at >= ? AND last_seen_at <= ?",
+            (start_day_key, anchor_day_key),
+        )
+        for thread in threads:
+            status = "active"
+            if _temporal_day_score(thread["last_seen_at"], anchor_day_key) == 0.0:
+                status = "dormant"
+            elif abs((anchor_dt.date() - datetime.fromisoformat(thread["last_seen_at"]).date()).days) > LONG_THREAD_ACTIVE_DAYS:
+                status = "dormant"
+            summary = " ".join(thread["summaries"][:3]).strip()
+            topics = list(dict.fromkeys([topic for topic in thread["topics"] if topic]))
+            participants = _normalize_people(thread["participants"])
+            db.execute(
+                """
+                INSERT INTO long_threads (
+                    id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+                    participants_json, topics_json, status, summary, continuity_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    thread["id"],
+                    thread["thread_key"],
+                    thread["first_seen_at"],
+                    thread["last_seen_at"],
+                    json.dumps(thread["day_thread_ids"]),
+                    json.dumps(participants),
+                    json.dumps(topics),
+                    status,
+                    summary,
+                    round(float(thread.get("continuity_score") or 0.0), 3),
+                ),
+            )
+            for day_thread_id in thread["day_thread_ids"]:
+                db.execute(
+                    "UPDATE day_threads SET long_thread_key = ? WHERE id = ?",
+                    (thread["id"], day_thread_id),
+                )
+            day_thread_ids = tuple(thread["day_thread_ids"])
+            if day_thread_ids:
+                placeholders = ",".join("?" for _ in day_thread_ids)
+                db.execute(
+                    f"""
+                    UPDATE episodes
+                    SET long_thread_key = ?
+                    WHERE thread_key IN ({placeholders})
+                    """,
+                    (thread["id"], *day_thread_ids),
+                )
+    if rows:
+        logger.info(
+            "long_threads_rebuilt",
+            anchor_day_key=anchor_day_key,
+            start_day_key=start_day_key,
+            day_thread_count=len(rows),
+            long_thread_count=len(threads),
+            active_count=sum(1 for thread in threads if thread.get("status", "active") == "active"),
+        )
+
+
+def get_long_threads(db_path: Path) -> list[dict[str, Any]]:
+    ensure_ingest_tables(db_path)
+    db = get_reflexio_db(db_path)
+    rows = db.fetchall(
+        """
+        SELECT id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+               participants_json, topics_json, status, summary, continuity_score
+        FROM long_threads
+        ORDER BY last_seen_at DESC, continuity_score DESC, id ASC
+        """
     )
     return [dict(row) for row in rows]

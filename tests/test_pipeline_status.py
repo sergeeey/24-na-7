@@ -90,11 +90,11 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
                 """
                 INSERT INTO day_threads (
                     id, day_key, topic_cluster, episode_ids_json, summary,
-                    open_questions, commitments_json, carryover_candidate,
+                    open_questions, commitments_json, topics_json, participants_json, carryover_candidate,
                     topic_overlap_score, participant_overlap_score,
                     temporal_proximity_score, commitment_overlap_score,
                     thread_confidence
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "thread-1",
@@ -104,6 +104,8 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
                     "storyline",
                     "",
                     "[]",
+                    '["work"]',
+                    '["Марат"]',
                     0,
                     1.0,
                     1.0,
@@ -112,6 +114,28 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
                     0.9,
                 ),
             )
+            db.execute(
+                """
+                INSERT INTO long_threads (
+                    id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+                    participants_json, topics_json, status, summary, continuity_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "lt-1",
+                    "lt-key-1",
+                    "2026-03-10",
+                    "2026-03-10",
+                    '["thread-1"]',
+                    '["Марат"]',
+                    '["work"]',
+                    "active",
+                    "рабочая линия",
+                    0.9,
+                ),
+            )
+            db.execute("UPDATE day_threads SET long_thread_key = ? WHERE id = ?", ("lt-1", "thread-1"))
+            db.execute("UPDATE episodes SET long_thread_key = ? WHERE id = ?", ("lt-1", "ep-trusted"))
             db.execute(
                 """
                 INSERT INTO digest_cache (
@@ -158,6 +182,9 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         assert payload["day_thread_counts"]["total"] == 1
         assert payload["day_thread_counts"]["trusted"] == 1
         assert payload["day_thread_counts"]["low_confidence"] == 0
+        assert payload["long_thread_counts"]["total"] == 1
+        assert payload["long_thread_counts"]["active"] == 1
+        assert payload["long_thread_counts"]["resolved"] == 0
         assert payload["memory_health"]["trusted_fraction"] == 0.25
         assert payload["memory_health"]["review_fraction"] == 0.75
         assert payload["memory_health"]["thread_coverage"] == 0.5
