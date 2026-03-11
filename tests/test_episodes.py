@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -504,6 +505,92 @@ def test_get_long_thread_details_expands_day_threads_and_episodes(tmp_path):
         assert details["day_threads"][0]["id"] == "dt-1"
         assert len(details["episodes"]) == 1
         assert details["episodes"][0]["id"] == "ep-1"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_golden_memory_pipeline_fixture(tmp_path):
+    from src.memory.episodes import (
+        get_long_thread_details,
+        rebuild_day_threads_for_day,
+        rebuild_long_threads_for_window,
+    )
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    fixture_path = Path(__file__).parent / "fixtures" / "golden_memory_pipeline.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+
+        with db.transaction():
+            for day in fixture["days"]:
+                for episode in day["episodes"]:
+                    db.execute(
+                        """
+                        INSERT INTO episodes (
+                            id, started_at, ended_at, status, source_count, transcription_ids_json,
+                            raw_text, clean_text, summary, topics_json, participants_json,
+                            commitments_json, importance_score, needs_review, quality_state,
+                            quality_score, quality_reasons_json, review_required, day_key
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            episode["id"],
+                            episode["started_at"],
+                            episode["ended_at"],
+                            "summarized",
+                            1,
+                            "[]",
+                            episode["raw_text"],
+                            episode["clean_text"],
+                            episode["summary"],
+                            json.dumps(episode["topics"], ensure_ascii=False),
+                            json.dumps(episode["participants"], ensure_ascii=False),
+                            json.dumps(episode["commitments"], ensure_ascii=False),
+                            episode["importance_score"],
+                            0,
+                            "trusted",
+                            episode["importance_score"],
+                            "[]",
+                            0,
+                            day["day_key"],
+                        ),
+                    )
+
+        for day in fixture["days"]:
+            rebuild_day_threads_for_day(db_path, day["day_key"])
+        rebuild_long_threads_for_window(db_path, "2026-03-11")
+
+        long_threads = db.fetchall("SELECT * FROM long_threads")
+        assert len(long_threads) >= 1
+        details_by_thread = [
+            get_long_thread_details(db_path, row["id"])
+            for row in long_threads
+        ]
+        details_by_thread = [item for item in details_by_thread if item is not None]
+        spanning_thread = next(
+            (
+                item
+                for item in details_by_thread
+                if item["day_keys"] == ["2026-03-10", "2026-03-11"] and "Марат" in item["top_participants"]
+            ),
+            None,
+        )
+        assert spanning_thread is not None
+        assert "бюджет" in spanning_thread["top_topics"]
+        assert spanning_thread["continuity_score"] >= 0.6
+        assert spanning_thread["day_keys"] == ["2026-03-10", "2026-03-11"]
+        assert len(spanning_thread["episodes"]) == 3
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 

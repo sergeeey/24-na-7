@@ -77,6 +77,17 @@ def _topic_tokens(*values: str | None) -> set[str]:
     return tokens
 
 
+def _topic_signal(items: list[Any], *fallback_values: str | None) -> set[str]:
+    explicit_topics = {
+        str(item).strip().lower()
+        for item in items
+        if str(item or "").strip()
+    }
+    if explicit_topics:
+        return explicit_topics
+    return _topic_tokens(*fallback_values)
+
+
 def _fallback_topics_from_text(*values: str | None, limit: int = 5) -> list[str]:
     ordered_tokens: list[str] = []
     seen: set[str] = set()
@@ -220,14 +231,8 @@ def _score_episode_for_thread(candidate: dict[str, Any], episode: dict[str, Any]
 
 
 def _score_day_thread_for_long_thread(candidate: dict[str, Any], thread: dict[str, Any]) -> dict[str, float]:
-    candidate_topics = _topic_tokens(
-        candidate.get("summary"),
-        json.dumps(candidate.get("topics", []), ensure_ascii=False),
-    )
-    thread_topics = _topic_tokens(
-        thread.get("summary"),
-        json.dumps(thread.get("topics", []), ensure_ascii=False),
-    )
+    candidate_topics = _topic_signal(candidate.get("topics", []), candidate.get("summary"))
+    thread_topics = _topic_signal(thread.get("topics", []), thread.get("summary"))
     topic_overlap = _overlap_score(candidate_topics, thread_topics)
     participant_overlap = _overlap_score(
         {p.lower() for p in candidate.get("participants", [])},
@@ -1046,7 +1051,9 @@ def get_long_thread_details(db_path: Path, long_thread_id: str) -> dict[str, Any
             for episode in episodes:
                 participant_candidates.extend(episode.get("participants", []))
         payload["participants"] = _rank_strings(participant_candidates, limit=5)
-    payload["day_keys"] = [str(thread.get("day_key")) for thread in day_threads if str(thread.get("day_key") or "").strip()]
+    payload["day_keys"] = sorted(
+        {str(thread.get("day_key")) for thread in day_threads if str(thread.get("day_key") or "").strip()}
+    )
     payload["top_topics"] = _rank_strings(payload["topics"], limit=3)
     payload["top_participants"] = _rank_strings(payload["participants"], limit=3)
     sorted_day_threads = sorted(day_threads, key=lambda item: str(item.get("day_key") or ""), reverse=True)
