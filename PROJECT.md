@@ -1,6 +1,6 @@
 # Reflexio 24/7 — Project Documentation
 
-> **Версия:** 0.4.0 | **Дата:** 2026-03-04 | **Статус:** Production (Beta)
+> **Версия:** 0.5.0-beta | **Дата:** 2026-03-11 | **Статус:** Production (Beta)
 > **VPS:** reflexio247.duckdns.org | **SSH:** `root@46.225.211.115` | **Репо:** github.com/sergeeey/24-na-7
 
 ---
@@ -28,7 +28,17 @@
 
 **Структура backend:** api (main, dependencies, роутеры, middleware), core (bootstrap, orchestrator, tool_result, confidence, audio_processing), storage, asr, enrichment, digest, summarizer, llm, speaker, persongraph, balance, memory, experimental (voice_agent, explainability).
 
-**Версия/статус:** в коде /health отдаёт 0.2.0; документация 0.4.0/0.4.1. Импорт app, GET /health, тесты health+api, ruff по api/core/storage/utils — проходят.
+**Версия/статус:** текущий release snapshot — `0.5.0-beta`. На проде уже живут truth layer, `episodes`, `day_threads`, `long_threads`, `/query/threads`, `pipeline-status` и `pipeline-trends`. Импорт app, GET /health и актуальный regression subset проходят.
+
+### Release Snapshot — 0.5.0-beta
+
+Что реально живёт в проде к этому срезу:
+- trusted truth layer: `trusted / uncertain / garbage / quarantined`
+- эпизодическая память: `episode -> day_thread -> long_thread`
+- truth-aware digest с degraded markers
+- admin recovery paths: `reclassify` и `recheck`
+- continuity query: `/query/threads`
+- operational diagnostics: `pipeline-status`, `pipeline-trends`, `slo_state`
 
 ---
 
@@ -713,6 +723,7 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
 | Версия | Дата | Изменения |
 |--------|------|-----------|
+| 0.5.0-beta | 2026-03-11 | Trusted episodic memory beta: truth layer (`trusted / uncertain / garbage / quarantined`), `episodes -> day_threads -> long_threads`, continuity query `/query/threads`, `reclassify` + `recheck`, truth-aware digest, `pipeline-trends`, `slo_state`, operational runbook. |
 | 0.4.1 | 2026-03-10 | Архитектурный карантин: вынесены `src/voice_agent/*` и `src/explainability/*` в `src/experimental/*`, `api.main` использует `core.bootstrap.lifespan`, ядро `/ask` и пайплайн Edge→ASR→Digest изолированы от R&D модулей. |
 | 0.4.0 | 2026-03-04 | Visual Memory: UIHint enum (rendering contract), evidence_metadata (temporal anchors), GET /graph/neighborhood (KùzuDB→SQLite fallback), migration 0015 (3 индекса). Android: EvidenceTraceRow + pulsating ConfidenceBadge. KùzuDB активирован. Voice enrollment (resemblyzer GE2E, 3 сэмпла). SPEAKER_VERIFICATION_ENABLED. |
 | 0.3.0 | 2026-03-03 | Query Engine v1.0: ToolResult, Orchestrator, POST /ask, ConfidencePolicy, Permission Gate, date_utils. Rate limits: 32 декоратора в 13 роутерах. Android AskScreen (One Interface, таб 0). _meta миграция search/balance. |
