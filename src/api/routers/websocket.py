@@ -62,6 +62,17 @@ class _ConnectionState:
 _conn_state = _ConnectionState()
 
 
+def _is_disconnect_message(message: dict[str, Any]) -> bool:
+    """Starlette signals closed sockets via websocket.disconnect frames."""
+    return message.get("type") == "websocket.disconnect"
+
+
+def _is_closed_socket_error(exc: Exception) -> bool:
+    """Treat post-disconnect send/receive errors as normal connection shutdown."""
+    error_text = str(exc).lower()
+    return "disconnect message has been received" in error_text or "websocket is not connected" in error_text
+
+
 async def _result_reader(
     websocket: WebSocket,
     connection_id: str,
@@ -77,6 +88,9 @@ async def _result_reader(
             if msg.get("type") == "transcription" and msg.get("text"):
                 _conn_state.remember(connection_id, msg.get("text", ""))
         except Exception as e:
+            if _is_closed_socket_error(e):
+                logger.info("result_reader_disconnected", connection_id=connection_id)
+                break
             logger.warning("result_reader_send_failed", connection_id=connection_id, error=str(e))
             break
 
@@ -133,6 +147,8 @@ async def websocket_ingest(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive()
+            if _is_disconnect_message(data):
+                break
             if "bytes" in data:
                 if not data["bytes"]:
                     await websocket.send_json({"type": "error", "message": "Empty audio"})

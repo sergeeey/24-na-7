@@ -1,4 +1,5 @@
 """Tests for WebSocket /ws/ingest endpoint."""
+import asyncio
 import base64
 from io import BytesIO
 from pathlib import Path
@@ -7,6 +8,7 @@ import wave
 
 from fastapi.testclient import TestClient
 from src.api.main import app
+from src.api.routers.websocket import _result_reader, websocket_ingest
 
 
 def _valid_wav_bytes() -> bytes:
@@ -146,3 +148,55 @@ def test_websocket_ingest_deduplicates_same_segment_id(tmp_path):
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
         object.__setattr__(settings, "UPLOADS_PATH", old_uploads)
+
+
+def test_result_reader_stops_cleanly_after_disconnect_error():
+    """Reader should exit quietly when the socket is already closed."""
+
+    class FakeWebSocket:
+        async def send_json(self, _msg):
+            raise RuntimeError('Cannot call "send" once a disconnect message has been received.')
+
+    async def runner():
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
+        await queue.put({"type": "transcription", "text": "hello"})
+        await _result_reader(FakeWebSocket(), "conn-1", queue)
+
+    asyncio.run(runner())
+
+
+def test_websocket_ingest_stops_on_disconnect_message():
+    """Main receive loop must stop after websocket.disconnect instead of calling receive again."""
+
+    class FakeClient:
+        host = "127.0.0.1"
+        port = 12345
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.client = FakeClient()
+            self.headers = {"authorization": "Bearer test-api-key"}
+            self.query_params = {}
+            self.accepted = False
+            self.receive_calls = 0
+
+        async def accept(self):
+            self.accepted = True
+
+        async def receive(self):
+            self.receive_calls += 1
+            if self.receive_calls == 1:
+                return {"type": "websocket.disconnect", "code": 1000}
+            raise AssertionError("receive() called after disconnect")
+
+        async def send_json(self, _msg):
+            raise AssertionError("send_json() should not be called after disconnect")
+
+    async def runner():
+        websocket = FakeWebSocket()
+        with patch("src.api.routers.websocket.verify_websocket_token", return_value=True):
+            await websocket_ingest(websocket)
+            assert websocket.accepted is True
+            assert websocket.receive_calls == 1
+
+    asyncio.run(runner())
