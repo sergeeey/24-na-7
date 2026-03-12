@@ -21,6 +21,54 @@ router = APIRouter(prefix="/ingest", tags=["ingest"])
 _REPROCESS_STALE_MINUTES = 30
 
 
+def _round_maybe(value: float | None, digits: int = 1) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), digits)
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * percentile
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    if lower == upper:
+        return ordered[lower]
+    weight = rank - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * weight
+
+
+def _build_llm_circuit_breaker_state() -> dict[str, object]:
+    from src.llm.providers import get_llm_circuit_breaker_stats
+
+    providers = get_llm_circuit_breaker_stats()
+    open_providers = sorted(
+        provider_name
+        for provider_name, provider_stats in providers.items()
+        if provider_stats.get("state") == "open"
+    )
+    half_open_providers = sorted(
+        provider_name
+        for provider_name, provider_stats in providers.items()
+        if provider_stats.get("state") == "half_open"
+    )
+    overall_state = "closed"
+    if open_providers:
+        overall_state = "open"
+    elif half_open_providers:
+        overall_state = "half_open"
+    return {
+        "state": overall_state,
+        "open_providers": open_providers,
+        "half_open_providers": half_open_providers,
+        "providers": providers,
+    }
+
+
 def _is_stale_for_reprocess(created_at: str | None) -> bool:
     if not created_at:
         return False
@@ -183,6 +231,21 @@ def _build_recent_day_trends(db, *, days_back: int) -> list[dict[str, object]]:
             """,
             (day_key,),
         )[0]
+        enrichment_latencies = [
+            float(row[0])
+            for row in db.fetchall(
+                """
+                SELECT enrichment_latency_ms
+                FROM structured_events
+                WHERE date(created_at) = ?
+                  AND is_current = 1
+                  AND enrichment_latency_ms IS NOT NULL
+                  AND enrichment_latency_ms > 0
+                """,
+                (day_key,),
+            )
+            if row[0] is not None
+        ]
         digest_payload = {}
         if day_key in digest_rows:
             try:
@@ -204,11 +267,11 @@ def _build_recent_day_trends(db, *, days_back: int) -> list[dict[str, object]]:
                 "event_ready_count": event_ready_count,
                 "retryable_error_count": retryable_error_count,
                 "quarantined_ingest_count": quarantined_ingest_count,
-                "avg_received_to_processed_ms": (
-                    round(float(avg_received_to_processed_ms), 1)
-                    if avg_received_to_processed_ms is not None
-                    else None
-                ),
+                "avg_received_to_processed_ms": _round_maybe(avg_received_to_processed_ms),
+                "enrichment_latency_ms": {
+                    "p50": _round_maybe(_percentile(enrichment_latencies, 0.50), 2),
+                    "p95": _round_maybe(_percentile(enrichment_latencies, 0.95), 2),
+                },
                 "degraded_digest": bool(
                     digest_payload.get("degraded") or digest_payload.get("incomplete_context")
                 ),
@@ -310,6 +373,7 @@ async def get_pipeline_status():
     from src.storage.db import get_reflexio_db
 
     db_path = settings.STORAGE_PATH / "reflexio.db"
+    llm_circuit_breakers = _build_llm_circuit_breaker_state()
     if not db_path.exists():
         return {
             "server_ok": True,
@@ -327,6 +391,7 @@ async def get_pipeline_status():
                 "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
                 "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
             },
+            "llm_circuit_breakers": llm_circuit_breakers,
             "memory_health": {
                 "trusted_fraction": 0.0,
                 "review_fraction": 0.0,
@@ -359,6 +424,7 @@ async def get_pipeline_status():
     db = get_reflexio_db(db_path)
     dr = resolve_date_range()
     start_iso, end_iso = dr.sql_range()
+    llm_circuit_breakers = _build_llm_circuit_breaker_state()
 
     try:
         today_count = db.fetchone(
@@ -471,16 +537,8 @@ async def get_pipeline_status():
             "stale_counts": stale_counts,
             "recovery_counts": recovery_counts,
             "latency_ms": {
-                "received_to_terminal_avg": (
-                    round(float(received_to_terminal_avg), 1)
-                    if received_to_terminal_avg is not None
-                    else None
-                ),
-                "received_to_event_ready_avg": (
-                    round(float(received_to_event_ready_avg), 1)
-                    if received_to_event_ready_avg is not None
-                    else None
-                ),
+                "received_to_terminal_avg": _round_maybe(received_to_terminal_avg),
+                "received_to_event_ready_avg": _round_maybe(received_to_event_ready_avg),
             },
         }
         digest_rows = db.fetchall("SELECT digest_json FROM digest_cache")
@@ -534,6 +592,7 @@ async def get_pipeline_status():
                 "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
                 "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
             },
+            "llm_circuit_breakers": llm_circuit_breakers,
             "memory_health": {
                 "trusted_fraction": 0.0,
                 "review_fraction": 0.0,
@@ -576,6 +635,7 @@ async def get_pipeline_status():
         "long_thread_counts": long_thread_counts,
         "quality_counts": quality_counts,
         "ingest_health": ingest_health,
+        "llm_circuit_breakers": llm_circuit_breakers,
         "memory_health": memory_health,
         "slo_state": slo_state,
     }

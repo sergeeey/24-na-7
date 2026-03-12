@@ -1,4 +1,5 @@
 from datetime import date
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -160,7 +161,36 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
             )
 
         client = TestClient(app)
-        response = client.get("/ingest/pipeline-status")
+        with patch(
+            "src.llm.providers.get_llm_circuit_breaker_stats",
+            return_value={
+                "openai": {
+                    "name": "openai_llm",
+                    "state": "closed",
+                    "failure_count": 0,
+                    "failure_threshold": 5,
+                    "last_failure_time": None,
+                    "timeout": 60,
+                },
+                "anthropic": {
+                    "name": "anthropic_llm",
+                    "state": "half_open",
+                    "failure_count": 1,
+                    "failure_threshold": 5,
+                    "last_failure_time": 123.0,
+                    "timeout": 60,
+                },
+                "google": {
+                    "name": "google_llm",
+                    "state": "open",
+                    "failure_count": 5,
+                    "failure_threshold": 5,
+                    "last_failure_time": 456.0,
+                    "timeout": 60,
+                },
+            },
+        ):
+            response = client.get("/ingest/pipeline-status")
         assert response.status_code == 200
         payload = response.json()
         assert payload["ingest_queue"]["pending"] == 3
@@ -189,6 +219,10 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         assert payload["ingest_health"]["recovery_counts"]["asr_runtime_retryable"] == 0
         assert payload["ingest_health"]["latency_ms"]["received_to_terminal_avg"] == 138000.0
         assert payload["ingest_health"]["latency_ms"]["received_to_event_ready_avg"] == 120000.0
+        assert payload["llm_circuit_breakers"]["state"] == "open"
+        assert payload["llm_circuit_breakers"]["open_providers"] == ["google"]
+        assert payload["llm_circuit_breakers"]["half_open_providers"] == ["anthropic"]
+        assert payload["llm_circuit_breakers"]["providers"]["openai"]["state"] == "closed"
         assert payload["day_thread_counts"]["total"] == 1
         assert payload["day_thread_counts"]["trusted"] == 1
         assert payload["day_thread_counts"]["low_confidence"] == 0
@@ -478,6 +512,27 @@ def test_pipeline_trends_include_ingest_metrics(tmp_path):
                         error_code,
                     ),
                 )
+            structured_rows = [
+                ("evt-1", "tr-1", f"{today}T00:01:00", 100.0),
+                ("evt-2", "tr-2", f"{today}T00:02:00", 200.0),
+                ("evt-3", "tr-3", f"{today}T00:03:00", 300.0),
+            ]
+            for event_id, transcription_id, created_at, latency_ms in structured_rows:
+                db.execute(
+                    """
+                    INSERT INTO structured_events (
+                        id, transcription_id, text, created_at, is_current, enrichment_latency_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_id,
+                        transcription_id,
+                        f"text-{event_id}",
+                        created_at,
+                        1,
+                        latency_ms,
+                    ),
+                )
 
         client = TestClient(app)
         response = client.get("/ingest/pipeline-trends?days_back=1")
@@ -491,5 +546,7 @@ def test_pipeline_trends_include_ingest_metrics(tmp_path):
         assert recent_day["retryable_error_count"] == 1
         assert recent_day["quarantined_ingest_count"] == 1
         assert recent_day["avg_received_to_processed_ms"] == 180000.0
+        assert recent_day["enrichment_latency_ms"]["p50"] == 200.0
+        assert recent_day["enrichment_latency_ms"]["p95"] == 290.0
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)

@@ -42,6 +42,15 @@ _google_circuit_breaker = CircuitBreaker(
 )
 
 
+def get_llm_circuit_breaker_stats() -> dict[str, dict[str, Any]]:
+    """Return current breaker stats for all configured LLM providers."""
+    return {
+        "openai": _openai_circuit_breaker.get_stats(),
+        "anthropic": _anthropic_circuit_breaker.get_stats(),
+        "google": _google_circuit_breaker.get_stats(),
+    }
+
+
 class LLMProvider(str, Enum):
     """Доступные LLM провайдеры."""
 
