@@ -130,7 +130,13 @@ def evaluate_transcription_truth(
         for recent in recent_rows:
             if _signature(recent["transcript_clean"] or recent["text"] or "") == signature:
                 duplicate_neighbors += 1
-    if duplicate_neighbors >= 1:
+    low_information_duplicate = (
+        dominant_share >= 0.5
+        or unique_ratio <= 0.55
+        or unique_count <= 3
+        or token_count <= 5
+    )
+    if duplicate_neighbors >= 1 and low_information_duplicate:
         reasons.append(
             _reason(
                 "DUPLICATE_NEIGHBOR",
@@ -141,7 +147,7 @@ def evaluate_transcription_truth(
         )
         score -= 0.3
 
-    contradiction = bool(repeated_phrase and duplicate_neighbors >= 2)
+    contradiction = bool(repeated_phrase and duplicate_neighbors >= 2 and low_information_duplicate)
     if contradiction:
         reasons.append(
             _reason(
@@ -158,7 +164,7 @@ def evaluate_transcription_truth(
         quality_state = "quarantined"
     elif token_count == 0:
         quality_state = "garbage"
-    elif repeated_phrase and (duplicate_neighbors >= 1 or dominant_share >= 0.55):
+    elif repeated_phrase and ((duplicate_neighbors >= 1 and low_information_duplicate) or dominant_share >= 0.55):
         quality_state = "garbage"
     elif score < 0.72 or repeated_phrase:
         quality_state = "uncertain"
@@ -248,7 +254,13 @@ def evaluate_episode_truth(db_path: Path, episode_id: str) -> dict[str, Any] | N
         for recent in recent_rows:
             if _signature(recent["clean_text"] or recent["raw_text"] or "") == signature:
                 duplicate_neighbors += 1
-    if duplicate_neighbors >= 1:
+    low_information_duplicate = (
+        dominant_share >= 0.5
+        or unique_ratio <= 0.55
+        or unique_count <= 3
+        or token_count <= 5
+    )
+    if duplicate_neighbors >= 1 and low_information_duplicate:
         reasons.append(
             _reason(
                 "DUPLICATE_NEIGHBOR",
@@ -276,11 +288,11 @@ def evaluate_episode_truth(db_path: Path, episode_id: str) -> dict[str, Any] | N
         score -= 0.15
 
     score = max(0.0, min(1.0, score))
-    if contradiction and duplicate_neighbors >= 1:
+    if contradiction and duplicate_neighbors >= 1 and low_information_duplicate:
         quality_state = "quarantined"
     elif token_count == 0:
         quality_state = "garbage"
-    elif repeated_phrase and (duplicate_neighbors >= 1 or dominant_share >= 0.55):
+    elif repeated_phrase and ((duplicate_neighbors >= 1 and low_information_duplicate) or dominant_share >= 0.55):
         quality_state = "garbage"
     elif score < 0.72 or contradiction or repeated_phrase:
         quality_state = "uncertain"

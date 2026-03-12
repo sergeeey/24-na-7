@@ -1215,6 +1215,61 @@ def test_evaluate_episode_truth_marks_coherent_episode_as_trusted(tmp_path):
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_evaluate_episode_truth_preserves_duplicate_conversational_episode_as_trusted(tmp_path):
+    from src.memory.truth import evaluate_episode_truth
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        phrase = "мама я после магазина зайду к тебе вечером и всё расскажу"
+        with db.transaction():
+            for idx, started_at in enumerate(
+                ["2026-03-10T12:00:00", "2026-03-10T12:02:00", "2026-03-10T12:04:00"],
+                start=1,
+            ):
+                db.execute(
+                    """
+                    INSERT INTO episodes (
+                        id, started_at, ended_at, status, source_count, transcription_ids_json,
+                        raw_text, clean_text, summary, topics_json, participants_json,
+                        commitments_json, importance_score, needs_review, day_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"ep-{idx}",
+                        started_at,
+                        "2026-03-10T12:05:00",
+                        "summarized",
+                        1,
+                        f"[\"tr-{idx}\"]",
+                        phrase,
+                        phrase,
+                        "",
+                        '["семья"]',
+                        '["мама"]',
+                        "[]",
+                        0.8,
+                        0,
+                        "2026-03-10",
+                    ),
+                )
+
+        truth = evaluate_episode_truth(db_path, "ep-3")
+        assert truth is not None
+        assert truth["quality_state"] == "trusted"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_evaluate_transcription_truth_marks_repeated_noise_as_garbage(tmp_path):
     from src.memory.truth import evaluate_transcription_truth
     from src.storage.db import get_reflexio_db
@@ -1286,6 +1341,39 @@ def test_evaluate_transcription_truth_preserves_coherent_orphan_as_trusted(tmp_p
             )
 
         truth = evaluate_transcription_truth(db_path, "tr-1")
+        assert truth is not None
+        assert truth["quality_state"] == "trusted"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_evaluate_transcription_truth_preserves_duplicate_conversational_orphan_as_trusted(tmp_path):
+    from src.memory.truth import evaluate_transcription_truth
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        phrase = "мама я после магазина зайду к тебе вечером и всё расскажу"
+        with db.transaction():
+            for idx, created_at in enumerate(
+                ["2026-03-10T12:00:00", "2026-03-10T12:00:10", "2026-03-10T12:00:20"],
+                start=1,
+            ):
+                db.execute(
+                    "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at, quality_state) VALUES (?, ?, ?, ?, ?, ?)",
+                    (f"tr-{idx}", f"ing-{idx}", phrase, phrase, created_at, "trusted"),
+                )
+
+        truth = evaluate_transcription_truth(db_path, "tr-3")
         assert truth is not None
         assert truth["quality_state"] == "trusted"
     finally:
