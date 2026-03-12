@@ -370,6 +370,7 @@ class GoogleGeminiClient(LLMClient):
                 config=types.GenerateContentConfig(
                     temperature=self.temperature,
                     max_output_tokens=max_tokens,
+                    response_mime_type="application/json",
                 ),
             )
 

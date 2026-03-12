@@ -60,6 +60,27 @@ DEFAULT_EXAMPLES = [
 ]
 
 
+def _extract_json_payload(text: str) -> str:
+    """Extract the first valid JSON object from fenced or noisy LLM output."""
+    clean = (text or "").strip()
+    if "```json" in clean:
+        clean = clean.split("```json", 1)[1]
+        clean = clean.split("```", 1)[0].strip()
+    elif "```" in clean:
+        clean = clean.split("```", 1)[1]
+        clean = clean.split("```", 1)[0].strip()
+
+    decoder = json.JSONDecoder()
+    start_positions = [idx for idx, char in enumerate(clean) if char == "{"]
+    for start in start_positions:
+        try:
+            payload, _end = decoder.raw_decode(clean[start:])
+            return json.dumps(payload, ensure_ascii=False)
+        except json.JSONDecodeError:
+            continue
+    return clean
+
+
 def generate_structured_output(
     text: str,
     action_type: str = "summarize",
@@ -125,12 +146,7 @@ def generate_structured_output(
     # validate_fn заставляет cascade попробовать следующего провайдера (Haiku) при битом JSON.
     def _validate_json_response(text: str) -> None:
         """Проверяет что LLM вернул парсируемый JSON."""
-        clean = text
-        if "```json" in clean:
-            clean = clean.split("```json")[1].split("```")[0].strip()
-        elif "```" in clean:
-            clean = clean.split("```")[1].split("```")[0].strip()
-        json.loads(clean)
+        json.loads(_extract_json_payload(text))
 
     response = client.call(
         prompt,
@@ -149,12 +165,7 @@ def generate_structured_output(
 
     try:
         # Парсим JSON ответ
-        result_text = response["text"]
-        if "```json" in result_text:
-            result_text = result_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in result_text:
-            result_text = result_text.split("```")[1].split("```")[0].strip()
-
+        result_text = _extract_json_payload(response["text"])
         result_dict = json.loads(result_text)
 
         # Валидация структуры через Pydantic

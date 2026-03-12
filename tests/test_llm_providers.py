@@ -4,7 +4,14 @@
 import os
 from unittest.mock import Mock, patch, MagicMock
 
-from src.llm.providers import LLMProvider, LLMClient, OpenAIClient, AnthropicClient, CascadeLLMClient
+from src.llm.providers import (
+    LLMProvider,
+    LLMClient,
+    OpenAIClient,
+    AnthropicClient,
+    CascadeLLMClient,
+    GoogleGeminiClient,
+)
 
 
 class TestLLMProviderEnum:
@@ -265,3 +272,38 @@ class TestCascadeLLMClient:
         assert result["text"] == ""
         assert "All cascade providers failed" in result["error"]
         assert result["cascade_provider"] == "none"
+
+
+class TestGoogleGeminiClient:
+    """Тесты Gemini-клиента."""
+
+    @patch.dict(os.environ, {"GOOGLE_API_KEY": "google-test-key"}, clear=False)
+    def test_google_gemini_requests_json_mime_type(self):
+        """Gemini should request JSON responses to reduce broken payloads."""
+        from src.utils.config import settings
+
+        fake_response = Mock()
+        fake_response.text = '{"action":"summarize","output":{},"confidence":0.9}'
+        fake_response.usage_metadata = Mock(total_token_count=12)
+        fake_models = Mock()
+        fake_models.generate_content.return_value = fake_response
+        fake_client = Mock(models=fake_models)
+        fake_genai = Mock(Client=Mock(return_value=fake_client))
+        fake_types = Mock(
+            GenerateContentConfig=Mock(side_effect=lambda **kwargs: kwargs)
+        )
+
+        with patch.object(settings, "GOOGLE_API_KEY", "google-test-key"):
+            with patch.dict(
+                os.environ,
+                {"GOOGLE_API_KEY": "google-test-key", "GEMINI_API_KEY": ""},
+                clear=False,
+            ):
+                with patch.dict("sys.modules", {"google": Mock(genai=fake_genai), "google.genai": Mock(types=fake_types)}):
+                    client = GoogleGeminiClient(model="gemini-2.5-flash", temperature=0.3)
+                    result = client.call("test prompt", system_prompt="system")
+
+        assert result["text"]
+        fake_models.generate_content.assert_called_once()
+        kwargs = fake_models.generate_content.call_args.kwargs
+        assert kwargs["config"]["response_mime_type"] == "application/json"
