@@ -132,6 +132,9 @@ test_realvoice.py
 
 # Test reports
 tests/.report.json
+.claude/memory/production_plan_v2.md
+android/reflexio_recordings_phone.db
+android/reflexio_recordings_phone.db-wal
 
 # Temp editor files
 src/utils/input_guard_tmp.py
