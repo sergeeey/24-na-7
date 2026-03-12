@@ -538,3 +538,43 @@ def test_vault_is_available_when_disabled():
         from src.utils.vault_client import VaultClient
         client = VaultClient()
         assert client.is_available() is False
+
+
+def test_check_speech_gate_soft_passes_borderline_metrics(monkeypatch, tmp_path):
+    from src.core.audio_processing import _check_speech_gate
+
+    wav_path = tmp_path / "borderline.wav"
+    wav_path.write_bytes(b"RIFF")
+
+    monkeypatch.setattr("src.core.audio_processing.settings.FILTER_MUSIC", True)
+    monkeypatch.setattr("src.core.audio_processing._read_wav_as_numpy", lambda _path: object())
+
+    class DummyFilter:
+        def check(self, _audio):
+            return False, {"speech_ratio": 0.2, "high_freq_ratio": 0.5}
+
+    monkeypatch.setattr("src.core.audio_processing._get_speech_filter", lambda: DummyFilter())
+
+    allowed, reason = _check_speech_gate(wav_path)
+    assert allowed is True
+    assert reason == "borderline_speech"
+
+
+def test_check_speech_gate_rejects_clear_not_speech(monkeypatch, tmp_path):
+    from src.core.audio_processing import _check_speech_gate
+
+    wav_path = tmp_path / "noise.wav"
+    wav_path.write_bytes(b"RIFF")
+
+    monkeypatch.setattr("src.core.audio_processing.settings.FILTER_MUSIC", True)
+    monkeypatch.setattr("src.core.audio_processing._read_wav_as_numpy", lambda _path: object())
+
+    class DummyFilter:
+        def check(self, _audio):
+            return False, {"speech_ratio": 0.05, "high_freq_ratio": 0.9}
+
+    monkeypatch.setattr("src.core.audio_processing._get_speech_filter", lambda: DummyFilter())
+
+    allowed, reason = _check_speech_gate(wav_path)
+    assert allowed is False
+    assert reason == "not_speech"

@@ -214,6 +214,18 @@ def _check_speech_gate(wav_path: Path) -> tuple[bool, str | None]:
     sf = _get_speech_filter()
     is_speech_result, metrics = sf.check(audio_data)
     if not is_speech_result:
+        speech_ratio = float(metrics.get("speech_ratio") or 0.0)
+        high_freq_ratio = float(metrics.get("high_freq_ratio") or 0.0)
+        # In ambient mode, let borderline speech-like segments continue to ASR.
+        # Hard reject should be reserved for clearly non-speech/noisy audio.
+        if speech_ratio >= 0.18 and high_freq_ratio <= 0.65:
+            logger.info(
+                "audio_speech_gate_soft_pass",
+                path=str(wav_path),
+                speech_ratio=speech_ratio,
+                high_freq_ratio=high_freq_ratio,
+            )
+            return True, "borderline_speech"
         logger.info(
             "audio_filtered_not_speech",
             path=str(wav_path),
