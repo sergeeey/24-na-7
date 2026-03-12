@@ -1,6 +1,6 @@
 """Роутер для генерации дайджестов."""
 import json as _json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from fastapi import APIRouter, HTTPException, Query, Path as PathParam, Request, Response
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -56,6 +56,112 @@ def _is_effectively_empty_digest(result: dict, parsed_date: date) -> bool:
     if summary_text.startswith("Нет записей за день"):
         return True
     return False
+
+
+def _resolve_review_dates(
+    days_back: int,
+    date_from: str | None,
+    date_to: str | None,
+) -> list[date]:
+    """Возвращает список дат для review-окна."""
+    if date_from or date_to:
+        if not (date_from and date_to):
+            raise HTTPException(status_code=400, detail="date_from and date_to must be provided together")
+        try:
+            start = datetime.strptime(date_from, "%Y-%m-%d").date()
+            end = datetime.strptime(date_to, "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD") from exc
+        if end < start:
+            raise HTTPException(status_code=400, detail="date_to must be greater than or equal to date_from")
+    else:
+        end = date.today()
+        start = end - timedelta(days=max(days_back - 1, 0))
+    delta = (end - start).days
+    return [start + timedelta(days=offset) for offset in range(delta + 1)]
+
+
+def _candidate_action(
+    *,
+    degraded: bool,
+    trusted_count: int,
+    uncertain_count: int,
+    garbage_count: int,
+    quarantined_count: int,
+    source_unit: str,
+) -> str:
+    """Консервативно выбирает следующий безопасный шаг для дня."""
+    if not degraded and trusted_count > 0:
+        return "observe"
+    if degraded and trusted_count == 0 and (garbage_count + quarantined_count) > 0:
+        return "reclassify"
+    if degraded and (uncertain_count + quarantined_count) > 0:
+        return "recheck"
+    if source_unit == "transcription" and trusted_count > 0:
+        return "rebuild_digest"
+    return "observe"
+
+
+def _build_day_review(parsed_date: date, generator: DigestGenerator) -> dict:
+    """Строит компактный review summary по одному дню."""
+    day_key = parsed_date.isoformat()
+    db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
+
+    digest_data = _get_cached_digest(day_key)
+    if not digest_data or digest_data.get("_status") == "generating":
+        digest_data = generator.get_daily_digest_json(parsed_date)
+
+    trusted_count = int(
+        db.fetchone("SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'trusted'", (day_key,))["c"]
+    )
+    uncertain_count = int(
+        db.fetchone("SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'uncertain'", (day_key,))["c"]
+    )
+    garbage_count = int(
+        db.fetchone("SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'garbage'", (day_key,))["c"]
+    )
+    quarantined_count = int(
+        db.fetchone("SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'quarantined'", (day_key,))["c"]
+    )
+    day_thread_count = int(
+        db.fetchone("SELECT COUNT(*) AS c FROM day_threads WHERE day_key = ?", (day_key,))["c"]
+    )
+    long_thread_count = int(
+        db.fetchone(
+            """
+            SELECT COUNT(DISTINCT long_thread_key) AS c
+            FROM day_threads
+            WHERE day_key = ? AND COALESCE(long_thread_key, '') != ''
+            """,
+            (day_key,),
+        )["c"]
+    )
+    episodes_used = int(digest_data.get("episodes_used") or 0)
+    degraded = bool(digest_data.get("degraded"))
+    source_unit = str(digest_data.get("source_unit") or "transcription")
+    incomplete_context = bool(digest_data.get("incomplete_context"))
+
+    return {
+        "date": day_key,
+        "degraded": degraded,
+        "source_unit": source_unit,
+        "trusted_count": trusted_count,
+        "uncertain_count": uncertain_count,
+        "garbage_count": garbage_count,
+        "quarantined_count": quarantined_count,
+        "day_thread_count": day_thread_count,
+        "long_thread_count": long_thread_count,
+        "episodes_used": episodes_used,
+        "digest_incomplete_context": incomplete_context,
+        "candidate_action": _candidate_action(
+            degraded=degraded,
+            trusted_count=trusted_count,
+            uncertain_count=uncertain_count,
+            garbage_count=garbage_count,
+            quarantined_count=quarantined_count,
+            source_unit=source_unit,
+        ),
+    }
 
 
 @router.get("/daily")
@@ -173,6 +279,53 @@ async def get_digest_today(request: Request, response: Response, format: str = Q
     except Exception as e:
         logger.error("digest_generation_failed", date="today", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to generate digest. Check server logs.")
+
+
+@router.get("/review")
+@limiter.limit("20/minute")
+async def get_digest_review(
+    request: Request,
+    response: Response,
+    days_back: int = Query(7, ge=1, le=365),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    only_degraded: bool = Query(False),
+):
+    """Возвращает безопасный обзор качества памяти по дням."""
+    dates = _resolve_review_dates(days_back, date_from, date_to)
+    generator = DigestGenerator()
+    review_days = [_build_day_review(target_date, generator) for target_date in reversed(dates)]
+    if only_degraded:
+        review_days = [item for item in review_days if item["degraded"]]
+    return {
+        "days_back": days_back,
+        "date_from": dates[0].isoformat() if dates else None,
+        "date_to": dates[-1].isoformat() if dates else None,
+        "only_degraded": only_degraded,
+        "days": review_days,
+    }
+
+
+@router.get("/review/{target_date}")
+@limiter.limit("30/minute")
+async def get_digest_review_day(
+    request: Request,
+    response: Response,
+    target_date: str = PathParam(..., description="Дата в формате YYYY-MM-DD"),
+):
+    """Возвращает compact review summary по одному дню."""
+    try:
+        parsed_date = datetime.strptime(target_date, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD") from exc
+
+    generator = DigestGenerator()
+    summary = _build_day_review(parsed_date, generator)
+    return {
+        **summary,
+        "trusted_episode_present": summary["trusted_count"] > 0,
+        "transcript_fallback_only": summary["source_unit"] == "transcription",
+    }
 
 
 @router.get("/{target_date}")

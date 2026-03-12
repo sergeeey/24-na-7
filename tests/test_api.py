@@ -325,11 +325,11 @@ def test_pipeline_trends_returns_recent_day_aggregates(tmp_path):
             )
 
         client = TestClient(app)
-        resp = client.get("/ingest/pipeline-trends?days_back=2")
+        resp = client.get("/ingest/pipeline-trends?days_back=3")
         assert resp.status_code == 200
         payload = resp.json()
-        assert payload["days_back"] == 2
-        assert len(payload["recent_days"]) == 2
+        assert payload["days_back"] == 3
+        assert len(payload["recent_days"]) == 3
         by_day = {item["day"]: item for item in payload["recent_days"]}
         assert by_day["2026-03-11"]["trusted_count"] == 1
         assert by_day["2026-03-11"]["day_thread_count"] == 1
@@ -338,6 +338,271 @@ def test_pipeline_trends_returns_recent_day_aggregates(tmp_path):
         assert by_day["2026-03-10"]["garbage_count"] == 1
         assert by_day["2026-03-10"]["review_count"] == 1
         assert by_day["2026-03-10"]["degraded_digest"] is True
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_digest_review_lists_healthy_and_degraded_days(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state,
+                    quality_score, quality_reasons_json, review_required, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-ok",
+                    "2026-03-11T10:00:00",
+                    "2026-03-11T10:05:00",
+                    "summarized",
+                    1,
+                    '["tr-ok"]',
+                    "обсуждали проект",
+                    "обсуждали проект",
+                    "договорились по проекту",
+                    '["проект"]',
+                    "[]",
+                    "[]",
+                    0.8,
+                    0,
+                    "trusted",
+                    0.9,
+                    "[]",
+                    0,
+                    "2026-03-11",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state,
+                    quality_score, quality_reasons_json, review_required, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-bad",
+                    "2026-03-10T10:00:00",
+                    "2026-03-10T10:05:00",
+                    "summarized",
+                    1,
+                    '["tr-bad"]',
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    "шум",
+                    '["шум"]',
+                    "[]",
+                    "[]",
+                    0.1,
+                    1,
+                    "garbage",
+                    0.1,
+                    '[{"code":"LOW_INFORMATION","severity":"medium","score_delta":-0.5,"details":{}}]',
+                    1,
+                    "2026-03-10",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO day_threads (
+                    id, day_key, topic_cluster, episode_ids_json, summary, open_questions,
+                    commitments_json, topics_json, participants_json, carryover_candidate,
+                    topic_overlap_score, participant_overlap_score,
+                    temporal_proximity_score, commitment_overlap_score,
+                    thread_confidence, long_thread_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "dt-ok",
+                    "2026-03-11",
+                    "project",
+                    '["ep-ok"]',
+                    "проектная линия",
+                    "",
+                    "[]",
+                    '["проект"]',
+                    "[]",
+                    0,
+                    1.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.9,
+                    "lt-ok",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO long_threads (
+                    id, thread_key, first_seen_at, last_seen_at, day_thread_ids_json,
+                    participants_json, topics_json, status, summary, continuity_score
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "lt-ok",
+                    "lt-project",
+                    "2026-03-11",
+                    "2026-03-11",
+                    '["dt-ok"]',
+                    "[]",
+                    '["проект"]',
+                    "active",
+                    "проектная continuity line",
+                    0.8,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO digest_cache (
+                    date, digest_json, generated_at, status,
+                    previous_digest_id, rebuild_reason, rebuilt_at, changed_source_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2026-03-11",
+                    '{"source_unit":"day_thread","degraded":false,"incomplete_context":false,"episodes_used":1,"total_recordings":1}',
+                    "2026-03-11T12:00:00Z",
+                    "ready",
+                    None,
+                    None,
+                    None,
+                    1,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO digest_cache (
+                    date, digest_json, generated_at, status,
+                    previous_digest_id, rebuild_reason, rebuilt_at, changed_source_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2026-03-10",
+                    '{"source_unit":"transcription","degraded":true,"incomplete_context":true,"episodes_used":0,"total_recordings":0}',
+                    "2026-03-10T12:00:00Z",
+                    "ready",
+                    None,
+                    None,
+                    None,
+                    0,
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.get(
+            "/digest/review",
+            params={"date_from": "2026-03-10", "date_to": "2026-03-11"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["days"]) == 2
+        by_day = {item["date"]: item for item in body["days"]}
+        assert by_day["2026-03-11"]["degraded"] is False
+        assert by_day["2026-03-11"]["candidate_action"] == "observe"
+        assert by_day["2026-03-10"]["degraded"] is True
+        assert by_day["2026-03-10"]["candidate_action"] == "reclassify"
+
+        degraded_only = client.get(
+            "/digest/review",
+            params={"date_from": "2026-03-10", "date_to": "2026-03-11", "only_degraded": "true"},
+        )
+        assert degraded_only.status_code == 200
+        degraded_days = degraded_only.json()["days"]
+        assert [item["date"] for item in degraded_days] == ["2026-03-10"]
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_digest_review_day_returns_detail_summary(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, quality_state,
+                    quality_score, quality_reasons_json, review_required, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ep-review",
+                    "2026-03-10T10:00:00",
+                    "2026-03-10T10:05:00",
+                    "summarized",
+                    1,
+                    "[]",
+                    "шум",
+                    "шум",
+                    "шум",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.1,
+                    1,
+                    "quarantined",
+                    0.1,
+                    '[{"code":"REPEATED_PHRASE","severity":"high","score_delta":-0.8,"details":{}}]',
+                    1,
+                    "2026-03-10",
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO digest_cache (
+                    date, digest_json, generated_at, status,
+                    previous_digest_id, rebuild_reason, rebuilt_at, changed_source_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2026-03-10",
+                    '{"source_unit":"transcription","degraded":true,"incomplete_context":true,"episodes_used":0,"total_recordings":0}',
+                    "2026-03-10T12:00:00Z",
+                    "ready",
+                    None,
+                    None,
+                    None,
+                    0,
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.get("/digest/review/2026-03-10")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["date"] == "2026-03-10"
+        assert body["degraded"] is True
+        assert body["source_unit"] == "transcription"
+        assert body["trusted_episode_present"] is False
+        assert body["transcript_fallback_only"] is True
+        assert body["candidate_action"] in {"recheck", "reclassify"}
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
