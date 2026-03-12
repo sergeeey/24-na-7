@@ -316,8 +316,6 @@ def _assess_contextual_transcription_risk(
     dominant_share = max(counts.values()) / len(words)
     bigrams = list(zip(words, words[1:]))
     repeated_bigram_count = max(Counter(bigrams).values(), default=0)
-    if len(words) >= 6 and (dominant_share >= 0.45 or repeated_bigram_count >= 2):
-        return True, "repeated_phrase_pattern", 0.45
 
     db = get_reflexio_db(db_path)
     recent_rows = db.fetchall(
@@ -338,6 +336,10 @@ def _assess_contextual_transcription_risk(
         )
         if recent_signature and recent_signature == signature:
             duplicate_neighbors += 1
+    repeated_phrase = len(words) >= 6 and (dominant_share >= 0.45 or repeated_bigram_count >= 2)
+    extreme_repetition = len(words) >= 8 and (dominant_share >= 0.7 or repeated_bigram_count >= 3)
+    if repeated_phrase and (duplicate_neighbors >= 1 or extreme_repetition):
+        return True, "repeated_phrase_pattern", 0.45
     if duplicate_neighbors >= 2:
         return True, "duplicate_neighbor_pattern", 0.4
 
