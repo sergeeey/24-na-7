@@ -1,6 +1,6 @@
 # Reflexio 24/7 — Project Documentation
 
-> **Версия:** 0.4.0 | **Дата:** 2026-03-04 | **Статус:** Production (Beta)
+> **Версия:** 0.5.1-beta | **Дата:** 2026-03-11 | **Статус:** Production (Beta)
 > **VPS:** reflexio247.duckdns.org | **SSH:** `root@46.225.211.115` | **Репо:** github.com/sergeeey/24-na-7
 
 ---
@@ -28,7 +28,19 @@
 
 **Структура backend:** api (main, dependencies, роутеры, middleware), core (bootstrap, orchestrator, tool_result, confidence, audio_processing), storage, asr, enrichment, digest, summarizer, llm, speaker, persongraph, balance, memory, experimental (voice_agent, explainability).
 
-**Версия/статус:** в коде /health отдаёт 0.2.0; документация 0.4.0/0.4.1. Импорт app, GET /health, тесты health+api, ruff по api/core/storage/utils — проходят.
+**Версия/статус:** текущий release snapshot — `0.5.1-beta`. На проде уже живут truth layer, `episodes`, `day_threads`, `long_threads`, `/query/threads`, `pipeline-status` и `pipeline-trends`. Импорт app, GET /health и актуальный regression subset проходят.
+
+### Release Snapshot — 0.5.1-beta
+
+Что реально живёт в проде к этому срезу:
+- trusted truth layer: `trusted / uncertain / garbage / quarantined`
+- эпизодическая память: `episode -> day_thread -> long_thread`
+- truth-aware digest с degraded markers
+- admin recovery paths: `reclassify` и `recheck`
+- continuity query: `/query/threads`
+- operational diagnostics: `pipeline-status`, `pipeline-trends`, `slo_state`
+- semantic golden regression fixture для memory ontology
+- reproducible benchmark smoke script для rebuild пути `episode -> day_thread -> long_thread`
 
 ---
 
@@ -215,7 +227,7 @@ ToolResult(
 | `utils/date_utils.py` | resolve_date_range() — timezone-aware (UTC+6 Almaty), DateRange |
 | `utils/logging.py` | structlog |
 | `utils/rate_limiter.py` | RateLimitConfig + setup_rate_limiting() |
-| `experimental/` | Карантин для R&D (voice_agent, explainability и другие экспериментальные подсистемы; управляются флагами Settings.EXPERIMENTAL_*) |
+| `experimental/` | Карантин для R&D (voice_agent, explainability и другие экспериментальные подсистемы) |
 
 ---
 
@@ -259,6 +271,57 @@ ToolResult(
 | POST | `/search/reindex` | 2/min | Переиндексация (admin) |
 | GET | `/search/trace/{id}` | 60/min | Lifecycle одного аудио (все стадии + latency_ms) |
 | GET | `/search/errors` | 30/min | Мониторинг ошибок pipeline |
+
+---
+
+## P1 Runtime Indicators
+
+Минимальный operational contract строится на `GET /ingest/pipeline-status`.
+
+### SLI v1
+
+- `ingest accept rate`
+  - прокси: `processed / (processed + error + quarantine)`
+- `episode finalization health`
+  - `episode_counts.open / closed / summarized`
+- `truth quality mix`
+  - `quality_counts.trusted / uncertain / garbage / quarantined`
+- `day-thread coverage`
+  - `day_thread_counts.trusted`
+  - `memory_health.thread_coverage`
+- `digest degradation`
+  - `memory_health.digest_incomplete_context_total`
+  - `memory_health.degraded_digest_candidate`
+
+### Beta thresholds
+
+- `memory_health.trusted_fraction` не должен устойчиво падать ниже `0.5` без расследования
+- `memory_health.review_fraction` не должен устойчиво расти день-к-дню без расследования
+- всплеск `quality_counts.quarantined` или `ingest_queue.quarantine` требует проверки truth-layer и ASR gate
+
+### `slo_state` API summary
+
+`GET /ingest/pipeline-status` теперь возвращает компактный `slo_state`:
+
+- `status`
+  - `healthy`
+  - `degraded`
+  - `attention`
+- `alerts`
+  - например: `low_trusted_fraction`, `high_review_fraction`, `degraded_digest_present`
+- `beta_thresholds`
+  - текущие пороги beta-режима
+- `snapshot`
+  - минимальный срез, на котором основано решение
+
+### Runbook order
+
+Если episodic loop деградирует, проверять в таком порядке:
+1. `ingest_stage_counts`
+2. `quality_counts`
+3. `episode_counts`
+4. `day_thread_counts`
+5. `memory_health`
 
 ### Balance Wheel
 | Метод | Endpoint | Rate | Описание |
@@ -521,6 +584,103 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
 ---
 
+## Episodic Runbook
+
+### Как читать `pipeline-status`
+- `quality_counts`: truth-layer по эпизодам. Норма для рабочего дня — рост `trusted`, а не `garbage/quarantined`.
+- `day_thread_counts`: покрытие дневных сюжетов. Если trusted threads почти нет, день ещё не собран в осмысленные линии.
+- `memory_health.trusted_fraction`: доля trusted episodes среди всех quality-classified episodes.
+- `memory_health.review_fraction`: доля episodes, требующих review (`uncertain`, `garbage`, `quarantined`).
+- `memory_health.thread_coverage`: сколько summarized episodes уже покрыты trusted day threads.
+- `memory_health.digest_incomplete_context_total`: сколько дней сейчас отдаются как degraded/incomplete digest.
+- `slo_state`: компактный operational verdict. Это read-only индикатор, а не источник истины; источник истины — БД и truth-layer статусы.
+
+### Как отличать historical debt от active regression
+1. Сначала смотри свежий день против исторического дня.
+2. Если новый день даёт `trusted` episodes и trusted `day_threads`, а `slo_state` всё ещё `attention`, это почти всегда historical debt.
+3. Если свежий день сразу уходит в `garbage/quarantined` или не собирает `day_threads`, это active regression.
+
+### Текущие alert'ы и что с ними делать
+
+#### `low_trusted_fraction`
+- Сигнал: trusted episodes слишком мало относительно `garbage/quarantined`.
+- Частая причина: старые шумные дни после reclassify всё ещё участвуют в общей картине.
+- Сначала проверить:
+  - распределение `episodes.quality_state` по `day_key`
+  - есть ли свежие trusted episodes за текущий день
+- Безопасное действие:
+  - не ослаблять truth gate сразу
+  - сначала отделить historical debt от свежего потока
+
+#### `high_review_fraction`
+- Сигнал: слишком много episodes требуют review.
+- Частая причина: исторический шумный день, уже переведённый в `garbage/quarantined`.
+- Сначала проверить:
+  - какие дни дают основную массу `needs_review`
+- Безопасное действие:
+  - reclassify/rebuild только по конкретному дню
+  - не делать широкий reclassify всего диапазона без dry-run
+
+#### `episodes_quarantined_present`
+- Сигнал: в truth layer есть хотя бы один `episode.quality_state='quarantined'`.
+- Частая причина: contextual repeated-phrase или сильный contradiction case.
+- Сначала проверить:
+  - это свежий эпизод или historical debt
+  - есть ли transition log с `source='gate'` или `source='backfill'`
+- Безопасное действие:
+  - если это исторический долг, не трогать thresholds
+  - если это свежий день, проверять свежие транскрипты и quarantine reason
+
+#### `ingest_quarantine_present`
+- Сигнал: в `ingest_queue` есть `status='quarantined'`.
+- Частая причина: `repeated_phrase_pattern`.
+- Сначала проверить:
+  - последние quarantine rows
+  - `quarantine_reason`
+  - совпадает ли `quality_state` с `status`
+- Безопасное действие:
+  - если `status='quarantined'`, но `quality_state='trusted'`, нужен data backfill или кодовый sync fix
+  - если свежий quarantine корректно синхронизирован, это просто сигнал active noise filtering, не обязательно regression
+
+#### `low_day_thread_coverage`
+- Сигнал: summarized episodes ещё не собираются в trusted day threads.
+- Частая причина:
+  - мало trusted episodes
+  - day thread builder не находит достаточного overlap
+- Сначала проверить:
+  - `day_thread_counts`
+  - trusted episodes по текущему дню
+- Безопасное действие:
+  - не расширять thread grouping агрессивно, пока truth layer ещё тонкий
+  - сначала поднять долю trusted episodes
+
+#### `degraded_digest_present`
+- Сигнал: есть хотя бы один день, который отдаётся как degraded fallback.
+- Частая причина: день без trusted summarized episodes, но с допустимым transcript fallback.
+- Сначала проверить:
+  - какой именно `date` в `digest_cache` имеет `degraded=true`
+  - это исторический день или текущий
+- Безопасное действие:
+  - если это historical debt, просто зафиксировать как known degraded day
+  - если это свежий день, расследовать truth/day-thread pipeline
+
+### Порядок triage
+1. `GET /ingest/pipeline-status`
+2. Проверить, свежий ли день даёт trusted episodes
+3. Проверить `day_thread_counts` и `digest_cache` по текущему дню
+4. Проверить `ingest_queue` quarantine reasons
+5. Только потом решать:
+   - threshold tuning
+   - reclassify/backfill
+   - кодовый фикс
+
+### Чего не делать
+- Не ослаблять truth gate только ради “красивого” `slo_state`
+- Не делать глобальный reclassify без `dry_run`
+- Не считать degraded digest ошибкой, пока не подтверждено, что это свежий день, а не historical debt
+
+---
+
 ## Дорожная карта
 
 ### v0.5.0 (следующий спринт)
@@ -565,6 +725,8 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
 | Версия | Дата | Изменения |
 |--------|------|-----------|
+| 0.5.1-beta | 2026-03-11 | Release discipline + confidence hardening: semantic golden regression fixture for the memory pipeline, benchmark smoke script for `episode -> day_thread -> long_thread`, continuity scoring fix for trusted topics, cleaned release snapshot/docs surface. |
+| 0.5.0-beta | 2026-03-11 | Trusted episodic memory beta: truth layer (`trusted / uncertain / garbage / quarantined`), `episodes -> day_threads -> long_threads`, continuity query `/query/threads`, `reclassify` + `recheck`, truth-aware digest, `pipeline-trends`, `slo_state`, operational runbook. |
 | 0.4.1 | 2026-03-10 | Архитектурный карантин: вынесены `src/voice_agent/*` и `src/explainability/*` в `src/experimental/*`, `api.main` использует `core.bootstrap.lifespan`, ядро `/ask` и пайплайн Edge→ASR→Digest изолированы от R&D модулей. |
 | 0.4.0 | 2026-03-04 | Visual Memory: UIHint enum (rendering contract), evidence_metadata (temporal anchors), GET /graph/neighborhood (KùzuDB→SQLite fallback), migration 0015 (3 индекса). Android: EvidenceTraceRow + pulsating ConfidenceBadge. KùzuDB активирован. Voice enrollment (resemblyzer GE2E, 3 сэмпла). SPEAKER_VERIFICATION_ENABLED. |
 | 0.3.0 | 2026-03-03 | Query Engine v1.0: ToolResult, Orchestrator, POST /ask, ConfidencePolicy, Permission Gate, date_utils. Rate limits: 32 декоратора в 13 роутерах. Android AskScreen (One Interface, таб 0). _meta миграция search/balance. |

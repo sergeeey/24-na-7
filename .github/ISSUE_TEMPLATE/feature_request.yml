@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose a product or engineering improvement for Reflexio.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Target area
+      options:
+        - Episodic memory
+        - ASR quality
+        - Android UX
+        - Query / retrieval
+        - Security / compliance
+        - CI / release
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Explain the user or engineering problem.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the desired behavior or implementation direction.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints / risks
+      description: Mention compatibility, privacy, deployment, or migration concerns.

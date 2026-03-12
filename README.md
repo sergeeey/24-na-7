@@ -47,6 +47,11 @@ Android (Kotlin)              Backend (FastAPI)              Output
 - **Speaker Diarization** — разделение говорящих (кто говорил)
 - **Whisper ASR** — транскрипция через faster-whisper (local)
 - **LLM Digest** — ежедневная сводка с эмоциями и задачами (OpenAI / Anthropic)
+- **Trusted Truth Layer** — `trusted / uncertain / garbage / quarantined` для эпизодической памяти
+- **Episodic Memory** — `episode -> day_thread -> long_thread` вместо россыпи фрагментов
+- **Continuity Query** — `/query/threads` для поиска живых линий через дни
+- **Reclassify / Recheck** — безопасный пересчёт проблемных дней и non-trusted памяти
+- **Pipeline SLO Snapshot** — `pipeline-status` и `pipeline-trends` для operational truth
 - **Social Graph** — автоматическое построение графа контактов из речи (KuzuDB)
 - **Compliance Layer** — PII-маскирование, TTL, zero-retention аудио
 - **Balance Wheel** — визуализация жизненного баланса на Android
@@ -181,11 +186,14 @@ All screenshots are in [`docs/screenshots/`](docs/screenshots/).
 |--------|------|-------------|
 | `GET` | `/health` | Health check |
 | `POST` | `/ingest/audio` | Upload audio segment |
+| `GET` | `/ingest/pipeline-status` | Snapshot of episodic memory health and SLO state |
+| `GET` | `/ingest/pipeline-trends` | Recent daily quality and continuity trends |
 | `POST` | `/asr/transcribe?file_id=...` | Transcribe uploaded file |
 | `GET` | `/ingest/status/{id}` | Processing status |
 | `GET` | `/digest/today` | Today's digest |
 | `GET` | `/digest/{date}` | Digest by date (YYYY-MM-DD) |
 | `GET` | `/digest/{date}/density` | Information density analysis |
+| `GET` | `/query/threads` | Trusted continuity lines across recent days |
 
 ---
 
@@ -200,6 +208,21 @@ All screenshots are in [`docs/screenshots/`](docs/screenshots/).
 | [API_KEYS_SETUP.md](docs/ENV_SETUP_INSTRUCTIONS.md) | API keys & env configuration |
 | [USER_GUIDE_DEMO.md](docs/USER_GUIDE_DEMO.md) | User guide & demo |
 | [RUNBOOKS.md](docs/RUNBOOKS.md) | Incident runbooks |
+
+---
+
+## Current Release Snapshot
+
+`v0.5.1-beta` reflects the current production direction:
+
+- trusted episodic memory with explicit truth states
+- day-level storyline grouping via `day_threads`
+- cross-day continuity via `long_threads`
+- truth-aware digest and selective `reclassify` / `recheck`
+- operational visibility through `pipeline-status`, `pipeline-trends`, and `slo_state`
+- semantic golden regression for the memory pipeline and a reproducible benchmark smoke script
+
+This is no longer just a voice diary backend; it is a beta platform for **trusted episodic life memory**.
 
 ---
 

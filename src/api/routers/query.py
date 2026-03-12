@@ -16,6 +16,7 @@ Query Engine — 5 унифицированных тулов, каждый во�
 from __future__ import annotations
 
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -82,24 +83,30 @@ async def query_events(
                 dr = resolve_date_range()  # сегодня
 
             from src.storage.db import get_reflexio_db
+            from src.storage.ingest_persist import ensure_ingest_tables
             from src.storage.vec_search import load_vec_extension, search_events
-            db = get_reflexio_db()
-
-            # Семантический поиск
-            try:
-                load_vec_extension(db.conn)
-                raw_results = search_events(db.conn, q, limit=limit * 2)
-            except Exception:
-                # Fallback: lexical search если vec недоступен
-                raw_results = _lexical_search(db, q, limit * 2)
-
+            from src.utils.config import settings
+            db_path = settings.STORAGE_PATH / "reflexio.db"
+            ensure_ingest_tables(db_path)
+            db = get_reflexio_db(db_path)
             start_iso, end_iso = dr.sql_range()
 
-            # Фильтрация по дате
-            results = [
-                r for r in raw_results
-                if _in_range(r.get("created_at", ""), start_iso, end_iso)
-            ]
+            results = _episode_search(db, q, start_iso, end_iso, limit * 2)
+
+            if not results:
+                # Семантический поиск
+                try:
+                    load_vec_extension(db.conn)
+                    raw_results = search_events(db.conn, q, limit=limit * 2)
+                except Exception:
+                    # Fallback: lexical search если vec недоступен
+                    raw_results = _lexical_search(db, q, limit * 2)
+
+                # Фильтрация по дате
+                results = [
+                    r for r in raw_results
+                    if _in_range(r.get("created_at", ""), start_iso, end_iso)
+                ]
 
             # Фильтрация по topics
             if topics:
@@ -124,7 +131,7 @@ async def query_events(
 
             # Ограничиваем
             results = results[:limit]
-            evidence_ids = [str(r.get("id", "")) for r in results]
+            evidence_ids = [str(r.get("episode_id") or r.get("id", "")) for r in results]
             conf = single_confidence(len(results))
 
             # Evidence metadata для визуального слоя (v0.4.0)
@@ -137,7 +144,7 @@ async def query_events(
             for r in results:
                 topics_list = _safe_json_list(r.get("topics_json"), [""])
                 evidence_metadata.append({
-                    "id": str(r.get("id", "")),
+                    "id": str(r.get("episode_id") or r.get("id", "")),
                     "timestamp": r.get("created_at", ""),
                     "sentiment_score": _sentiment_to_score.get(
                         r.get("sentiment", "neutral"), 0.5
@@ -170,6 +177,94 @@ async def query_events(
     return result.to_api_dict(include_evidence=include_evidence)
 
 
+@router.get("/threads", response_model=None)
+async def query_threads(
+    days_back: int = Query(30, ge=1, le=365, description="Последние N дней для continuity lines"),
+    topic: Optional[str] = Query(None, description="Фильтр по теме long thread"),
+    participant: Optional[str] = Query(None, description="Фильтр по участнику"),
+    status: Optional[str] = Query(None, pattern="^(active|dormant|resolved)$"),
+    limit: int = Query(20, ge=1, le=100),
+    include_evidence: bool = Query(False),
+) -> dict:
+    """Trusted continuity lines across recent days."""
+    with ToolTimer() as timer:
+        try:
+            from pathlib import Path
+
+            from src.memory.episodes import get_long_thread_details, get_long_threads
+            from src.utils.config import settings
+
+            db_path = Path(settings.STORAGE_PATH) / "reflexio.db"
+            cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days_back)
+            cutoff_key = cutoff_dt.date().isoformat()
+
+            rows = get_long_threads(db_path)
+            filtered: list[dict] = []
+            topic_filter = (topic or "").strip().lower()
+            participant_filter = (participant or "").strip().lower()
+            status_filter = (status or "").strip().lower()
+
+            for row in rows:
+                if status_filter and str(row.get("status") or "").lower() != status_filter:
+                    continue
+                if str(row.get("last_seen_at") or "") < cutoff_key:
+                    continue
+
+                details = get_long_thread_details(db_path, str(row["id"]))
+                if not details:
+                    continue
+
+                topics = [str(v) for v in details.get("topics", []) if str(v).strip()]
+                participants = [str(v) for v in details.get("participants", []) if str(v).strip()]
+                if topic_filter and not any(topic_filter in value.lower() for value in topics):
+                    continue
+                if participant_filter and not any(participant_filter in value.lower() for value in participants):
+                    continue
+
+                day_threads = details.get("day_threads", [])
+                filtered.append(
+                    {
+                        "long_thread_id": details["id"],
+                        "thread_key": details.get("thread_key"),
+                        "summary": details.get("summary", ""),
+                        "latest_summary": details.get("latest_summary", details.get("summary", "")),
+                        "continuity_score": float(details.get("continuity_score") or 0.0),
+                        "first_seen_at": details.get("first_seen_at"),
+                        "last_seen_at": details.get("last_seen_at"),
+                        "status": details.get("status", "active"),
+                        "day_count": len(day_threads),
+                        "day_thread_ids": details.get("day_thread_ids", []),
+                        "day_keys": details.get("day_keys", []),
+                        "participants": participants,
+                        "topics": topics,
+                        "top_participants": details.get("top_participants", participants[:3]),
+                        "top_topics": details.get("top_topics", topics[:3]),
+                    }
+                )
+
+            filtered = filtered[:limit]
+            evidence_ids = [
+                day_thread_id
+                for item in filtered
+                for day_thread_id in item.get("day_thread_ids", [])
+            ]
+            conf = single_confidence(len(filtered))
+
+        except Exception as e:
+            logger.error("query_threads_failed", error=str(e))
+            return ToolResult.error_result("query_threads", str(e)).to_api_dict()
+
+    result = ToolResult(
+        data={"threads": filtered, "total": len(filtered), "days_back": days_back},
+        evidence_ids=evidence_ids,
+        confidence=conf,
+        tool_name="query_threads",
+        db_query_ms=timer.elapsed_ms,
+        ui_hint=UIHint.TIMELINE,
+    )
+    return result.to_api_dict(include_evidence=include_evidence)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. get_digest — дайджест с lineage
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,10 +284,13 @@ async def get_digest(
             target_date = dr.start.strftime("%Y-%m-%d")
 
             from src.storage.db import get_reflexio_db
+            from src.storage.ingest_persist import ensure_ingest_tables
             from src.utils.config import settings
             import json as _json
 
-            db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
+            db_path = settings.STORAGE_PATH / "reflexio.db"
+            ensure_ingest_tables(db_path)
+            db = get_reflexio_db(db_path)
 
             # Из кеша
             row = db.fetchone(
@@ -481,6 +579,40 @@ def _lexical_search(db, q: str, limit: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _episode_search(db, q: str, start_iso: str, end_iso: str, limit: int) -> list[dict]:
+    """Episode-first lexical search with transcript fallback kept separate."""
+    rows = db.fetchall(
+        """
+        SELECT e.id, e.id AS episode_id, e.thread_key AS day_thread_id, e.long_thread_key AS long_thread_id,
+               e.clean_text AS text, e.started_at AS created_at,
+               topics_json, participants_json, commitments_json, summary,
+               needs_review, 'neutral' AS sentiment, '[]' AS emotions_json, commitments_json AS tasks
+        FROM episodes e
+        WHERE started_at BETWEEN ? AND ?
+          AND (
+            clean_text LIKE ?
+            OR raw_text LIKE ?
+            OR summary LIKE ?
+            OR topics_json LIKE ?
+            OR participants_json LIKE ?
+          )
+        ORDER BY started_at DESC
+        LIMIT ?
+        """,
+        (
+            start_iso,
+            end_iso,
+            f"%{q}%",
+            f"%{q}%",
+            f"%{q}%",
+            f"%{q}%",
+            f"%{q}%",
+            limit,
+        ),
+    )
+    return [dict(r) for r in rows]
+
+
 def _transcriptions_fallback(db, start_iso: str, end_iso: str, limit: int) -> list[dict]:
     """
     Fallback: записи из transcriptions за период, когда structured_events пуст
@@ -500,6 +632,7 @@ def _transcriptions_fallback(db, start_iso: str, end_iso: str, limit: int) -> li
         return [
             {
                 "id": r["id"],
+                "episode_id": r["id"],
                 "text": r["text"] or "",
                 "created_at": r["created_at"] or "",
                 "topics_json": "[]",

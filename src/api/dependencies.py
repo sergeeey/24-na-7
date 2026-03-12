@@ -3,10 +3,6 @@
 Цель модуля — централизовать создание общих зависимостей:
 - доступ к настройкам (`Settings`);
 - доступ к базе данных (`ReflexioDB`).
-
-Роутеры могут использовать эти функции через FastAPI `Depends`,
-что упрощает тестирование (подмена зависимостей) и будущую
-миграцию хранилища (например, на Supabase/PostgreSQL).
 """
 
 from __future__ import annotations
@@ -23,10 +19,7 @@ from src.utils.config import Settings, settings
 
 @lru_cache
 def get_settings() -> Settings:
-    """Возвращает singleton Settings.
-
-    ПОЧЕМУ lru_cache: Settings читают .env и окружение; делать это один раз.
-    """
+    """Возвращает singleton Settings."""
     return settings
 
 
@@ -35,12 +28,5 @@ def _get_db_path(cfg: Settings) -> Path:
 
 
 def get_db(cfg: Annotated[Settings, Depends(get_settings)]) -> ReflexioDB:
-    """Возвращает подключение к основной БД Reflexio.
-
-    Сейчас это локальный SQLite/SQLCipher файл `reflexio.db`.
-    В будущем реализацию можно заменить на Supabase/PostgreSQL,
-    не меняя сигнатуры зависимостей в роутерах.
-    """
-    db_path = _get_db_path(cfg)
-    return get_reflexio_db(db_path)
-
+    """Возвращает подключение к основной БД Reflexio."""
+    return get_reflexio_db(_get_db_path(cfg))

@@ -10,6 +10,7 @@ from src.utils.date_utils import resolve_date_range
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics
 from src.storage.ingest_persist import ensure_ingest_tables
+from src.memory.episodes import get_day_threads_for_day, get_episodes_for_day, get_long_threads as get_long_thread_rows
 from src.memory.core_memory import get_core_memory
 from src.memory.session_memory import get_session_memory
 
@@ -194,16 +195,6 @@ class DigestGenerator:
             return []
         db = get_reflexio_db(self.db_path)
 
-        # ПОЧЕМУ is_user фильтр: после включения Speaker Verification дайджест
-        # должен содержать только речь пользователя, не фоновый TV/радио.
-        # DEFAULT 1 в схеме гарантирует backward-compatibility (старые записи = user).
-        # Когда SPEAKER_VERIFICATION_ENABLED=False — всё is_user=1, фильтр без эффекта.
-        speaker_filter = (
-            "AND (t.is_user = 1 OR t.is_user IS NULL)"
-            if settings.SPEAKER_VERIFICATION_ENABLED
-            else ""
-        )
-
         # ПОЧЕМУ BETWEEN вместо DATE(): DATE() сравнивает по UTC-дню,
         # а пользователь в UTC+6. Запись в 02:00 Алматы = 20:00 UTC предыдущего дня.
         # resolve_date_range конвертирует "день Алматы" → UTC-диапазон.
@@ -216,6 +207,9 @@ class DigestGenerator:
                 t.text,
                 t.language,
                 t.language_probability,
+                t.quality_state,
+                t.quality_score,
+                t.quality_reasons_json,
                 t.duration,
                 t.segments,
                 t.created_at,
@@ -223,9 +217,9 @@ class DigestGenerator:
                 i.file_size
             FROM transcriptions t
             LEFT JOIN ingest_queue i ON t.ingest_id = i.id
-            WHERE t.created_at BETWEEN ? AND ? {speaker_filter}
+            WHERE t.created_at BETWEEN ? AND ?
             ORDER BY t.created_at ASC
-        """, (start_utc, end_utc))  # nosec B608 — speaker_filter is a hardcoded literal string
+        """, (start_utc, end_utc))
 
         transcriptions = [dict(row) for row in rows]
 
@@ -236,6 +230,161 @@ class DigestGenerator:
         )
 
         return transcriptions
+
+    def get_episodes(self, target_date: date) -> List[Dict]:
+        """Возвращает episode-based units за день."""
+        if not self.db_path.parent.exists():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_ingest_tables(self.db_path)
+        if not self.db_path.exists():
+            logger.warning("database_not_found", db_path=str(self.db_path))
+            return []
+
+        episodes = get_episodes_for_day(self.db_path, target_date.isoformat())
+        out: List[Dict] = []
+        for episode in episodes:
+            if episode.get("status") != "summarized":
+                continue
+            if (episode.get("quality_state") or "trusted") != "trusted":
+                continue
+            started_at = episode.get("started_at")
+            ended_at = episode.get("ended_at")
+            duration_sec = 0.0
+            try:
+                if started_at and ended_at:
+                    duration_sec = max(
+                        0.0,
+                        (
+                            datetime.fromisoformat(str(ended_at).replace("Z", "+00:00"))
+                            - datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+                        ).total_seconds(),
+                    )
+            except Exception:
+                duration_sec = 0.0
+
+            out.append(
+                {
+                    "id": episode["id"],
+                    "episode_id": episode["id"],
+                    "text": episode.get("clean_text") or episode.get("raw_text") or "",
+                    "language": "unknown",
+                    "language_probability": 1.0,
+                    "duration": duration_sec,
+                    "segments": episode.get("transcription_ids_json") or "[]",
+                    "created_at": started_at or "",
+                    "summary": episode.get("summary") or "",
+                    "topics_json": episode.get("topics_json") or "[]",
+                    "participants_json": episode.get("participants_json") or "[]",
+                    "commitments_json": episode.get("commitments_json") or "[]",
+                    "needs_review": bool(episode.get("needs_review")),
+                    "quality_state": episode.get("quality_state") or "trusted",
+                    "quality_score": float(episode.get("quality_score") or 1.0),
+                    "quality_reasons_json": episode.get("quality_reasons_json") or "[]",
+                    "source_count": episode.get("source_count") or 0,
+                    "_source_unit": "episode",
+                }
+            )
+
+        logger.info("episodes_found", date=target_date.isoformat(), count=len(out))
+        return out
+
+    def get_day_threads(self, target_date: date) -> List[Dict]:
+        """Возвращает trusted day-thread units за день."""
+        if not self.db_path.parent.exists():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_ingest_tables(self.db_path)
+        if not self.db_path.exists():
+            logger.warning("database_not_found", db_path=str(self.db_path))
+            return []
+
+        threads = get_day_threads_for_day(self.db_path, target_date.isoformat())
+        out: List[Dict] = []
+        for thread in threads:
+            confidence = float(thread.get("thread_confidence") or 0.0)
+            if confidence < 0.45:
+                continue
+            commitments = json.loads(thread.get("commitments_json") or "[]")
+            episode_ids = json.loads(thread.get("episode_ids_json") or "[]")
+            out.append(
+                {
+                    "id": thread["id"],
+                    "day_thread_id": thread["id"],
+                    "text": thread.get("summary") or thread.get("topic_cluster") or "",
+                    "language": "unknown",
+                    "language_probability": 1.0,
+                    "duration": 0.0,
+                    "segments": thread.get("episode_ids_json") or "[]",
+                    "created_at": f"{target_date.isoformat()}T00:00:00",
+                    "summary": thread.get("summary") or "",
+                    "topics_json": json.dumps([thread.get("topic_cluster")] if thread.get("topic_cluster") else []),
+                    "participants_json": "[]",
+                    "commitments_json": thread.get("commitments_json") or "[]",
+                    "needs_review": confidence < 0.7,
+                    "quality_state": "trusted",
+                    "quality_score": confidence,
+                    "quality_reasons_json": "[]",
+                    "source_count": len(episode_ids),
+                    "thread_confidence": confidence,
+                    "topic_overlap_score": float(thread.get("topic_overlap_score") or 0.0),
+                    "participant_overlap_score": float(thread.get("participant_overlap_score") or 0.0),
+                    "temporal_proximity_score": float(thread.get("temporal_proximity_score") or 0.0),
+                    "commitment_overlap_score": float(thread.get("commitment_overlap_score") or 0.0),
+                    "_source_unit": "day_thread",
+                    "_episode_count": len(episode_ids),
+                    "_commitment_count": len(commitments),
+                    "long_thread_id": thread.get("long_thread_key"),
+                }
+            )
+        logger.info("day_threads_found", date=target_date.isoformat(), count=len(out))
+        return out
+
+    def get_long_threads(self, target_date: date) -> List[Dict]:
+        """Возвращает continuity lines, которые затрагивают доверенные day threads дня."""
+        if not self.db_path.parent.exists():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_ingest_tables(self.db_path)
+        if not self.db_path.exists():
+            logger.warning("database_not_found", db_path=str(self.db_path))
+            return []
+
+        day_key = target_date.isoformat()
+        db = get_reflexio_db(self.db_path)
+        out: List[Dict] = []
+        for thread in get_long_thread_rows(self.db_path):
+            if float(thread.get("continuity_score") or 0.0) < 0.5:
+                continue
+            day_thread_ids = json.loads(thread.get("day_thread_ids_json") or "[]")
+            if not day_thread_ids:
+                continue
+            placeholders = ",".join("?" for _ in day_thread_ids)
+            row = db.fetchone(
+                f"""
+                SELECT COUNT(*) AS count
+                FROM day_threads
+                WHERE id IN ({placeholders}) AND day_key = ?
+                """,
+                (*day_thread_ids, day_key),
+            )
+            if row and int(row["count"] or 0) > 0:
+                out.append(dict(thread))
+        return out
+
+    def _get_digest_units(self, target_date: date) -> List[Dict]:
+        day_threads = self.get_day_threads(target_date)
+        if day_threads:
+            return day_threads
+        episodes = self.get_episodes(target_date)
+        if episodes:
+            return episodes
+        transcriptions = self.get_transcriptions(target_date)
+        for row in transcriptions:
+            row["_source_unit"] = "transcription"
+            row["quality_state"] = row.get("quality_state") or "trusted"
+        return [
+            row
+            for row in transcriptions
+            if row.get("quality_state") not in {"garbage", "quarantined"}
+        ]
     
     def extract_facts(self, transcriptions: List[Dict], use_llm: bool = True) -> List[Dict]:
         """
@@ -337,7 +486,7 @@ class DigestGenerator:
         return metrics
     
     def _get_recording_analyses_for_date(self, target_date: date) -> List[Dict]:
-        """Возвращает анализы записей (recording_analyses) за день по транскрипциям."""
+        """Возвращает анализы записей за день только для trusted транскрипций."""
         if not self.db_path.exists():
             return []
         db = get_reflexio_db(self.db_path)
@@ -349,6 +498,7 @@ class DigestGenerator:
                 FROM recording_analyses ra
                 INNER JOIN transcriptions t ON ra.transcription_id = t.id
                 WHERE t.created_at BETWEEN ? AND ?
+                  AND COALESCE(t.quality_state, 'trusted') = 'trusted'
                 ORDER BY t.created_at ASC
             """, (start_utc, end_utc))
             out = []
@@ -372,11 +522,14 @@ class DigestGenerator:
         Дневной итог в формате API для Android (ROADMAP Phase 2).
         Возвращает: date, summary_text, key_themes, emotions, actions, total_recordings, total_duration, repetitions.
         """
-        transcriptions = self.get_transcriptions(target_date)
-        analyses = self._get_recording_analyses_for_date(target_date)
+        transcriptions = self._get_digest_units(target_date)
+        analyses = self._get_recording_analyses_for_date(target_date) if transcriptions else []
         total_duration_sec = sum(t.get("duration", 0) or 0 for t in transcriptions)
         total_recordings = len(transcriptions)
         total_duration_str = f"{int(total_duration_sec // 60)}m {int(total_duration_sec % 60)}s" if total_duration_sec else "0m 0s"
+        thread_units = [item for item in transcriptions if item.get("_source_unit") == "day_thread"]
+        thread_count = len(thread_units)
+        long_threads = self.get_long_threads(target_date) if thread_units else []
 
         key_themes: List[str] = []
         emotions: List[str] = []
@@ -510,6 +663,24 @@ class DigestGenerator:
             except Exception as e:
                 logger.warning("novelty_detection_failed", error=str(e))
 
+        trusted_units = [
+            item for item in transcriptions if (item.get("quality_state") or "trusted") == "trusted"
+        ]
+        degraded = any(item.get("_source_unit") not in {"episode", "day_thread"} for item in transcriptions) or (
+            len(trusted_units) != len(transcriptions)
+        )
+        evidence_strength = round(
+            (
+                sum(float(item.get("quality_score") or 1.0) for item in trusted_units) / len(trusted_units)
+            ) if trusted_units else 0.0,
+            3,
+        )
+        instability_markers = {
+            "day_context_fragility": degraded,
+            "trusted_fraction": round((len(trusted_units) / len(transcriptions)) if transcriptions else 0.0, 3),
+            "long_threads_present": len(long_threads),
+        }
+
         return {
             "date": target_date.isoformat(),
             "summary_text": summary_text,
@@ -523,6 +694,21 @@ class DigestGenerator:
             "insights": insights,
             "acoustic_profile": acoustic_profile,
             "sources_count": len(transcriptions),
+            "source_unit": transcriptions[0].get("_source_unit", "transcription") if transcriptions else "transcription",
+            "episodes_used": sum(1 for item in transcriptions if item.get("_source_unit") == "episode"),
+            "thread_count": thread_count,
+            "long_thread_count": len(long_threads),
+            "day_thread_confidence": round(
+                (
+                    sum(float(item.get("thread_confidence") or item.get("quality_score") or 0.0) for item in thread_units)
+                    / len(thread_units)
+                ) if thread_units else 0.0,
+                3,
+            ),
+            "incomplete_context": degraded,
+            "degraded": degraded,
+            "evidence_strength": evidence_strength,
+            "instability_markers": instability_markers,
             # WOW fields (nullable — backward compatible)
             # ПОЧЕМУ `or []` для day_map: Kotlin DailyDigestData.day_map = List<DayMapPoint>
             # (non-null). JSON null → optJSONArray возвращает null → emptyList(), но лучше
@@ -957,7 +1143,7 @@ class DigestGenerator:
         logger.info("generating_digest", date=target_date.isoformat(), format=output_format)
         
         # Получаем транскрипции
-        transcriptions = self.get_transcriptions(target_date)
+        transcriptions = self._get_digest_units(target_date)
         
         if not transcriptions:
             logger.warning("no_transcriptions", date=target_date.isoformat())

@@ -23,8 +23,11 @@ import com.reflexio.app.data.db.PendingUploadDao
 import com.reflexio.app.data.db.RecordingDao
 import com.reflexio.app.data.db.RecordingDatabase
 import com.reflexio.app.data.model.PendingUpload
+import com.reflexio.app.data.model.PendingUploadStatus
 import com.reflexio.app.data.model.Recording
 import com.reflexio.app.data.model.RecordingStatus
+import com.reflexio.app.data.model.TransportStatus
+import com.reflexio.app.data.model.UploadRetryPolicy
 import com.reflexio.app.debug.DebugLog
 import com.reflexio.app.domain.network.EnrichmentApiClient
 import com.reflexio.app.domain.network.IngestWebSocketClient
@@ -42,6 +45,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 /**
  * Фоновый сервис записи аудио 24/7 с VAD.
@@ -230,6 +234,7 @@ class AudioRecordingService : Service() {
     private suspend fun insertSegmentRecording(file: File, sampleCount: Int) {
         val durationSeconds = sampleCount / SAMPLE_RATE
         val recording = Recording(
+            segmentId = UUID.randomUUID().toString(),
             filePath = file.absolutePath,
             durationSeconds = durationSeconds.toLong(),
             createdAt = System.currentTimeMillis(),
@@ -239,7 +244,13 @@ class AudioRecordingService : Service() {
         try {
             val id = withContext(Dispatchers.IO) { recordingDao!!.insert(recording) }
             withContext(Dispatchers.IO) {
-                pendingUploadDao?.upsert(PendingUpload(recordingId = id, filePath = file.absolutePath))
+                pendingUploadDao?.upsert(
+                    PendingUpload(
+                        recordingId = id,
+                        segmentId = recording.segmentId,
+                        filePath = file.absolutePath,
+                    )
+                )
                 PipelineDiagnostics.setStage(this@AudioRecordingService, "queued")
             }
             // ПОЧЕМУ sendAudioToServer напрямую (не scope.launch):
@@ -303,7 +314,12 @@ class AudioRecordingService : Service() {
     private suspend fun sendAudioToServer(file: File, recordingId: Long) {
         val client = wsClient ?: return
         PipelineDiagnostics.setStage(this, "uploaded")
-        val result = client.sendSegment(file) { stage ->
+        val currentRecording = withContext(Dispatchers.IO) { recordingDao?.getById(recordingId) }
+        val result = client.sendSegment(
+            file = file,
+            segmentId = currentRecording?.segmentId,
+            capturedAt = currentRecording?.createdAt,
+        ) { stage ->
             PipelineDiagnostics.setStage(this@AudioRecordingService, stage)
         }
         withContext(Dispatchers.IO) {
@@ -319,6 +335,7 @@ class AudioRecordingService : Service() {
                     )
                 )
                 pendingUploadDao?.deleteByRecordingId(recordingId)
+                PipelineDiagnostics.setStage(this@AudioRecordingService, "server_acked")
                 PipelineDiagnostics.setStage(this@AudioRecordingService, "transcribed")
                 PipelineDiagnostics.clearError(this@AudioRecordingService)
                 runCatching { if (file.exists()) file.delete() }
@@ -333,21 +350,44 @@ class AudioRecordingService : Service() {
                 val next = if (pending == null) {
                     PendingUpload(
                         recordingId = recordingId,
+                        segmentId = rec.segmentId,
                         filePath = file.absolutePath,
                         retryCount = 1,
+                        nextAttemptAt = UploadRetryPolicy.nextAttemptAt(
+                            System.currentTimeMillis(),
+                            1,
+                        ),
                         lastError = result.exceptionOrNull()?.message,
-                        status = "pending"
+                        lastErrorCode = "transport_error",
+                        transportStatus = TransportStatus.RETRY_WAIT,
+                        status = PendingUploadStatus.PENDING
                     )
                 } else {
                     pending.copy(
                         retryCount = pending.retryCount + 1,
+                        nextAttemptAt = UploadRetryPolicy.nextAttemptAt(
+                            System.currentTimeMillis(),
+                            pending.retryCount + 1,
+                        ),
                         lastError = result.exceptionOrNull()?.message,
-                        status = if (pending.retryCount + 1 >= 3) "failed" else "pending"
+                        lastErrorCode = "transport_error",
+                        transportStatus = if (pending.retryCount + 1 >= UploadRetryPolicy.MAX_RETRY_ATTEMPTS) {
+                            TransportStatus.QUARANTINED
+                        } else {
+                            TransportStatus.RETRY_WAIT
+                        },
+                        status = if (pending.retryCount + 1 >= UploadRetryPolicy.MAX_RETRY_ATTEMPTS) {
+                            PendingUploadStatus.FAILED
+                        } else {
+                            PendingUploadStatus.PENDING
+                        }
                     )
                 }
                 pendingUploadDao?.upsert(next)
-                if (next.status == "failed") {
+                if (next.status == PendingUploadStatus.FAILED) {
                     dao.update(rec.copy(status = RecordingStatus.FAILED))
+                } else {
+                    dao.update(rec.copy(status = RecordingStatus.PENDING_UPLOAD))
                 }
                 UploadWorker.enqueue(this@AudioRecordingService)
             }

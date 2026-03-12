@@ -373,7 +373,7 @@ private fun HomeScreen(
                 .weight(1f),
         )
         Text(
-            text = "Оценка по вашим записям за день (0–10). Чем выше — тем чаще тема звучала.",
+            text = "Темы дня по вашим записям.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp),
@@ -395,7 +395,7 @@ private fun HomeScreen(
             }
         } else {
             Text(
-                text = if (recordingActive) "Слушаю..." else "Нажмите для записи",
+                text = if (recordingActive) "Запись идет" else "Нажмите, чтобы начать запись",
                 style = MaterialTheme.typography.titleMedium,
                 color = if (recordingActive)
                     MaterialTheme.colorScheme.secondary
@@ -446,35 +446,35 @@ private fun RecordingHeroPanel(recordingActive: Boolean) {
                 .padding(horizontal = 18.dp, vertical = 18.dp),
         ) {
             StatusPill(
-                text = if (recordingActive) "Live memory" else "Ready to capture",
+                text = if (recordingActive) "Память дня" else "Готов к записи",
                 active = recordingActive,
             )
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = "$greeting, Reflexio держит ритм дня",
+                text = "$greeting, Reflexio на записи",
                 style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = if (recordingActive)
-                    "Запись уже идёт: система собирает голосовые фрагменты дня и превращает их в опору для вечернего осмысления."
+                    "Система слушает речь и сохраняет важные фрагменты дня."
                 else
-                    "Один взгляд на этот экран должен напоминать: важное можно поймать сразу, а не потерять в потоке дня.",
+                    "Один взгляд на экран должен говорить только одно: запись готова к старту.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.86f),
             )
             Spacer(modifier = Modifier.height(12.dp))
             Row {
                 HeroMetric(
-                    label = "Состояние",
-                    value = if (recordingActive) "Listening" else "Standby",
+                    label = "Статус",
+                    value = if (recordingActive) "Слушаю" else "Ожидание",
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 HeroMetric(
-                    label = "Фокус",
-                    value = if (recordingActive) "Capture" else "Memory",
+                    label = "Режим",
+                    value = if (recordingActive) "Фиксация" else "Память",
                     modifier = Modifier.weight(1f),
                 )
             }

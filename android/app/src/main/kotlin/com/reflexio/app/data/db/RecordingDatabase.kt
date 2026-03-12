@@ -45,9 +45,19 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE recordings ADD COLUMN segmentId TEXT")
+        db.execSQL("ALTER TABLE pending_uploads ADD COLUMN segmentId TEXT")
+        db.execSQL("ALTER TABLE pending_uploads ADD COLUMN nextAttemptAt INTEGER")
+        db.execSQL("ALTER TABLE pending_uploads ADD COLUMN lastErrorCode TEXT")
+        db.execSQL("ALTER TABLE pending_uploads ADD COLUMN transportStatus TEXT NOT NULL DEFAULT 'queued_local'")
+    }
+}
+
 @Database(
     entities = [Recording::class, PendingUpload::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class RecordingDatabase : RoomDatabase() {
@@ -66,7 +76,7 @@ abstract class RecordingDatabase : RoomDatabase() {
                     RecordingDatabase::class.java,
                     "reflexio_recordings.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

@@ -37,6 +37,7 @@ class StructuredEvent(BaseModel):
 
     id: str
     transcription_id: str
+    episode_id: Optional[str] = None
 
     # Когда
     timestamp: datetime

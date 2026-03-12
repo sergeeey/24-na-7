@@ -1,11 +1,4 @@
-"""Bootstrap и lifecycle для FastAPI-приложения Reflexio 24/7.
-
-Содержит:
-- запуск и остановку фоновых задач (ingest/enrichment workers, health monitor);
-- планировщик APScheduler (compliance cleanup, digest precompute, watchdog-и);
-- вспомогательные процедуры для zero-retention и digest precompute;
-- lifespan-контекст, который вешается на FastAPI-приложение.
-"""
+"""Bootstrap и lifecycle для FastAPI-приложения Reflexio 24/7."""
 
 from __future__ import annotations
 
@@ -25,35 +18,97 @@ from src.utils.logging import get_logger
 
 logger = get_logger("api")
 
-
-# Блокировка по дате для precompute дайджеста (избегаем двух одновременных за одну дату)
 _digest_precompute_locks: dict[str, threading.Lock] = {}
 _digest_precompute_dict_lock = threading.Lock()
+_INGEST_WATCHDOG_RECEIVED_MINUTES = 30
+_INGEST_WATCHDOG_ASR_PENDING_MINUTES = 45
+_INGEST_RECOVERY_BATCH = 25
+_SQLITE_BACKUP_RETENTION_DAYS = 7
+_SLO_ALERT_UNHEALTHY_MINUTES = 30
+_last_slo_unhealthy_at: datetime | None = None
+_last_slo_alert_signature: str | None = None
+
+
+def _resume_retryable_ingest_backlog() -> None:
+    try:
+        from src.api.routers.websocket import get_ingest_result_registry
+        from src.ingest.worker import get_ingest_worker, recover_retryable_ingest_tasks
+
+        db_path = settings.STORAGE_PATH / "reflexio.db"
+        worker = get_ingest_worker(get_ingest_result_registry())
+        result = recover_retryable_ingest_tasks(
+            worker,
+            db_path=db_path,
+            limit=_INGEST_RECOVERY_BATCH,
+        )
+        if result["requeued"] or result["missing_audio"]:
+            logger.info(
+                "ingest_recovery_tick",
+                requeued=result["requeued"],
+                missing_audio=result["missing_audio"],
+            )
+    except Exception as e:  # pragma: no cover
+        logger.error("ingest_recovery_failed", error=str(e))
 
 
 def _run_ingest_watchdog() -> None:
-    """Помечает зависшие ingest_queue записи (pending > 30 мин) как error.
-
-    ПОЧЕМУ: Закон исключённого третьего — запись либо обработана, либо нет.
-    Без watchdog запись может навсегда застрять в 'pending' если worker упал
-    посередине (OOM, перезапуск контейнера). 30 мин — с запасом: ASR + enrichment
-    занимают 10-60 секунд. Если за 30 мин не обработано — точно зависло.
-    """
+    """Помечает зависшие ingest_queue записи как retryable_error."""
     try:
-        from src.storage.db import get_reflexio_db
-
         db_path = settings.STORAGE_PATH / "reflexio.db"
         db = get_reflexio_db(db_path)
-        cutoff = (datetime.now() - timedelta(minutes=30)).isoformat()
+        now_iso = datetime.now().isoformat()
+        queue_cutoff = (
+            datetime.now() - timedelta(minutes=_INGEST_WATCHDOG_RECEIVED_MINUTES)
+        ).isoformat()
+        asr_cutoff = (
+            datetime.now() - timedelta(minutes=_INGEST_WATCHDOG_ASR_PENDING_MINUTES)
+        ).isoformat()
         with db.transaction():
-            result = db.execute(
-                "UPDATE ingest_queue SET status='error', error_message='watchdog: stuck in pending > 30min', processed_at=? WHERE status='pending' AND created_at < ?",
-                (datetime.now().isoformat(), cutoff),
+            queue_result = db.execute(
+                """
+                UPDATE ingest_queue
+                SET status='retryable_error',
+                    processing_status=CASE
+                        WHEN status='received' THEN 'received'
+                        ELSE processing_status
+                    END,
+                    error_code=CASE
+                        WHEN status='received' THEN 'watchdog_stuck_received'
+                        ELSE 'watchdog_stuck_pending'
+                    END,
+                    error_message=CASE
+                        WHEN status='received' THEN 'watchdog: stuck in received > 30min'
+                        ELSE 'watchdog: stuck in pending > 30min'
+                    END,
+                    processed_at=?
+                WHERE status IN ('pending', 'received') AND created_at < ?
+                """,
+                (now_iso, queue_cutoff),
             )
-        affected = result.rowcount if hasattr(result, "rowcount") else 0
+            asr_result = db.execute(
+                """
+                UPDATE ingest_queue
+                SET status='retryable_error',
+                    processing_status='asr_pending',
+                    error_code='watchdog_stuck_asr_pending',
+                    error_message='watchdog: stuck in asr_pending > 45min',
+                    processed_at=?
+                WHERE status='asr_pending' AND created_at < ?
+                """,
+                (now_iso, asr_cutoff),
+            )
+        queue_affected = queue_result.rowcount if hasattr(queue_result, "rowcount") else 0
+        asr_affected = asr_result.rowcount if hasattr(asr_result, "rowcount") else 0
+        affected = queue_affected + asr_affected
         if affected:
-            logger.warning("ingest_watchdog_reaped", stuck_records=affected)
-    except Exception as e:  # pragma: no cover - защитный лог
+            logger.warning(
+                "ingest_watchdog_reaped",
+                stuck_records=affected,
+                queue_records=queue_affected,
+                asr_records=asr_affected,
+            )
+            _resume_retryable_ingest_backlog()
+    except Exception as e:  # pragma: no cover
         logger.error("ingest_watchdog_failed", error=str(e))
 
 
@@ -66,9 +121,9 @@ def _run_audio_retention_cleanup() -> None:
         return
     cutoff = time.time() - settings.AUDIO_RETENTION_HOURS * 3600
     removed = 0
-    for f in uploads_dir.glob("*.wav"):
-        if f.stat().st_mtime < cutoff:
-            f.unlink(missing_ok=True)
+    for wav_file in uploads_dir.glob("*.wav"):
+        if wav_file.stat().st_mtime < cutoff:
+            wav_file.unlink(missing_ok=True)
             removed += 1
     if removed:
         logger.info(
@@ -78,6 +133,20 @@ def _run_audio_retention_cleanup() -> None:
         )
 
 
+def _run_episode_lifecycle() -> None:
+    """Закрывает неактивные эпизоды и переводит завершённые в summarized."""
+    try:
+        from src.memory.episodes import close_stale_episodes, finalize_closed_episodes
+
+        db_path = settings.STORAGE_PATH / "reflexio.db"
+        closed = close_stale_episodes(db_path)
+        summarized = finalize_closed_episodes(db_path)
+        if closed or summarized:
+            logger.info("episode_lifecycle_tick", closed=closed, summarized=summarized)
+    except Exception as e:  # pragma: no cover
+        logger.error("episode_lifecycle_failed", error=str(e))
+
+
 def _run_digest_precompute_body(today: str) -> None:
     """Внутренняя реализация precompute под блокировкой по дате."""
     import json as _json
@@ -85,12 +154,10 @@ def _run_digest_precompute_body(today: str) -> None:
     db: Any = None
     try:
         from src.digest.generator import DigestGenerator
-        from src.storage.db import get_reflexio_db
+        from src.storage.event_log import STAGE_DIGEST_COMPUTED, log_event
 
         db_path = settings.STORAGE_PATH / "reflexio.db"
         db = get_reflexio_db(db_path)
-
-        # Помечаем статус "generating"
         db.execute(
             "INSERT OR REPLACE INTO digest_cache (date, digest_json, generated_at, status) VALUES (?, ?, ?, ?)",
             (today, "{}", datetime.now().isoformat(), "generating"),
@@ -98,7 +165,6 @@ def _run_digest_precompute_body(today: str) -> None:
         db.conn.commit()
 
         logger.info("digest_precompute_started", date=today)
-
         generator = DigestGenerator(db_path=db_path)
         result = generator.get_daily_digest_json(datetime.strptime(today, "%Y-%m-%d").date())
 
@@ -107,14 +173,9 @@ def _run_digest_precompute_body(today: str) -> None:
             (today, _json.dumps(result, ensure_ascii=False), datetime.now().isoformat(), "ready"),
         )
         db.conn.commit()
-        logger.info(
-            "digest_precompute_done", date=today, recordings=result.get("total_recordings", 0)
-        )
+        logger.info("digest_precompute_done", date=today, recordings=result.get("total_recordings", 0))
 
-        # Event log: фиксируем завершение дайджеста как lifecycle-событие дня
         try:
-            from src.storage.event_log import STAGE_DIGEST_COMPUTED, log_event
-
             log_event(
                 today,
                 STAGE_DIGEST_COMPUTED,
@@ -124,34 +185,19 @@ def _run_digest_precompute_body(today: str) -> None:
                 },
             )
         except Exception:
-            # ПОЧЕМУ: digest уже сгенерирован, ошибки логирования не критичны для клиента.
             pass
-
     except Exception as e:
         logger.error("digest_precompute_failed", error=str(e))
         try:
             if db is not None:
-                db.execute(
-                    "UPDATE digest_cache SET status = 'failed' WHERE date = ?",
-                    (today,),
-                )
+                db.execute("UPDATE digest_cache SET status = 'failed' WHERE date = ?", (today,))
                 db.conn.commit()
         except Exception:
             pass
 
 
 def _run_daily_digest_precompute() -> None:
-    """
-    Pre-compute дневного дайджеста в фоне.
-
-    ПОЧЕМУ pre-compute: endpoint /digest/daily делал 3-5 LLM вызовов
-    (Chain of Density + extract_tasks + analyze_emotions) = 4+ минут.
-    Любой HTTP timeout < 4 мин → ошибка на клиенте.
-    Решение: генерируем заранее, клиент получает кеш мгновенно.
-
-    Запускается APScheduler в 18:00 (Алматы). Если сервер был выключен —
-    misfire_grace_time=7200 даёт 2 часа на catch-up.
-    """
+    """Pre-compute дневного дайджеста в фоне."""
     today = datetime.now().strftime("%Y-%m-%d")
     with _digest_precompute_dict_lock:
         date_lock = _digest_precompute_locks.setdefault(today, threading.Lock())
@@ -165,13 +211,7 @@ def _run_daily_digest_precompute() -> None:
 
 
 def _run_compliance_cleanup() -> None:
-    """
-    TTL-очистка биометрических данных окружения.
-
-    ПОЧЕМУ sync, не async: APScheduler BackgroundScheduler работает в
-    отдельном потоке. Sync-функция безопаснее чем запускать coroutine
-    из фонового потока через asyncio.run_coroutine_threadsafe.
-    """
+    """TTL-очистка биометрических данных окружения."""
     try:
         from src.persongraph.compliance import BiometricComplianceManager
 
@@ -184,25 +224,92 @@ def _run_compliance_cleanup() -> None:
             deleted_pending=report.deleted_pending_expired,
             profiles_expired=len(report.profiles_expired),
         )
-    except Exception as e:  # pragma: no cover - защитный лог
+    except Exception as e:  # pragma: no cover
         logger.error("scheduled_compliance_failed", error=str(e))
 
 
-async def _orphan_sweep(
-    storage_path: Path, interval: int = 300, max_age_hours: int = 1
-) -> None:
-    """
-    Фоновая задача: удаляет WAV-сироты старше max_age_hours.
+def _run_sqlite_backup() -> None:
+    """Create daily SQLite backup and prune old snapshots."""
+    try:
+        from src.storage.migrate import backup_sqlite
 
-    Сканирует uploads/ и recordings/ каждые `interval` секунд.
-    Использует secure_delete для compliance с KZ GDPR.
-    """
+        backup_dir = settings.STORAGE_PATH / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"reflexio.db.{datetime.now().strftime('%Y%m%d')}"
+        created_path = backup_sqlite(backup_path=backup_path)
+
+        cutoff = datetime.now() - timedelta(days=_SQLITE_BACKUP_RETENTION_DAYS)
+        removed = 0
+        for snapshot in backup_dir.glob("reflexio.db.*"):
+            try:
+                stamp = snapshot.name.rsplit(".", 1)[-1]
+                snapshot_dt = datetime.strptime(stamp, "%Y%m%d")
+            except ValueError:
+                continue
+            if snapshot_dt < cutoff:
+                snapshot.unlink(missing_ok=True)
+                removed += 1
+
+        logger.info(
+            "sqlite_backup_rotation_done",
+            backup_path=str(created_path),
+            removed=removed,
+            retention_days=_SQLITE_BACKUP_RETENTION_DAYS,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.error("sqlite_backup_failed", error=str(e))
+
+
+def _run_slo_telegram_alert() -> None:
+    """Send Telegram alert if pipeline stays unhealthy for >30 minutes."""
+    global _last_slo_unhealthy_at, _last_slo_alert_signature
+    try:
+        from src.api.routers.ingest import get_pipeline_status
+        from src.digest.telegram_sender import TelegramDigestSender
+
+        status = asyncio.run(get_pipeline_status())
+        slo_state = status.get("slo_state", {})
+        state = str(slo_state.get("status", "unknown"))
+        alerts = slo_state.get("alerts", [])
+        signature = f"{state}:{','.join(sorted(str(alert) for alert in alerts))}"
+
+        if state == "healthy":
+            _last_slo_unhealthy_at = None
+            _last_slo_alert_signature = None
+            return
+
+        now = datetime.now(timezone.utc)
+        if _last_slo_unhealthy_at is None:
+            _last_slo_unhealthy_at = now
+            return
+
+        if now - _last_slo_unhealthy_at < timedelta(minutes=_SLO_ALERT_UNHEALTHY_MINUTES):
+            return
+        if _last_slo_alert_signature == signature:
+            return
+
+        sender = TelegramDigestSender()
+        snapshot = slo_state.get("snapshot", {})
+        message = (
+            f"Reflexio alert: slo_state={state}\n"
+            f"alerts={', '.join(str(alert) for alert in alerts) or 'none'}\n"
+            f"trusted_fraction={snapshot.get('trusted_fraction')}\n"
+            f"review_fraction={snapshot.get('review_fraction')}\n"
+            f"stale_received={snapshot.get('stale_received')}\n"
+            f"stale_asr_pending={snapshot.get('stale_asr_pending')}"
+        )
+        if sender.send_text(message):
+            _last_slo_alert_signature = signature
+            logger.warning("slo_telegram_alert_sent", signature=signature)
+    except Exception as e:  # pragma: no cover
+        logger.warning("slo_telegram_alert_failed", error=str(e))
+
+
+async def _orphan_sweep(storage_path: Path, interval: int = 300, max_age_hours: int = 1) -> None:
+    """Фоновая задача: удаляет WAV-сироты старше max_age_hours."""
     from src.utils.secure_delete import secure_delete
 
-    scan_dirs = [
-        storage_path / "uploads",
-        storage_path / "recordings",
-    ]
+    scan_dirs = [storage_path / "uploads", storage_path / "recordings"]
     cutoff_delta = timedelta(hours=max_age_hours)
 
     while True:
@@ -215,26 +322,21 @@ async def _orphan_sweep(
                     continue
                 for wav_file in scan_dir.glob("*.wav"):
                     try:
-                        mtime = datetime.fromtimestamp(
-                            wav_file.stat().st_mtime, tz=timezone.utc
-                        )
+                        mtime = datetime.fromtimestamp(wav_file.stat().st_mtime, tz=timezone.utc)
                         if mtime < cutoff:
                             secure_delete(wav_file)
                             deleted += 1
                     except Exception as e:
-                        logger.warning(
-                            "orphan_sweep_file_error", file=str(wav_file), error=str(e)
-                        )
+                        logger.warning("orphan_sweep_file_error", file=str(wav_file), error=str(e))
             if deleted > 0:
                 logger.info("orphan_sweep_done", deleted=deleted)
-        except Exception as e:  # pragma: no cover - защитный лог
+        except Exception as e:  # pragma: no cover
             logger.error("orphan_sweep_failed", error=str(e))
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
-    """Lifecycle: startup → yield → shutdown."""
-    # ── Startup ──────────────────────────────────
+    """Lifecycle: startup -> yield -> shutdown."""
     logger.info("Reflexio API starting", host=settings.API_HOST, port=settings.API_PORT)
 
     db_path = settings.STORAGE_PATH / "reflexio.db"
@@ -243,15 +345,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     if applied:
         logger.info("migrations_applied", count=len(applied), names=applied)
 
-    # ПОЧЕМУ верификация WAL: get_connection() ставит WAL при создании,
-    # но это может не сработать (read-only FS, permissions). Проверяем факт.
     try:
         db = get_reflexio_db(db_path)
-        _wal_mode = db.fetchone("PRAGMA journal_mode")[0]
-        if _wal_mode == "wal":
+        wal_mode = db.fetchone("PRAGMA journal_mode")[0]
+        if wal_mode == "wal":
             logger.info("wal_mode_verified", db_path=str(db_path))
         else:
-            logger.warning("wal_mode_not_active", actual=_wal_mode, db_path=str(db_path))
+            logger.warning("wal_mode_not_active", actual=wal_mode, db_path=str(db_path))
     except Exception as e:
         logger.error("wal_verification_failed", error=str(e))
 
@@ -261,33 +361,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     if safe_checker:
         logger.info("SAFE validation enabled", mode=os.getenv("SAFE_MODE", "audit"))
 
-    # Health monitor
     try:
         from src.monitor.health import periodic_check
 
         asyncio.create_task(periodic_check(interval=300))
         logger.info("health_monitor_started")
-    except Exception as e:  # pragma: no cover - защитный лог
+    except Exception as e:  # pragma: no cover
         logger.warning("health_monitor_failed", error=str(e))
 
-    # ПОЧЕМУ orphan sweep: ingest сохраняет WAV в uploads/ и может крашнуться
-    # до удаления. Фоновая задача — defense in depth для zero-retention.
     asyncio.create_task(_orphan_sweep(settings.STORAGE_PATH, interval=300))
 
-    # Enrichment workers: async queue для LLM-обогащения
     from src.enrichment.worker import get_enrichment_worker
 
     enrichment_worker = get_enrichment_worker()
     await enrichment_worker.start()
 
-    # Ingest workers: принятый по WebSocket аудио обрабатывается в фоне (ASR + enrichment).
     from src.api.routers.websocket import get_ingest_result_registry
     from src.ingest.worker import get_ingest_worker
 
     ingest_worker = get_ingest_worker(get_ingest_result_registry())
     await ingest_worker.start()
+    _resume_retryable_ingest_backlog()
 
-    # APScheduler: ежедневный compliance cleanup в 03:00
     scheduler = None
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
@@ -300,10 +395,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
             minute=0,
             id="compliance_cleanup",
             replace_existing=True,
-            misfire_grace_time=3600,  # 1 час — если сервер был выключен
+            misfire_grace_time=3600,
         )
-        # ПОЧЕМУ 12:00 UTC: пользователь в Алматы (UTC+6).
-        # 12:00 UTC = 18:00 Алматы. Генерация 2-5 мин → готово к 18:05 Алматы.
         scheduler.add_job(
             _run_daily_digest_precompute,
             trigger="cron",
@@ -313,7 +406,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
             replace_existing=True,
             misfire_grace_time=7200,
         )
-        # Ingest watchdog — помечает зависшие pending записи как error
         scheduler.add_job(
             _run_ingest_watchdog,
             trigger="interval",
@@ -321,7 +413,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
             id="ingest_watchdog",
             replace_existing=True,
         )
-        # Audio retention cleanup — удаляет WAV старше AUDIO_RETENTION_HOURS
+        scheduler.add_job(
+            _run_slo_telegram_alert,
+            trigger="interval",
+            minutes=15,
+            id="slo_telegram_alert",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            _run_episode_lifecycle,
+            trigger="interval",
+            minutes=5,
+            id="episode_lifecycle",
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            _run_sqlite_backup,
+            trigger="cron",
+            hour=4,
+            minute=0,
+            id="sqlite_backup",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
         if settings.AUDIO_RETENTION_HOURS > 0:
             scheduler.add_job(
                 _run_audio_retention_cleanup,
@@ -333,17 +447,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         scheduler.start()
         logger.info(
             "apscheduler_started",
-            jobs="compliance_cleanup@03:00, digest_precompute@12:00UTC(18:00ALM)",
+            jobs="compliance_cleanup@03:00, sqlite_backup@04:00, digest_precompute@12:00UTC(18:00ALM), ingest_watchdog@15m, slo_telegram_alert@15m, episode_lifecycle@5m",
         )
     except ImportError:
         logger.warning("apscheduler_not_installed", hint="pip install apscheduler")
-    except Exception as e:  # pragma: no cover - защитный лог
+    except Exception as e:  # pragma: no cover
         logger.error("apscheduler_failed", error=str(e))
 
-    # ── Приложение работает ───────────────────────
     yield
 
-    # ── Shutdown ─────────────────────────────────
     await ingest_worker.stop()
     await enrichment_worker.stop()
     if scheduler and scheduler.running:
@@ -351,4 +463,3 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         logger.info("apscheduler_stopped")
     ReflexioDB.close_all_instances()
     logger.info("Reflexio API stopped")
-

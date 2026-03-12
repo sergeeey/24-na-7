@@ -40,3 +40,63 @@ def _clean_reflexio_db_singletons():
     for instance in ReflexioDB._instances.values():
         instance.close_thread_connection()
     ReflexioDB._instances.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter_storage():
+    """Сбрасывает in-memory rate limiter между тестами.
+
+    ПОЧЕМУ: весь suite использует один app singleton, а slowapi memory backend
+    хранит counters между TestClient instances. Без reset поздние тесты по
+    /ingest/audio начинают падать на 429 из-за предыдущих запросов.
+    """
+    try:
+        from src.api.main import app
+        from src.api.routers import admin
+        from src.api.routers import analyze
+        from src.api.routers import asr
+        from src.api.routers import audit
+        from src.api.routers import balance
+        from src.api.routers import commitments
+        from src.api.routers import compliance
+        from src.api.routers import digest
+        from src.api.routers import graph
+        from src.api.routers import health_metrics
+        from src.api.routers import ingest
+        from src.api.routers import memory
+        from src.api.routers import metrics
+        from src.api.routers import query
+        from src.api.routers import search
+        from src.api.routers import voice
+
+        limiters = [
+            getattr(app.state, "limiter", None),
+            getattr(admin, "limiter", None),
+            getattr(analyze, "limiter", None),
+            getattr(asr, "limiter", None),
+            getattr(audit, "limiter", None),
+            getattr(balance, "limiter", None),
+            getattr(commitments, "limiter", None),
+            getattr(compliance, "limiter", None),
+            getattr(digest, "limiter", None),
+            getattr(graph, "limiter", None),
+            getattr(health_metrics, "limiter", None),
+            getattr(ingest, "limiter", None),
+            getattr(memory, "limiter", None),
+            getattr(metrics, "limiter", None),
+            getattr(query, "limiter", None),
+            getattr(search, "limiter", None),
+            getattr(voice, "limiter", None),
+        ]
+
+        def _reset(limiters_to_reset):
+            for limiter in limiters_to_reset:
+                storage = getattr(limiter, "_storage", None)
+                if storage is not None and hasattr(storage, "reset"):
+                    storage.reset()
+
+        _reset(limiters)
+        yield
+        _reset(limiters)
+    except Exception:
+        yield

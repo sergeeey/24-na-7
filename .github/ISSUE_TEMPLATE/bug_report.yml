@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a defect in Android, backend, digest, or memory loop behavior.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Android
+        - Backend API
+        - ASR / transcription
+        - Digest / query
+        - Storage / data integrity
+        - CI / deployment
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: Describe the observed behavior and why it is wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: List the exact steps to reproduce the issue.
+      placeholder: |
+        1. Start recording...
+        2. Upload a segment...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Include logs, timestamps, API responses, or screenshots.
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true

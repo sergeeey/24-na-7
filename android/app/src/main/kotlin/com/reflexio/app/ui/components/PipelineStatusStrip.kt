@@ -76,7 +76,7 @@ fun PipelineStatusStrip(
     var serverOk by remember { mutableStateOf<Boolean?>(null) }
     var lastStage by remember { mutableStateOf<String?>(null) }
     var lastError by remember { mutableStateOf<String?>(null) }
-    var isDebugMode by remember { mutableStateOf(BuildConfig.DEBUG) }
+    var isDebugMode by remember { mutableStateOf(false) }
     var refreshTrigger by remember { mutableIntStateOf(0) }
     var isLoading by remember { mutableStateOf(false) }
     var lastServerCheckAt by remember { mutableStateOf<Long?>(null) }
@@ -132,7 +132,7 @@ fun PipelineStatusStrip(
                 pServerOk = false
             }
             PipelineStripData(
-                isDebug = PipelineDiagnostics.getDebugStripVisible(context, BuildConfig.DEBUG),
+                isDebug = PipelineDiagnostics.getDebugStripVisible(context, false),
                 pendingCount = pCount,
                 processedCount = pProcessed,
                 lastProcessedAt = pLastAt,
@@ -254,12 +254,11 @@ private fun DebugStripContent(
     val colorScheme = MaterialTheme.colorScheme
     val row1 = buildList {
         add("Очередь: $pendingCount")
-        add("Отправлено: $processedCount")
         when (val st = serverToday) {
             null -> if (serverOk == false) {
                 add(lastServerStatusCode?.let { "Сервер: HTTP $it" } ?: "Сервер: ошибка")
             } else add("Сервер: —")
-            else -> add("Сервер сегодня: $st")
+            else -> add("На сервере сегодня: $st")
         }
         lastServerCheckAt?.let { ts ->
             val c = Calendar.getInstance()
@@ -272,7 +271,7 @@ private fun DebugStripContent(
     val errorLabel = when {
         lastError == null -> null
         lastStage == "error" -> "Ошибка: $lastError"
-        isSuccessStage -> "Пред. ошибка: $lastError"
+        isSuccessStage -> null
         else -> "Ошибка: $lastError"
     }
     val errorColor = if (lastStage == "error") colorScheme.error else colorScheme.outline

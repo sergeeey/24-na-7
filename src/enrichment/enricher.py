@@ -52,6 +52,26 @@ WHISPER_HALLUCINATIONS = {
 MIN_WORDS_FOR_ENRICHMENT = 3
 
 
+def _normalize_people(items: list[Any]) -> list[str]:
+    people: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if isinstance(item, str):
+            candidate = item.strip()
+        elif isinstance(item, dict):
+            candidate = str(item.get("person") or item.get("name") or "").strip()
+        else:
+            candidate = ""
+        if not candidate:
+            continue
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        people.append(candidate)
+    return people
+
+
 def _compute_enrichment_confidence(analysis: dict) -> float:
     """Закон достаточного основания: каждый вес обоснован.
 
@@ -138,6 +158,7 @@ def _run_analysis_with_retry(clean_text: str) -> tuple[dict[str, Any], float]:
 
 def enrich_transcription(
     transcription_id: str,
+    episode_id: str | None,
     text: str,
     timestamp: datetime,
     duration_sec: float = 0.0,
@@ -156,6 +177,7 @@ def enrich_transcription(
     base_event = StructuredEvent(
         id=event_id,
         transcription_id=transcription_id,
+        episode_id=episode_id,
         timestamp=timestamp,
         duration_sec=duration_sec,
         text=text,
@@ -246,6 +268,11 @@ def enrich_transcription(
                         context=c.get("context"),
                     )
                 )
+        speakers = _normalize_people(analysis.get("speakers", []) or [])
+        if not speakers and commitments:
+            speakers = _normalize_people(
+                [{"person": commitment.person} for commitment in commitments if commitment.person]
+            )
 
         base_event.summary = analysis.get("summary", "")
         base_event.emotions = emotions
@@ -253,6 +280,7 @@ def enrich_transcription(
         base_event.domains = domains
         base_event.tasks = tasks
         base_event.commitments = commitments
+        base_event.speakers = speakers
         base_event.urgency = analysis.get("urgency", "medium")
         base_event.sentiment = sentiment
         base_event.enrichment_confidence = _compute_enrichment_confidence(analysis)
@@ -265,6 +293,7 @@ def enrich_transcription(
             "enrichment_complete",
             event_id=event_id,
             topics=base_event.topics,
+            speakers=base_event.speakers,
             domains=base_event.domains,
             tasks_count=len(tasks),
             commitments_count=len(commitments),

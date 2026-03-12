@@ -1,55 +1,58 @@
 # Tech Context — Reflexio 24/7
 
-## Окружение разработки
-- OS: Windows 11 Pro (build 26200)
+## Окружение
+- Dev OS: Windows 11 Pro
 - Python: 3.11+ (conda)
-- GPU: RTX 5070 Ti (16 GB VRAM) — хватает на Whisper small/medium
-- RAM: 96 GB
-- IDE: Claude Code (основной), Cursor (legacy)
+- Workspace: `D:\24 na 7`
+- Git remote: `https://github.com/sergeeey/24-na-7.git`
+- Prod target: `root@46.225.211.115`, app path `/opt/reflexio`
 
-## Стек
-- **FastAPI** — веб-фреймворк, uvicorn
-- **faster-whisper** — ASR (small int8 по умолчанию)
-- **webrtcvad** — Voice Activity Detection
-- **sounddevice** — захват аудио с микрофона
-- **librosa** — анализ спектра (фильтрация музыки)
-- **structlog** — логирование
-- **pydantic / pydantic-settings** — валидация, конфигурация
-- **slowapi** — rate limiting
-- **SQLite** — MVP storage (→ Supabase в проде)
-- **OpenAI / Anthropic API** — LLM для enrichment
+## Backend стек
+- FastAPI + uvicorn
+- slowapi для rate limiting
+- SQLite / SQLCipher через `src/storage/db.py`
+- Redis в production compose для rate limiting storage
+- APScheduler для фоновых задач
+- faster-whisper / audio pipeline
+- async ingest worker + async enrichment worker
+- LLM cascade: Google / Anthropic / OpenAI
 
-## Зависимости (потенциальные проблемы)
-- `sounddevice` — требует PortAudio (может не быть на Windows без доп установки)
-- `webrtcvad` — C-extension, может быть проблема при pip install на Windows
-- `faster-whisper` — требует ctranslate2, ~500 MB модель при первом запуске
-- `redis` — в requirements, но для MVP не нужен (rate limiting в memory)
-- `hvac` — HashiCorp Vault клиент, для MVP не нужен
-- Letta SDK — используется в memory/core_memory.py, может не быть установлен
+## Runtime архитектура
+- `src/core/bootstrap.py` управляет lifecycle, APScheduler, ingest worker, enrichment worker
+- `src/core/audio_processing.py` содержит unified audio pipeline и sync/async enrichment entrypoints
+- `src/api/routers/ingest.py` экспонирует status/trends/reprocess для ingest pipeline
+- `src/memory/truth.py` и `src/api/routers/admin.py` покрывают truth-layer recovery (`reclassify`, `recheck`)
 
-## База данных (SQLite MVP)
-Таблицы (schema.sql):
-- `ingest_queue` — загруженные аудиофайлы (id, filename, path, size, status)
-- `transcriptions` — транскрипции (text, language, duration, segments JSON)
-- `facts` — извлечённые факты (fact_text, timestamp, confidence)
-- `digests` — метаданные дайджестов (date, summary, facts_count)
-- `recording_analyses` — анализы записей (summary, emotions, actions, topics)
+## Operational детали
+- ingest watchdog:
+  - `received/pending` > 30 мин → `retryable_error`
+  - `asr_pending` > 45 мин → `retryable_error`
+- ingest recovery:
+  - bounded resume backlog из SQLite в in-memory worker
+  - missing audio → `quarantined`
+- enrichment queue:
+  - 2 worker'а
+  - bounded retry до 2 повторов
+  - после лимита: запись остаётся `transcribed` с `enrichment_failed`
+- backups:
+  - APScheduler cron `04:00`
+  - snapshots в `STORAGE_PATH/backups`
+  - retention 7 дней
+- SLO alerting:
+  - hook на Telegram sender
+  - отправка только при `slo_state != healthy` дольше 30 минут
+  - требует `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`
 
-## Конфигурация (.env)
-- `LLM_PROVIDER` — openai | anthropic
-- `DB_BACKEND` — sqlite | supabase
-- `ASR_MODEL_SIZE` — tiny/small/medium/large
-- `FILTER_MUSIC` — фильтр музыки/шума
-- `SAFE_MODE` — audit | strict | disabled
-- `VAULT_ENABLED` — false для MVP
+## Prod compose
+- файл: `docker-compose.prod.yml`
+- `api` healthcheck:
+  - `curl -f http://localhost:8000/health`
+  - `interval: 30s`
+  - `timeout: 10s`
+  - `retries: 3`
+- код в prod подхватывается через volume `./src:/app/src`
 
-## API Endpoints (8 роутеров)
-- `/health` — health check
-- `/ingest/audio` — POST загрузка аудио
-- `/asr/transcribe` — POST транскрипция
-- `/digest/today` — GET дайджест за сегодня
-- `/digest/{date}` — GET дайджест за дату
-- `/metrics` — метрики системы
-- `/search/phrases` — поиск по фразам
-- `/voice/intent` — распознавание намерений
-- `/ws/ingest` — WebSocket для потокового аудио
+## Известные ограничения
+- полная калибровка truth layer и dogfooding требуют живых данных и времени наблюдения
+- deploy/push/merge возможны только при валидном git auth и SSH доступе
+- часть ветки уже содержит WIP changes; перед merge нужен аккуратный commit discipline

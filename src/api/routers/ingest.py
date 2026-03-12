@@ -1,5 +1,7 @@
 """Роутер для загрузки и обработки аудио."""
+import json
 import os
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
@@ -8,6 +10,7 @@ from slowapi.util import get_remote_address
 
 from src.api.middleware.safe_middleware import get_safe_checker
 from src.core.audio_processing import process_audio_bytes, validate_safe_file_size
+from src.ingest.worker import IngestTask, get_ingest_worker
 from src.utils.config import settings  # noqa: F401
 from src.utils.logging import get_logger
 from src.utils.rate_limiter import RateLimitConfig
@@ -15,6 +18,203 @@ from src.utils.rate_limiter import RateLimitConfig
 logger = get_logger("api.ingest")
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+_REPROCESS_STALE_MINUTES = 30
+
+
+def _is_stale_for_reprocess(created_at: str | None) -> bool:
+    if not created_at:
+        return False
+    try:
+        created = datetime.fromisoformat(created_at)
+    except ValueError:
+        return False
+    return created <= datetime.now() - timedelta(minutes=_REPROCESS_STALE_MINUTES)
+
+
+def _build_slo_state(
+    *,
+    ingest_queue: dict[str, int],
+    episode_counts: dict[str, int],
+    day_thread_counts: dict[str, int],
+    quality_counts: dict[str, int],
+    memory_health: dict[str, float | int | bool],
+    ingest_health: dict[str, object] | None = None,
+) -> dict[str, object]:
+    alerts: list[str] = []
+    trusted_fraction = float(memory_health.get("trusted_fraction", 0.0) or 0.0)
+    review_fraction = float(memory_health.get("review_fraction", 0.0) or 0.0)
+    thread_coverage = float(memory_health.get("thread_coverage", 0.0) or 0.0)
+    digest_incomplete = int(memory_health.get("digest_incomplete_context_total", 0) or 0)
+    ingest_health = ingest_health or {}
+    stale_counts = ingest_health.get("stale_counts", {}) if isinstance(ingest_health, dict) else {}
+    if isinstance(stale_counts, dict):
+        stale_received = int(stale_counts.get("received", 0) or 0)
+        stale_asr_pending = int(stale_counts.get("asr_pending", 0) or 0)
+    else:
+        stale_received = 0
+        stale_asr_pending = 0
+
+    if trusted_fraction < 0.5:
+        alerts.append("low_trusted_fraction")
+    if review_fraction > 0.5:
+        alerts.append("high_review_fraction")
+    if int(quality_counts.get("quarantined", 0)) > 0:
+        alerts.append("episodes_quarantined_present")
+    if int(ingest_queue.get("quarantine", 0)) > 0:
+        alerts.append("ingest_quarantine_present")
+    if int(episode_counts.get("summarized", 0)) > 0 and thread_coverage < 0.5:
+        alerts.append("low_day_thread_coverage")
+    if digest_incomplete > 0:
+        alerts.append("degraded_digest_present")
+    if stale_received > 0:
+        alerts.append("stale_received_present")
+    if stale_asr_pending > 0:
+        alerts.append("stale_asr_pending_present")
+
+    status = "healthy"
+    if alerts:
+        status = "degraded"
+    if any(
+        code in alerts
+        for code in (
+            "episodes_quarantined_present",
+            "ingest_quarantine_present",
+        )
+    ):
+        status = "attention"
+
+    return {
+        "status": status,
+        "alerts": alerts,
+        "beta_thresholds": {
+            "min_trusted_fraction": 0.5,
+            "max_review_fraction": 0.5,
+            "min_thread_coverage": 0.5,
+            "max_digest_incomplete_context_total": 0,
+        },
+        "snapshot": {
+            "trusted_fraction": trusted_fraction,
+            "review_fraction": review_fraction,
+            "thread_coverage": thread_coverage,
+            "digest_incomplete_context_total": digest_incomplete,
+            "episodes_summarized": int(episode_counts.get("summarized", 0)),
+            "day_threads_trusted": int(day_thread_counts.get("trusted", 0)),
+            "stale_received": stale_received,
+            "stale_asr_pending": stale_asr_pending,
+        },
+    }
+
+
+def _build_recent_day_trends(db, *, days_back: int) -> list[dict[str, object]]:
+    today = date.today()
+    digest_rows = {
+        row["date"]: row["digest_json"]
+        for row in db.fetchall(
+            """
+            SELECT date, digest_json
+            FROM digest_cache
+            WHERE date BETWEEN ? AND ?
+            """,
+            (
+                (today - timedelta(days=days_back - 1)).isoformat(),
+                today.isoformat(),
+            ),
+        )
+    }
+
+    recent_days: list[dict[str, object]] = []
+    for offset in range(days_back):
+        day_key = (today - timedelta(days=offset)).isoformat()
+        trusted_count = db.fetchone(
+            "SELECT COUNT(*) FROM episodes WHERE day_key = ? AND quality_state = 'trusted'",
+            (day_key,),
+        )[0]
+        uncertain_count = db.fetchone(
+            "SELECT COUNT(*) FROM episodes WHERE day_key = ? AND quality_state = 'uncertain'",
+            (day_key,),
+        )[0]
+        garbage_count = db.fetchone(
+            "SELECT COUNT(*) FROM episodes WHERE day_key = ? AND quality_state = 'garbage'",
+            (day_key,),
+        )[0]
+        quarantined_count = db.fetchone(
+            "SELECT COUNT(*) FROM episodes WHERE day_key = ? AND quality_state = 'quarantined'",
+            (day_key,),
+        )[0]
+        day_thread_count = db.fetchone(
+            "SELECT COUNT(*) FROM day_threads WHERE day_key = ?",
+            (day_key,),
+        )[0]
+        long_thread_count = db.fetchone(
+            """
+            SELECT COUNT(DISTINCT long_thread_key)
+            FROM day_threads
+            WHERE day_key = ? AND long_thread_key IS NOT NULL AND long_thread_key != ''
+            """,
+            (day_key,),
+        )[0]
+        received_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'received'",
+            (day_key,),
+        )[0]
+        asr_pending_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'asr_pending'",
+            (day_key,),
+        )[0]
+        event_ready_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'event_ready'",
+            (day_key,),
+        )[0]
+        retryable_error_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'retryable_error'",
+            (day_key,),
+        )[0]
+        quarantined_ingest_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'quarantined'",
+            (day_key,),
+        )[0]
+        avg_received_to_processed_ms = db.fetchone(
+            """
+            SELECT AVG((julianday(processed_at) - julianday(created_at)) * 86400000.0)
+            FROM ingest_queue
+            WHERE date(created_at) = ?
+              AND processed_at IS NOT NULL
+              AND status IN ('transcribed', 'event_ready', 'retryable_error', 'quarantined', 'filtered')
+            """,
+            (day_key,),
+        )[0]
+        digest_payload = {}
+        if day_key in digest_rows:
+            try:
+                digest_payload = json.loads(digest_rows[day_key] or "{}")
+            except Exception:
+                digest_payload = {}
+        recent_days.append(
+            {
+                "day": day_key,
+                "trusted_count": trusted_count,
+                "uncertain_count": uncertain_count,
+                "garbage_count": garbage_count,
+                "quarantined_count": quarantined_count,
+                "review_count": uncertain_count + garbage_count + quarantined_count,
+                "day_thread_count": day_thread_count,
+                "long_thread_count": long_thread_count,
+                "received_count": received_count,
+                "asr_pending_count": asr_pending_count,
+                "event_ready_count": event_ready_count,
+                "retryable_error_count": retryable_error_count,
+                "quarantined_ingest_count": quarantined_ingest_count,
+                "avg_received_to_processed_ms": (
+                    round(float(avg_received_to_processed_ms), 1)
+                    if avg_received_to_processed_ms is not None
+                    else None
+                ),
+                "degraded_digest": bool(
+                    digest_payload.get("degraded") or digest_payload.get("incomplete_context")
+                ),
+            }
+        )
+    return recent_days
 
 
 @router.post("/audio")
@@ -47,6 +247,8 @@ async def ingest_audio(request: Request, response: Response, file: UploadFile = 
             content=content,
             content_type=file.content_type,
             original_filename=file.filename,
+            segment_id=request.headers.get("X-Segment-Id"),
+            captured_at=request.headers.get("X-Captured-At"),
             ingest_stage="ingest_audio_received",
             transcription_stage="ingest_transcription_saved",
             run_enrichment=sync_process,
@@ -65,6 +267,13 @@ async def ingest_audio(request: Request, response: Response, file: UploadFile = 
             "size": len(content),
         }
         if unified.get("status") == "transcribed":
+            payload = unified.get("result", {})
+            out["transcription"] = {
+                "text": payload.get("text", ""),
+                "language": payload.get("language", ""),
+                "privacy_mode": payload.get("privacy_mode", "audit"),
+            }
+        if unified.get("status") == "duplicate" and unified.get("result"):
             payload = unified.get("result", {})
             out["transcription"] = {
                 "text": payload.get("text", ""),
@@ -107,7 +316,44 @@ async def get_pipeline_status():
             "transcriptions_today": 0,
             "transcriptions_total": 0,
             "last_transcription_at": None,
-            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0},
+            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0, "quarantine": 0},
+            "ingest_stage_counts": {},
+            "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
+            "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
+            "long_thread_counts": {"total": 0, "active": 0, "resolved": 0},
+            "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
+            "ingest_health": {
+                "stale_counts": {"received": 0, "asr_pending": 0},
+                "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
+                "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
+            },
+            "memory_health": {
+                "trusted_fraction": 0.0,
+                "review_fraction": 0.0,
+                "thread_coverage": 0.0,
+                "digest_incomplete_context_total": 0,
+                "degraded_digest_candidate": False,
+            },
+            "slo_state": {
+                "status": "healthy",
+                "alerts": [],
+                "beta_thresholds": {
+                    "min_trusted_fraction": 0.5,
+                    "max_review_fraction": 0.5,
+                    "min_thread_coverage": 0.5,
+                    "max_digest_incomplete_context_total": 0,
+                },
+                "snapshot": {
+                    "trusted_fraction": 0.0,
+                    "review_fraction": 0.0,
+                    "thread_coverage": 0.0,
+                    "digest_incomplete_context_total": 0,
+                    "episodes_summarized": 0,
+                    "day_threads_trusted": 0,
+                    "stale_received": 0,
+                    "stale_asr_pending": 0,
+                },
+            },
         }
 
     db = get_reflexio_db(db_path)
@@ -125,11 +371,151 @@ async def get_pipeline_status():
         )
         last_at = last_row[0] if last_row and last_row[0] else None
         q = {
-            "pending": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'pending'")[0],
-            "processed": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'processed'")[0],
-            "error": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'error'")[0],
+            "pending": db.fetchone(
+                "SELECT COUNT(*) FROM ingest_queue WHERE status IN ('pending','received','deduplicated','asr_pending','event_pending','transcribed')"
+            )[0],
+            "processed": db.fetchone(
+                "SELECT COUNT(*) FROM ingest_queue WHERE status IN ('processed','event_ready')"
+            )[0],
+            "error": db.fetchone(
+                "SELECT COUNT(*) FROM ingest_queue WHERE status IN ('error','retryable_error')"
+            )[0],
             "filtered": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'filtered'")[0],
+            "quarantine": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'quarantined'")[0],
         }
+        stage_counts = {
+            "received": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'received'")[0],
+            "deduplicated": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE transport_status = 'deduplicated'")[0],
+            "asr_pending": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'asr_pending'")[0],
+            "transcribed": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'transcribed'")[0],
+            "event_pending": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'event_pending'")[0],
+            "event_ready": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'event_ready'")[0],
+            "retryable_error": db.fetchone("SELECT COUNT(*) FROM ingest_queue WHERE status = 'retryable_error'")[0],
+            "quarantined": q["quarantine"],
+        }
+        episode_counts = {
+            "open": db.fetchone("SELECT COUNT(*) FROM episodes WHERE status = 'open'")[0],
+            "closed": db.fetchone("SELECT COUNT(*) FROM episodes WHERE status = 'closed'")[0],
+            "summarized": db.fetchone("SELECT COUNT(*) FROM episodes WHERE status = 'summarized'")[0],
+            "needs_review": db.fetchone("SELECT COUNT(*) FROM episodes WHERE needs_review = 1")[0],
+        }
+        day_thread_counts = {
+            "total": db.fetchone("SELECT COUNT(*) FROM day_threads")[0],
+            "trusted": db.fetchone("SELECT COUNT(*) FROM day_threads WHERE thread_confidence >= 0.7")[0],
+            "low_confidence": db.fetchone("SELECT COUNT(*) FROM day_threads WHERE thread_confidence < 0.7")[0],
+        }
+        long_thread_counts = {
+            "total": db.fetchone("SELECT COUNT(*) FROM long_threads")[0],
+            "active": db.fetchone("SELECT COUNT(*) FROM long_threads WHERE status = 'active'")[0],
+            "resolved": db.fetchone("SELECT COUNT(*) FROM long_threads WHERE status = 'resolved'")[0],
+        }
+        quality_counts = {
+            "trusted": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'trusted'")[0],
+            "uncertain": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'uncertain'")[0],
+            "garbage": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'garbage'")[0],
+            "quarantined": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'quarantined'")[0],
+        }
+        stale_counts = {
+            "received": db.fetchone(
+                """
+                SELECT COUNT(*) FROM ingest_queue
+                WHERE status = 'received'
+                  AND created_at < datetime('now', '-30 minutes')
+                """
+            )[0],
+            "asr_pending": db.fetchone(
+                """
+                SELECT COUNT(*) FROM ingest_queue
+                WHERE status = 'asr_pending'
+                  AND created_at < datetime('now', '-45 minutes')
+                """
+            )[0],
+        }
+        recovery_counts = {
+            "watchdog_retryable": db.fetchone(
+                """
+                SELECT COUNT(*) FROM ingest_queue
+                WHERE status = 'retryable_error'
+                  AND error_code IN (
+                    'watchdog_stuck_pending',
+                    'watchdog_stuck_received',
+                    'watchdog_stuck_asr_pending'
+                  )
+                """
+            )[0],
+            "asr_runtime_retryable": db.fetchone(
+                """
+                SELECT COUNT(*) FROM ingest_queue
+                WHERE status = 'retryable_error'
+                  AND error_code = 'asr_runtime_error'
+                """
+            )[0],
+        }
+        received_to_terminal_avg = db.fetchone(
+            """
+            SELECT AVG((julianday(processed_at) - julianday(created_at)) * 86400000.0)
+            FROM ingest_queue
+            WHERE processed_at IS NOT NULL
+              AND status IN ('transcribed', 'event_ready', 'retryable_error', 'quarantined', 'filtered')
+            """
+        )[0]
+        received_to_event_ready_avg = db.fetchone(
+            """
+            SELECT AVG((julianday(processed_at) - julianday(created_at)) * 86400000.0)
+            FROM ingest_queue
+            WHERE processed_at IS NOT NULL
+              AND status = 'event_ready'
+            """
+        )[0]
+        ingest_health = {
+            "stale_counts": stale_counts,
+            "recovery_counts": recovery_counts,
+            "latency_ms": {
+                "received_to_terminal_avg": (
+                    round(float(received_to_terminal_avg), 1)
+                    if received_to_terminal_avg is not None
+                    else None
+                ),
+                "received_to_event_ready_avg": (
+                    round(float(received_to_event_ready_avg), 1)
+                    if received_to_event_ready_avg is not None
+                    else None
+                ),
+            },
+        }
+        digest_rows = db.fetchall("SELECT digest_json FROM digest_cache")
+        digest_incomplete_context_total = 0
+        for row in digest_rows:
+            try:
+                payload = json.loads(row["digest_json"] or "{}")
+            except Exception:
+                continue
+            if payload.get("incomplete_context") or payload.get("degraded"):
+                digest_incomplete_context_total += 1
+        trusted_total = quality_counts["trusted"]
+        review_total = quality_counts["uncertain"] + quality_counts["garbage"] + quality_counts["quarantined"]
+        quality_total = trusted_total + review_total
+        summarized_total = episode_counts["summarized"]
+        trusted_threads = day_thread_counts["trusted"]
+        memory_health = {
+            "trusted_fraction": round((trusted_total / quality_total), 3) if quality_total else 0.0,
+            "review_fraction": round((review_total / quality_total), 3) if quality_total else 0.0,
+            "thread_coverage": round((trusted_threads / summarized_total), 3) if summarized_total else 0.0,
+            "digest_incomplete_context_total": digest_incomplete_context_total,
+            "degraded_digest_candidate": bool(
+                digest_incomplete_context_total > 0
+                or quality_counts["uncertain"] > 0
+                or quality_counts["quarantined"] > 0
+            ),
+        }
+        slo_state = _build_slo_state(
+            ingest_queue=q,
+            episode_counts=episode_counts,
+            day_thread_counts=day_thread_counts,
+            quality_counts=quality_counts,
+            memory_health=memory_health,
+            ingest_health=ingest_health,
+        )
     except Exception as e:
         logger.warning("pipeline_status_failed", error=str(e))
         return {
@@ -137,7 +523,44 @@ async def get_pipeline_status():
             "transcriptions_today": 0,
             "transcriptions_total": 0,
             "last_transcription_at": None,
-            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0},
+            "ingest_queue": {"pending": 0, "processed": 0, "error": 0, "filtered": 0, "quarantine": 0},
+            "ingest_stage_counts": {},
+            "episode_counts": {"open": 0, "closed": 0, "summarized": 0, "needs_review": 0},
+            "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
+            "long_thread_counts": {"total": 0, "active": 0, "resolved": 0},
+            "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
+            "ingest_health": {
+                "stale_counts": {"received": 0, "asr_pending": 0},
+                "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
+                "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
+            },
+            "memory_health": {
+                "trusted_fraction": 0.0,
+                "review_fraction": 0.0,
+                "thread_coverage": 0.0,
+                "digest_incomplete_context_total": 0,
+                "degraded_digest_candidate": False,
+            },
+            "slo_state": {
+                "status": "healthy",
+                "alerts": [],
+                "beta_thresholds": {
+                    "min_trusted_fraction": 0.5,
+                    "max_review_fraction": 0.5,
+                    "min_thread_coverage": 0.5,
+                    "max_digest_incomplete_context_total": 0,
+                },
+                "snapshot": {
+                    "trusted_fraction": 0.0,
+                    "review_fraction": 0.0,
+                    "thread_coverage": 0.0,
+                    "digest_incomplete_context_total": 0,
+                    "episodes_summarized": 0,
+                    "day_threads_trusted": 0,
+                    "stale_received": 0,
+                    "stale_asr_pending": 0,
+                },
+            },
             "_error": str(e),
         }
 
@@ -147,7 +570,110 @@ async def get_pipeline_status():
         "transcriptions_total": total,
         "last_transcription_at": last_at,
         "ingest_queue": q,
+        "ingest_stage_counts": stage_counts,
+        "episode_counts": episode_counts,
+        "day_thread_counts": day_thread_counts,
+        "long_thread_counts": long_thread_counts,
+        "quality_counts": quality_counts,
+        "ingest_health": ingest_health,
+        "memory_health": memory_health,
+        "slo_state": slo_state,
     }
+
+
+@router.get("/pipeline-trends")
+async def get_pipeline_trends(days_back: int = 7):
+    """Read-only trends for recent episodic memory health by day."""
+    days_back = max(1, min(days_back, 30))
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    if not db_path.exists():
+        return {"days_back": days_back, "recent_days": []}
+
+    from src.storage.db import get_reflexio_db
+
+    db = get_reflexio_db(db_path)
+    try:
+        recent_days = _build_recent_day_trends(db, days_back=days_back)
+    except Exception as e:
+        logger.warning("pipeline_trends_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to build pipeline trends") from e
+
+    return {
+        "days_back": days_back,
+        "recent_days": recent_days,
+    }
+
+
+@router.post("/reprocess/{file_id}")
+async def reprocess_ingest(file_id: str):
+    """Requeue quarantined/retryable ingest items without shell-level DB edits."""
+    from src.api.routers.websocket import get_ingest_result_registry
+    from src.storage.db import get_reflexio_db
+
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="Ingest item not found")
+
+    db = get_reflexio_db(db_path)
+    row = db.fetchone(
+        """
+        SELECT id, file_path, status, created_at FROM ingest_queue
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (file_id,),
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Ingest item not found")
+
+    stale_reprocessable = {"received", "asr_pending"}
+    if row["status"] not in {"retryable_error", "quarantined"} and not (
+        row["status"] in stale_reprocessable and _is_stale_for_reprocess(row["created_at"])
+    ):
+        raise HTTPException(status_code=409, detail="Ingest item is not reprocessable")
+
+    file_path = Path(row["file_path"])
+    if not file_path.exists():
+        with db.transaction():
+            db.execute(
+                """
+                UPDATE ingest_queue
+                SET status='quarantined',
+                    processing_status='quarantined',
+                    error_code='missing_audio',
+                    quarantine_reason='missing_audio',
+                    error_message='Audio artifact missing'
+                WHERE id=?
+                """,
+                (file_id,),
+            )
+        raise HTTPException(status_code=409, detail="Audio artifact missing")
+
+    with db.transaction():
+        db.execute(
+            """
+            UPDATE ingest_queue
+            SET status='received',
+                processing_status='received',
+                error_code=NULL,
+                error_message=NULL,
+                quarantine_reason=NULL,
+                processed_at=NULL
+            WHERE id=?
+            """,
+            (file_id,),
+        )
+
+    worker = get_ingest_worker(get_ingest_result_registry())
+    worker.submit(
+        IngestTask(
+            ingest_id=file_id,
+            file_path=file_path,
+            connection_id="reprocess",
+            enrichment_prefix=None,
+        )
+    )
+    return {"id": file_id, "status": "requeued"}
 
 
 

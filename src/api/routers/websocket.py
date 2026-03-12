@@ -85,7 +85,10 @@ def _enqueue_audio_segment(
     audio_bytes: bytes,
     file_id: str,
     connection_id: str,
-) -> None:
+    *,
+    segment_id: str | None = None,
+    captured_at: str | None = None,
+) -> dict[str, Any]:
     """Сохранить артефакт (WAV + ingest_queue), поставить задачу в IngestWorker. «received» шлёт вызывающий."""
     artifact = create_ingest_artifact(
         content=audio_bytes,
@@ -93,8 +96,12 @@ def _enqueue_audio_segment(
         original_filename=f"{file_id}.wav",
         stage="ws_audio_received",
         file_id=file_id,
-        queue_status="pending",
+        segment_id=segment_id,
+        captured_at=captured_at,
+        queue_status="received",
     )
+    if artifact.get("duplicate"):
+        return artifact
     dest_path: Path = artifact["dest_path"]
     enrichment_prefix = _conn_state.recent_text(connection_id)
     worker = get_ingest_worker(get_ingest_result_registry())
@@ -106,6 +113,7 @@ def _enqueue_audio_segment(
             enrichment_prefix=enrichment_prefix or None,
         )
     )
+    return artifact
 
 
 @router.websocket("/ws/ingest")
@@ -135,12 +143,28 @@ async def websocket_ingest(websocket: WebSocket):
                     continue
                 file_id = str(uuid.uuid4())
                 try:
-                    _enqueue_audio_segment(data["bytes"], file_id, connection_id)
+                    artifact = _enqueue_audio_segment(data["bytes"], file_id, connection_id)
                 except Exception as e:
                     logger.warning("ingest_artifact_failed", file_id=file_id, error=str(e))
                     await websocket.send_json({"type": "error", "file_id": file_id, "message": "Failed to save audio"})
                     continue
-                await websocket.send_json({"type": "received", "file_id": file_id, "status": "queued"})
+                await websocket.send_json(
+                    {
+                        "type": "received",
+                        "file_id": artifact["ingest_id"],
+                        "status": "duplicate" if artifact.get("duplicate") else "queued",
+                    }
+                )
+                existing_result = artifact.get("existing_result")
+                if artifact.get("duplicate") and existing_result:
+                    await websocket.send_json(
+                        {
+                            "type": "transcription",
+                            "file_id": artifact["ingest_id"],
+                            "text": existing_result.get("text", ""),
+                            "language": existing_result.get("language", ""),
+                        }
+                    )
             elif "text" in data and data["text"]:
                 try:
                     msg = json.loads(data["text"])
@@ -151,13 +175,39 @@ async def websocket_ingest(websocket: WebSocket):
                             await websocket.send_json({"type": "error", "message": "File too large"})
                             continue
                         file_id = str(uuid.uuid4())
+                        segment_id = msg.get("segment_id")
+                        captured_at = msg.get("captured_at")
+                        if captured_at is not None:
+                            captured_at = str(captured_at)
                         try:
-                            _enqueue_audio_segment(audio_bytes, file_id, connection_id)
+                            artifact = _enqueue_audio_segment(
+                                audio_bytes,
+                                file_id,
+                                connection_id,
+                                segment_id=segment_id,
+                                captured_at=captured_at,
+                            )
                         except Exception as e:
                             logger.warning("ingest_artifact_failed", file_id=file_id, error=str(e))
                             await websocket.send_json({"type": "error", "file_id": file_id, "message": "Failed to save audio"})
                             continue
-                        await websocket.send_json({"type": "received", "file_id": file_id, "status": "queued"})
+                        await websocket.send_json(
+                            {
+                                "type": "received",
+                                "file_id": artifact["ingest_id"],
+                                "status": "duplicate" if artifact.get("duplicate") else "queued",
+                            }
+                        )
+                        existing_result = artifact.get("existing_result")
+                        if artifact.get("duplicate") and existing_result:
+                            await websocket.send_json(
+                                {
+                                    "type": "transcription",
+                                    "file_id": artifact["ingest_id"],
+                                    "text": existing_result.get("text", ""),
+                                    "language": existing_result.get("language", ""),
+                                }
+                            )
                     else:
                         await websocket.send_json({"type": "error", "message": "Unknown message type"})
                 except (json.JSONDecodeError, KeyError) as e:

@@ -1,9 +1,13 @@
 """
 Тесты для повышения покрытия ядра (api, config, digest, memory, utils).
 """
+import asyncio
 import os
+import io
+import wave
 from pathlib import Path
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 # --- config ---
@@ -189,6 +193,132 @@ def test_rate_limiter_create_limiter():
     assert limiter is not None
 
 
+def test_enrich_transcription_preserves_structured_speakers(monkeypatch):
+    from datetime import datetime
+
+    from src.enrichment.enricher import enrich_transcription
+
+    monkeypatch.setattr(
+        "src.enrichment.enricher._run_analysis_with_retry",
+        lambda _text: (
+            {
+                "summary": "Обсудили бюджет Q2 с Маратом",
+                "topics": ["бюджет", "Q2"],
+                "emotions": ["уверенность"],
+                "urgency": "medium",
+                "actions": [],
+                "commitments": [{"person": "Марат", "action": "подготовить таблицу"}],
+                "speakers": ["Я", "Марат"],
+            },
+            12.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "src.enrichment.enricher.classify_domains",
+        lambda text, topics, db_path: ["work"],
+    )
+
+    event = enrich_transcription(
+        transcription_id="tr-1",
+        episode_id="ep-1",
+        text="Обсудили бюджет Q2 с Маратом",
+        timestamp=datetime.fromisoformat("2026-03-11T10:00:00"),
+        duration_sec=12.0,
+        language="ru",
+        asr_confidence=0.9,
+    )
+
+    assert event.speakers == ["Я", "Марат"]
+    assert event.commitments[0].person == "Марат"
+
+
+def test_process_audio_bytes_non_user_speaker_is_annotated_not_filtered(tmp_path):
+    from src.core.audio_processing import process_audio_bytes
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    uploads_path = storage_path / "uploads"
+    uploads_path.mkdir()
+
+    old_storage = settings.STORAGE_PATH
+    old_uploads = settings.UPLOADS_PATH
+    old_filter_music = settings.FILTER_MUSIC
+    old_speaker_verification = settings.SPEAKER_VERIFICATION_ENABLED
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x01\x00" * 4000)
+    wav_bytes = buf.getvalue()
+
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "UPLOADS_PATH", uploads_path)
+    object.__setattr__(settings, "FILTER_MUSIC", False)
+    object.__setattr__(settings, "SPEAKER_VERIFICATION_ENABLED", True)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+
+        with patch(
+            "src.speaker.verify_speaker",
+            return_value=SimpleNamespace(
+                is_user=False,
+                confidence=0.91,
+                method="embedding",
+                speaker_id=7,
+            ),
+        ):
+            out = asyncio.run(
+                process_audio_bytes(
+                    content=wav_bytes,
+                    content_type="audio/wav",
+                    original_filename="segment.wav",
+                    transcribe_fn=lambda _path, language=None: {
+                        "text": "обсудили курсы и время встречи",
+                        "language": "ru",
+                        "language_probability": 0.95,
+                        "duration": 4.5,
+                        "segments": [],
+                    },
+                    run_enrichment=False,
+                    delete_audio_after=False,
+                )
+            )
+
+        assert out["status"] == "transcribed"
+        assert out["result"]["is_user"] is False
+        assert out["result"]["speaker_confidence"] == 0.91
+        assert out["result"]["speaker_id"] == 7
+        assert out["result"]["speaker_role"] == "other"
+
+        db = get_reflexio_db(db_path)
+        row = db.fetchone(
+            """
+            SELECT iq.status, iq.error_code, t.is_user, t.speaker_confidence, t.speaker_id
+            FROM ingest_queue iq
+            JOIN transcriptions t ON t.ingest_id = iq.id
+            ORDER BY iq.created_at DESC
+            LIMIT 1
+            """
+        )
+        assert row["status"] == "transcribed"
+        assert row["error_code"] in (None, "")
+        assert row["is_user"] == 0
+        assert row["speaker_id"] == 7
+        assert row["speaker_confidence"] == 0.91
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "UPLOADS_PATH", old_uploads)
+        object.__setattr__(settings, "FILTER_MUSIC", old_filter_music)
+        object.__setattr__(settings, "SPEAKER_VERIFICATION_ENABLED", old_speaker_verification)
+
+
 def test_api_density_analysis(tmp_path):
     """Эндпоинт density с моком analyzer."""
     from fastapi.testclient import TestClient
@@ -237,28 +367,49 @@ def test_metrics_ext_interpret():
 
 
 def test_digest_get_transcriptions_with_db(tmp_path):
-    """DigestGenerator.get_transcriptions при наличии БД с таблицами."""
+    """DigestGenerator.get_transcriptions не режет trusted non-user speech."""
     import sqlite3
     from src.digest.generator import DigestGenerator
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.speaker.storage import ensure_speaker_tables
     db_path = tmp_path / "reflexio.db"
+    ensure_ingest_tables(db_path)
+    ensure_speaker_tables(db_path)
     conn = sqlite3.connect(str(db_path))
-    conn.execute("""
-        CREATE TABLE transcriptions (
-            id TEXT, ingest_id TEXT, text TEXT, language TEXT, language_probability REAL,
-            duration REAL, segments TEXT, created_at TEXT
-        )
-    """)
-    conn.execute("CREATE TABLE ingest_queue (id TEXT, filename TEXT, file_size INTEGER)")
     conn.execute(
-        "INSERT INTO transcriptions (id, text, created_at) VALUES (?, ?, ?)",
-        ("t1", "Hello world", "2026-01-15T10:00:00"),
+        """
+        INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("ing-1", "test.wav", "/tmp/test.wav", 44, "received", "2026-01-15T10:00:00"),
+    )
+    conn.execute(
+        """
+        INSERT INTO transcriptions (id, ingest_id, text, created_at, is_user, quality_state)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("t1", "ing-1", "Hello world", "2026-01-15T10:00:00", 1, "trusted"),
+    )
+    conn.execute(
+        """
+        INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("ing-2", "other.wav", "/tmp/other.wav", 44, "received", "2026-01-15T10:05:00"),
+    )
+    conn.execute(
+        """
+        INSERT INTO transcriptions (id, ingest_id, text, created_at, is_user, quality_state)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("t2", "ing-2", "Other person speech", "2026-01-15T10:05:00", 0, "trusted"),
     )
     conn.commit()
     conn.close()
     gen = DigestGenerator(db_path=db_path)
     rows = gen.get_transcriptions(date(2026, 1, 15))
-    assert len(rows) == 1
-    assert rows[0]["text"] == "Hello world"
+    assert len(rows) == 2
+    assert [r["text"] for r in rows] == ["Hello world", "Other person speech"]
 
 
 def test_core_memory_get_preferences():
@@ -387,3 +538,43 @@ def test_vault_is_available_when_disabled():
         from src.utils.vault_client import VaultClient
         client = VaultClient()
         assert client.is_available() is False
+
+
+def test_check_speech_gate_soft_passes_borderline_metrics(monkeypatch, tmp_path):
+    from src.core.audio_processing import _check_speech_gate
+
+    wav_path = tmp_path / "borderline.wav"
+    wav_path.write_bytes(b"RIFF")
+
+    monkeypatch.setattr("src.core.audio_processing.settings.FILTER_MUSIC", True)
+    monkeypatch.setattr("src.core.audio_processing._read_wav_as_numpy", lambda _path: object())
+
+    class DummyFilter:
+        def check(self, _audio):
+            return False, {"speech_ratio": 0.2, "high_freq_ratio": 0.5}
+
+    monkeypatch.setattr("src.core.audio_processing._get_speech_filter", lambda: DummyFilter())
+
+    allowed, reason = _check_speech_gate(wav_path)
+    assert allowed is True
+    assert reason == "borderline_speech"
+
+
+def test_check_speech_gate_rejects_clear_not_speech(monkeypatch, tmp_path):
+    from src.core.audio_processing import _check_speech_gate
+
+    wav_path = tmp_path / "noise.wav"
+    wav_path.write_bytes(b"RIFF")
+
+    monkeypatch.setattr("src.core.audio_processing.settings.FILTER_MUSIC", True)
+    monkeypatch.setattr("src.core.audio_processing._read_wav_as_numpy", lambda _path: object())
+
+    class DummyFilter:
+        def check(self, _audio):
+            return False, {"speech_ratio": 0.05, "high_freq_ratio": 0.9}
+
+    monkeypatch.setattr("src.core.audio_processing._get_speech_filter", lambda: DummyFilter())
+
+    allowed, reason = _check_speech_gate(wav_path)
+    assert allowed is False
+    assert reason == "not_speech"

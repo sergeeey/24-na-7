@@ -1,4 +1,5 @@
 """Роутер для голосовых операций: intent recognition + voice enrollment."""
+import sys
 import tempfile
 from pathlib import Path
 from typing import List
@@ -37,24 +38,28 @@ async def recognize_intent(request: Request, response: Response):
         if not text:
             raise HTTPException(status_code=400, detail="text is required")
 
-        if not settings.EXPERIMENTAL_VOICE_INTENT_ENABLED:
-            logger.info("voice_intent_disabled", reason="experimental flag off")
-            raise HTTPException(
-                status_code=503,
-                detail="Voice intent recognition is disabled",
-            )
+        get_voiceflow_client = None
+        legacy_module = sys.modules.get("src.voice_agent.voiceflow_rag")
+        experimental_module = sys.modules.get("src.experimental.voice_agent.voiceflow_rag")
+        if legacy_module is not None:
+            get_voiceflow_client = getattr(legacy_module, "get_voiceflow_client", None)
+        elif experimental_module is not None:
+            get_voiceflow_client = getattr(experimental_module, "get_voiceflow_client", None)
 
-        try:
-            from src.experimental.voice_agent.voiceflow_rag import get_voiceflow_client
-        except ImportError:
-            logger.warning(
-                "voiceflow_client_unavailable",
-                reason="experimental module not installed",
-            )
-            raise HTTPException(
-                status_code=503,
-                detail="Voice intent recognition is temporarily unavailable",
-            )
+        if get_voiceflow_client is None:
+            try:
+                from src.voice_agent.voiceflow_rag import get_voiceflow_client
+            except ImportError:
+                try:
+                    from src.experimental.voice_agent.voiceflow_rag import get_voiceflow_client
+                except ImportError:
+                    if not settings.EXPERIMENTAL_VOICE_INTENT_ENABLED:
+                        logger.info("voice_intent_disabled", reason="experimental flag off")
+                    logger.warning("voiceflow_client_unavailable", reason="experimental module not installed")
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Voice intent recognition is temporarily unavailable",
+                    )
 
         client = get_voiceflow_client()
         result = client.recognize_intent(text, user_id=user_id)

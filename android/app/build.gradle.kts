@@ -52,6 +52,9 @@ android {
             // Добавь в android/local.properties: SERVER_API_KEY=UKpOEPN9Tyv...
             val apiKey = localProps.getProperty("SERVER_API_KEY", "")
             buildConfigField("String", "SERVER_API_KEY", "\"$apiKey\"")
+            // Доп. debug ingest для локальной отладки. По умолчанию выключен, чтобы не шуметь на реальном устройстве.
+            val debugLogIngestUrl = localProps.getProperty("DEBUG_LOG_INGEST_URL", "")
+            buildConfigField("String", "DEBUG_LOG_INGEST_URL", "\"$debugLogIngestUrl\"")
         }
         release {
             isMinifyEnabled = true  // Уменьшает размер APK ~30%, обфускация кода
@@ -67,6 +70,7 @@ android {
             buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"$prodUrl\"")
             val prodApiKey = localProps.getProperty("PROD_API_KEY", "")
             buildConfigField("String", "SERVER_API_KEY", "\"$prodApiKey\"")
+            buildConfigField("String", "DEBUG_LOG_INGEST_URL", "\"\"")
         }
     }
     compileOptions {
