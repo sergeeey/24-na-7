@@ -195,16 +195,6 @@ class DigestGenerator:
             return []
         db = get_reflexio_db(self.db_path)
 
-        # ПОЧЕМУ is_user фильтр: после включения Speaker Verification дайджест
-        # должен содержать только речь пользователя, не фоновый TV/радио.
-        # DEFAULT 1 в схеме гарантирует backward-compatibility (старые записи = user).
-        # Когда SPEAKER_VERIFICATION_ENABLED=False — всё is_user=1, фильтр без эффекта.
-        speaker_filter = (
-            "AND (t.is_user = 1 OR t.is_user IS NULL)"
-            if settings.SPEAKER_VERIFICATION_ENABLED
-            else ""
-        )
-
         # ПОЧЕМУ BETWEEN вместо DATE(): DATE() сравнивает по UTC-дню,
         # а пользователь в UTC+6. Запись в 02:00 Алматы = 20:00 UTC предыдущего дня.
         # resolve_date_range конвертирует "день Алматы" → UTC-диапазон.
@@ -227,9 +217,9 @@ class DigestGenerator:
                 i.file_size
             FROM transcriptions t
             LEFT JOIN ingest_queue i ON t.ingest_id = i.id
-            WHERE t.created_at BETWEEN ? AND ? {speaker_filter}
+            WHERE t.created_at BETWEEN ? AND ?
             ORDER BY t.created_at ASC
-        """, (start_utc, end_utc))  # nosec B608 — speaker_filter is a hardcoded literal string
+        """, (start_utc, end_utc))
 
         transcriptions = [dict(row) for row in rows]
 

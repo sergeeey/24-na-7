@@ -367,12 +367,14 @@ def test_metrics_ext_interpret():
 
 
 def test_digest_get_transcriptions_with_db(tmp_path):
-    """DigestGenerator.get_transcriptions при наличии БД с таблицами."""
+    """DigestGenerator.get_transcriptions не режет trusted non-user speech."""
     import sqlite3
     from src.digest.generator import DigestGenerator
     from src.storage.ingest_persist import ensure_ingest_tables
+    from src.speaker.storage import ensure_speaker_tables
     db_path = tmp_path / "reflexio.db"
     ensure_ingest_tables(db_path)
+    ensure_speaker_tables(db_path)
     conn = sqlite3.connect(str(db_path))
     conn.execute(
         """
@@ -383,17 +385,31 @@ def test_digest_get_transcriptions_with_db(tmp_path):
     )
     conn.execute(
         """
-        INSERT INTO transcriptions (id, ingest_id, text, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO transcriptions (id, ingest_id, text, created_at, is_user, quality_state)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        ("t1", "ing-1", "Hello world", "2026-01-15T10:00:00"),
+        ("t1", "ing-1", "Hello world", "2026-01-15T10:00:00", 1, "trusted"),
+    )
+    conn.execute(
+        """
+        INSERT INTO ingest_queue (id, filename, file_path, file_size, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("ing-2", "other.wav", "/tmp/other.wav", 44, "received", "2026-01-15T10:05:00"),
+    )
+    conn.execute(
+        """
+        INSERT INTO transcriptions (id, ingest_id, text, created_at, is_user, quality_state)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("t2", "ing-2", "Other person speech", "2026-01-15T10:05:00", 0, "trusted"),
     )
     conn.commit()
     conn.close()
     gen = DigestGenerator(db_path=db_path)
     rows = gen.get_transcriptions(date(2026, 1, 15))
-    assert len(rows) == 1
-    assert rows[0]["text"] == "Hello world"
+    assert len(rows) == 2
+    assert [r["text"] for r in rows] == ["Hello world", "Other person speech"]
 
 
 def test_core_memory_get_preferences():
