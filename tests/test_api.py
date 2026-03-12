@@ -603,6 +603,12 @@ def test_digest_review_day_returns_detail_summary(tmp_path):
         assert body["trusted_episode_present"] is False
         assert body["transcript_fallback_only"] is True
         assert body["candidate_action"] in {"recheck", "reclassify"}
+        assert body["recommended_action"] == body["candidate_action"]
+        assert set(body["action_preview"].keys()) == {"recheck", "reclassify"}
+        assert body["action_preview"]["recheck"]["affected_episodes"] == 1
+        assert body["action_preview"]["recheck"]["affected_transcriptions"] == 0
+        assert "proposed_episode_state_counts" in body["action_preview"]["reclassify"]
+        assert "would_rebuild_digests" in body["action_preview"]["reclassify"]
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 

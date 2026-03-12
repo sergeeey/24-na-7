@@ -11,6 +11,7 @@ from src.digest.generator import DigestGenerator
 from src.digest.analyzer import InformationDensityAnalyzer
 from src.storage.db import get_reflexio_db
 from src.storage.ingest_persist import write_digest_cache
+from src.memory.truth import recheck_non_trusted_for_range, reclassify_episodes_for_range
 
 logger = get_logger("api.digest")
 router = APIRouter(prefix="/digest", tags=["digest"])
@@ -161,6 +162,42 @@ def _build_day_review(parsed_date: date, generator: DigestGenerator) -> dict:
             quarantined_count=quarantined_count,
             source_unit=source_unit,
         ),
+    }
+
+
+def _preview_summary(preview: dict) -> dict:
+    """Сводит dry-run preview к компактной форме для review API."""
+    return {
+        "affected_days": preview.get("affected_days", []),
+        "affected_episodes": len(preview.get("episodes", [])),
+        "affected_transcriptions": len(preview.get("transcriptions", [])),
+        "proposed_episode_state_counts": preview.get("state_counts", {}),
+        "proposed_transcription_state_counts": preview.get("transcription_state_counts", {}),
+        "would_write_transitions": int(preview.get("changed_episode_count", 0))
+        + int(preview.get("changed_transcription_count", 0)),
+        "would_rebuild_digests": len(preview.get("affected_days", [])),
+    }
+
+
+def _build_action_preview(target_date: date) -> dict:
+    """Возвращает безопасный preview последствий recheck/reclassify без мутаций."""
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    day_key = target_date.isoformat()
+    recheck_preview = recheck_non_trusted_for_range(
+        db_path,
+        start_day=day_key,
+        end_day=day_key,
+        apply_changes=False,
+    )
+    reclassify_preview = reclassify_episodes_for_range(
+        db_path,
+        start_day=day_key,
+        end_day=day_key,
+        apply_changes=False,
+    )
+    return {
+        "recheck": _preview_summary(recheck_preview),
+        "reclassify": _preview_summary(reclassify_preview),
     }
 
 
@@ -321,8 +358,11 @@ async def get_digest_review_day(
 
     generator = DigestGenerator()
     summary = _build_day_review(parsed_date, generator)
+    action_preview = _build_action_preview(parsed_date)
     return {
         **summary,
+        "recommended_action": summary["candidate_action"],
+        "action_preview": action_preview,
         "trusted_episode_present": summary["trusted_count"] > 0,
         "transcript_fallback_only": summary["source_unit"] == "transcription",
     }
