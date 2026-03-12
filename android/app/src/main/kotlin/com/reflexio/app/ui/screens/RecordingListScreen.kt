@@ -78,6 +78,7 @@ private fun statusColor(status: String): Color = when (status) {
 // пользователь не должен запоминать что значит каждый цвет
 private fun statusLabel(status: String): String = when (status) {
     RecordingStatus.PROCESSED -> "Готово"
+    RecordingStatus.UPLOADED -> "Анализ"
     RecordingStatus.PENDING_UPLOAD -> "Отправка"
     RecordingStatus.FAILED -> "Ошибка"
     else -> "Загружено"
@@ -126,7 +127,11 @@ private fun RecordingItem(
     val hasEnrichment = !recording.summary.isNullOrBlank()
     // ПОЧЕМУ summary вместо extractTitle: если LLM-summary есть — показываем его,
     // он точнее. Если нет — fallback на первые 6 слов транскрипции.
-    val title = if (hasEnrichment) recording.summary else extractTitle(recording.transcription)
+    val title = when {
+        hasEnrichment -> recording.summary
+        recording.status == RecordingStatus.UPLOADED -> "Идёт анализ записи"
+        else -> extractTitle(recording.transcription)
+    }
     val statusText = statusLabel(recording.status)
     val statusBgColor = statusColor(recording.status)
     // ПОЧЕМУ акцент по sentiment: позитивные записи — teal, негативные — оранжевый,

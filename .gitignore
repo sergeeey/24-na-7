@@ -99,6 +99,9 @@ android/build/
 android/app/build/
 android/**/*.hprof
 android/local.properties
+android/current-phone-screen.png
+android/reflexio*_live.db
+android/reflexio*_live.db-*
 
 # Cursor memory (runtime, not source)
 .cursor/memory/session_memory/

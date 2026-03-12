@@ -373,6 +373,8 @@ private fun stageColor(stage: String, colorScheme: ColorScheme): Color = when (s
     "queued" -> colorScheme.tertiary
     "uploaded", "received" -> colorScheme.primary
     "transcribed" -> colorScheme.primary
+    "enriching" -> colorScheme.secondary
+    "enriched" -> colorScheme.secondary
     "filtered", "deleted" -> colorScheme.outline
     "error" -> colorScheme.error
     else -> colorScheme.onSurfaceVariant
@@ -383,6 +385,8 @@ private fun stageToLabel(stage: String): String = when (stage) {
     "uploaded" -> "отправка"
     "received" -> "принято"
     "transcribed" -> "обработано"
+    "enriching" -> "анализ"
+    "enriched" -> "готово"
     "filtered" -> "отфильтровано"
     "deleted" -> "удалён"
     "error" -> "ошибка"

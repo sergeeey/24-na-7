@@ -327,11 +327,16 @@ class AudioRecordingService : Service() {
             val rec = dao.getById(recordingId) ?: return@withContext
             if (result.isSuccess) {
                 val ingestResult = result.getOrNull()
+                val nextStatus = if (ingestResult?.fileId != null) {
+                    RecordingStatus.UPLOADED
+                } else {
+                    RecordingStatus.PROCESSED
+                }
                 dao.update(
                     rec.copy(
                         transcription = ingestResult?.transcription,
                         serverFileId = ingestResult?.fileId,
-                        status = RecordingStatus.PROCESSED
+                        status = nextStatus
                     )
                 )
                 pendingUploadDao?.deleteByRecordingId(recordingId)
@@ -399,8 +404,9 @@ class AudioRecordingService : Service() {
         val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
         val httpUrl = baseUrl.replace("ws://", "http://").replace("wss://", "https://")
         val apiClient = EnrichmentApiClient(baseUrl = httpUrl, apiKey = BuildConfig.SERVER_API_KEY)
+        PipelineDiagnostics.setStage(this, "enriching")
 
-        repeat(3) { attempt ->
+        repeat(12) { attempt ->
             val enrichment = apiClient.fetchEnrichment(fileId)
             if (enrichment != null) {
                 withContext(Dispatchers.IO) {
@@ -414,12 +420,14 @@ class AudioRecordingService : Service() {
                             tasks = enrichment.tasks,
                             urgency = enrichment.urgency,
                             sentiment = enrichment.sentiment,
+                            status = RecordingStatus.PROCESSED,
                         )
                     )
                 }
+                PipelineDiagnostics.setStage(this, "enriched")
                 return
             }
-            if (attempt < 2) delay(5000L)
+            if (attempt < 11) delay(5000L)
         }
     }
 

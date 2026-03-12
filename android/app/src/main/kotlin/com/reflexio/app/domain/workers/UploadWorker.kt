@@ -15,8 +15,10 @@ import com.reflexio.app.data.model.PendingUploadStatus
 import com.reflexio.app.data.model.RecordingStatus
 import com.reflexio.app.data.model.TransportStatus
 import com.reflexio.app.data.model.UploadRetryPolicy
+import com.reflexio.app.domain.network.EnrichmentApiClient
 import com.reflexio.app.domain.network.IngestWebSocketClient
 import com.reflexio.app.domain.pipeline.PipelineDiagnostics
+import kotlinx.coroutines.delay
 import java.io.File
 
 class UploadWorker(
@@ -60,11 +62,16 @@ class UploadWorker(
             }
             if (result.isSuccess) {
                 val ingest = result.getOrNull()
+                val nextStatus = if (ingest?.fileId != null) {
+                    RecordingStatus.UPLOADED
+                } else {
+                    RecordingStatus.PROCESSED
+                }
                 recordingDao.update(
                     rec.copy(
                         transcription = ingest?.transcription,
                         serverFileId = ingest?.fileId,
-                        status = RecordingStatus.PROCESSED,
+                        status = nextStatus,
                     )
                 )
                 pendingDao.deleteByRecordingId(item.recordingId)
@@ -73,6 +80,9 @@ class UploadWorker(
                 PipelineDiagnostics.clearError(applicationContext)
                 runCatching { if (file.exists()) file.delete() }
                 PipelineDiagnostics.setStage(applicationContext, "deleted")
+                ingest?.fileId?.let { fileId ->
+                    fetchEnrichment(recordingDao, item.recordingId, fileId)
+                }
             } else {
                 val nextRetries = item.retryCount + 1
                 val err = result.exceptionOrNull()?.message
@@ -141,5 +151,38 @@ class UploadWorker(
             Build.FINGERPRINT.contains("generic") ||
                 Build.MODEL.contains("sdk") ||
                 Build.MODEL.contains("Android SDK")
+    }
+
+    private suspend fun fetchEnrichment(
+        recordingDao: com.reflexio.app.data.db.RecordingDao,
+        recordingId: Long,
+        fileId: String,
+    ) {
+        delay(3000L)
+        val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
+        val httpUrl = baseUrl.replace("ws://", "http://").replace("wss://", "https://")
+        val apiClient = EnrichmentApiClient(baseUrl = httpUrl, apiKey = BuildConfig.SERVER_API_KEY)
+        PipelineDiagnostics.setStage(applicationContext, "enriching")
+
+        repeat(12) { attempt ->
+            val enrichment = apiClient.fetchEnrichment(fileId)
+            if (enrichment != null) {
+                val rec = recordingDao.getById(recordingId) ?: return
+                recordingDao.update(
+                    rec.copy(
+                        summary = enrichment.summary,
+                        emotions = enrichment.emotions.joinToString(","),
+                        topics = enrichment.topics.joinToString(","),
+                        tasks = enrichment.tasks,
+                        urgency = enrichment.urgency,
+                        sentiment = enrichment.sentiment,
+                        status = RecordingStatus.PROCESSED,
+                    )
+                )
+                PipelineDiagnostics.setStage(applicationContext, "enriched")
+                return
+            }
+            if (attempt < 11) delay(5000L)
+        }
     }
 }
