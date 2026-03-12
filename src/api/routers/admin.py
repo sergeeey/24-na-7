@@ -1,7 +1,5 @@
 """Administrative endpoints for destructive maintenance operations."""
 
-from __future__ import annotations
-
 import json
 from datetime import date, datetime, timezone
 
@@ -67,7 +65,9 @@ class RecheckRequest(BaseModel):
             pass
         elif not (self.date_from and self.date_to):
             raise ValueError("date or date_from/date_to is required")
-        normalized = [state for state in self.states if state in {"uncertain", "quarantined", "garbage"}]
+        normalized = [
+            state for state in self.states if state in {"uncertain", "quarantined", "garbage"}
+        ]
         self.states = normalized or ["uncertain", "quarantined"]
         return self
 
@@ -149,7 +149,9 @@ async def reclassify_truth_layer(request: Request, response: Response, body: Rec
                 previous_digest_id=previous_digest_id,
                 rebuild_reason="truth_reclassify",
                 rebuilt_at=datetime.now(timezone.utc).isoformat(),
-                changed_source_count=sum(1 for row in preview["episodes"] if row["day_key"] == day_key),
+                changed_source_count=sum(
+                    1 for row in preview["episodes"] if row["day_key"] == day_key
+                ),
             )
             digest_rebuilds += 1
 
@@ -166,7 +168,9 @@ async def reclassify_truth_layer(request: Request, response: Response, body: Rec
         digest_rebuilds=digest_rebuilds,
         transitions_written=(
             len([row for row in preview["episodes"] if row["old_state"] != row["new_state"]])
-            + len([row for row in preview["transcriptions"] if row["old_state"] != row["new_state"]])
+            + len(
+                [row for row in preview["transcriptions"] if row["old_state"] != row["new_state"]]
+            )
         )
         if body.mode == "apply"
         else 0,
@@ -222,7 +226,9 @@ async def recheck_truth_layer(request: Request, response: Response, body: Rechec
         digest_rebuilds=digest_rebuilds,
         transitions_written=(
             len([row for row in preview["episodes"] if row["old_state"] != row["new_state"]])
-            + len([row for row in preview["transcriptions"] if row["old_state"] != row["new_state"]])
+            + len(
+                [row for row in preview["transcriptions"] if row["old_state"] != row["new_state"]]
+            )
         )
         if body.mode == "apply"
         else 0,
