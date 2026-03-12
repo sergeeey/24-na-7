@@ -20,30 +20,94 @@ logger = get_logger("api")
 
 _digest_precompute_locks: dict[str, threading.Lock] = {}
 _digest_precompute_dict_lock = threading.Lock()
+_INGEST_WATCHDOG_RECEIVED_MINUTES = 30
+_INGEST_WATCHDOG_ASR_PENDING_MINUTES = 45
+_INGEST_RECOVERY_BATCH = 25
+_SQLITE_BACKUP_RETENTION_DAYS = 7
+_SLO_ALERT_UNHEALTHY_MINUTES = 30
+_last_slo_unhealthy_at: datetime | None = None
+_last_slo_alert_signature: str | None = None
+
+
+def _resume_retryable_ingest_backlog() -> None:
+    try:
+        from src.api.routers.websocket import get_ingest_result_registry
+        from src.ingest.worker import get_ingest_worker, recover_retryable_ingest_tasks
+
+        db_path = settings.STORAGE_PATH / "reflexio.db"
+        worker = get_ingest_worker(get_ingest_result_registry())
+        result = recover_retryable_ingest_tasks(
+            worker,
+            db_path=db_path,
+            limit=_INGEST_RECOVERY_BATCH,
+        )
+        if result["requeued"] or result["missing_audio"]:
+            logger.info(
+                "ingest_recovery_tick",
+                requeued=result["requeued"],
+                missing_audio=result["missing_audio"],
+            )
+    except Exception as e:  # pragma: no cover
+        logger.error("ingest_recovery_failed", error=str(e))
 
 
 def _run_ingest_watchdog() -> None:
-    """Помечает зависшие ingest_queue записи (pending > 30 мин) как retryable_error."""
+    """Помечает зависшие ingest_queue записи как retryable_error."""
     try:
         db_path = settings.STORAGE_PATH / "reflexio.db"
         db = get_reflexio_db(db_path)
-        cutoff = (datetime.now() - timedelta(minutes=30)).isoformat()
+        now_iso = datetime.now().isoformat()
+        queue_cutoff = (
+            datetime.now() - timedelta(minutes=_INGEST_WATCHDOG_RECEIVED_MINUTES)
+        ).isoformat()
+        asr_cutoff = (
+            datetime.now() - timedelta(minutes=_INGEST_WATCHDOG_ASR_PENDING_MINUTES)
+        ).isoformat()
         with db.transaction():
-            result = db.execute(
+            queue_result = db.execute(
                 """
                 UPDATE ingest_queue
                 SET status='retryable_error',
-                    processing_status='received',
-                    error_code='watchdog_stuck_pending',
-                    error_message='watchdog: stuck in pending > 30min',
+                    processing_status=CASE
+                        WHEN status='received' THEN 'received'
+                        ELSE processing_status
+                    END,
+                    error_code=CASE
+                        WHEN status='received' THEN 'watchdog_stuck_received'
+                        ELSE 'watchdog_stuck_pending'
+                    END,
+                    error_message=CASE
+                        WHEN status='received' THEN 'watchdog: stuck in received > 30min'
+                        ELSE 'watchdog: stuck in pending > 30min'
+                    END,
                     processed_at=?
-                WHERE status='pending' AND created_at < ?
+                WHERE status IN ('pending', 'received') AND created_at < ?
                 """,
-                (datetime.now().isoformat(), cutoff),
+                (now_iso, queue_cutoff),
             )
-        affected = result.rowcount if hasattr(result, "rowcount") else 0
+            asr_result = db.execute(
+                """
+                UPDATE ingest_queue
+                SET status='retryable_error',
+                    processing_status='asr_pending',
+                    error_code='watchdog_stuck_asr_pending',
+                    error_message='watchdog: stuck in asr_pending > 45min',
+                    processed_at=?
+                WHERE status='asr_pending' AND created_at < ?
+                """,
+                (now_iso, asr_cutoff),
+            )
+        queue_affected = queue_result.rowcount if hasattr(queue_result, "rowcount") else 0
+        asr_affected = asr_result.rowcount if hasattr(asr_result, "rowcount") else 0
+        affected = queue_affected + asr_affected
         if affected:
-            logger.warning("ingest_watchdog_reaped", stuck_records=affected)
+            logger.warning(
+                "ingest_watchdog_reaped",
+                stuck_records=affected,
+                queue_records=queue_affected,
+                asr_records=asr_affected,
+            )
+            _resume_retryable_ingest_backlog()
     except Exception as e:  # pragma: no cover
         logger.error("ingest_watchdog_failed", error=str(e))
 
@@ -164,6 +228,83 @@ def _run_compliance_cleanup() -> None:
         logger.error("scheduled_compliance_failed", error=str(e))
 
 
+def _run_sqlite_backup() -> None:
+    """Create daily SQLite backup and prune old snapshots."""
+    try:
+        from src.storage.migrate import backup_sqlite
+
+        backup_dir = settings.STORAGE_PATH / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / f"reflexio.db.{datetime.now().strftime('%Y%m%d')}"
+        created_path = backup_sqlite(backup_path=backup_path)
+
+        cutoff = datetime.now() - timedelta(days=_SQLITE_BACKUP_RETENTION_DAYS)
+        removed = 0
+        for snapshot in backup_dir.glob("reflexio.db.*"):
+            try:
+                stamp = snapshot.name.rsplit(".", 1)[-1]
+                snapshot_dt = datetime.strptime(stamp, "%Y%m%d")
+            except ValueError:
+                continue
+            if snapshot_dt < cutoff:
+                snapshot.unlink(missing_ok=True)
+                removed += 1
+
+        logger.info(
+            "sqlite_backup_rotation_done",
+            backup_path=str(created_path),
+            removed=removed,
+            retention_days=_SQLITE_BACKUP_RETENTION_DAYS,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.error("sqlite_backup_failed", error=str(e))
+
+
+def _run_slo_telegram_alert() -> None:
+    """Send Telegram alert if pipeline stays unhealthy for >30 minutes."""
+    global _last_slo_unhealthy_at, _last_slo_alert_signature
+    try:
+        from src.api.routers.ingest import get_pipeline_status
+        from src.digest.telegram_sender import TelegramDigestSender
+
+        status = asyncio.run(get_pipeline_status())
+        slo_state = status.get("slo_state", {})
+        state = str(slo_state.get("status", "unknown"))
+        alerts = slo_state.get("alerts", [])
+        signature = f"{state}:{','.join(sorted(str(alert) for alert in alerts))}"
+
+        if state == "healthy":
+            _last_slo_unhealthy_at = None
+            _last_slo_alert_signature = None
+            return
+
+        now = datetime.now(timezone.utc)
+        if _last_slo_unhealthy_at is None:
+            _last_slo_unhealthy_at = now
+            return
+
+        if now - _last_slo_unhealthy_at < timedelta(minutes=_SLO_ALERT_UNHEALTHY_MINUTES):
+            return
+        if _last_slo_alert_signature == signature:
+            return
+
+        sender = TelegramDigestSender()
+        snapshot = slo_state.get("snapshot", {})
+        message = (
+            f"Reflexio alert: slo_state={state}\n"
+            f"alerts={', '.join(str(alert) for alert in alerts) or 'none'}\n"
+            f"trusted_fraction={snapshot.get('trusted_fraction')}\n"
+            f"review_fraction={snapshot.get('review_fraction')}\n"
+            f"stale_received={snapshot.get('stale_received')}\n"
+            f"stale_asr_pending={snapshot.get('stale_asr_pending')}"
+        )
+        if sender.send_text(message):
+            _last_slo_alert_signature = signature
+            logger.warning("slo_telegram_alert_sent", signature=signature)
+    except Exception as e:  # pragma: no cover
+        logger.warning("slo_telegram_alert_failed", error=str(e))
+
+
 async def _orphan_sweep(storage_path: Path, interval: int = 300, max_age_hours: int = 1) -> None:
     """Фоновая задача: удаляет WAV-сироты старше max_age_hours."""
     from src.utils.secure_delete import secure_delete
@@ -240,6 +381,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
 
     ingest_worker = get_ingest_worker(get_ingest_result_registry())
     await ingest_worker.start()
+    _resume_retryable_ingest_backlog()
 
     scheduler = None
     try:
@@ -272,11 +414,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
             replace_existing=True,
         )
         scheduler.add_job(
+            _run_slo_telegram_alert,
+            trigger="interval",
+            minutes=15,
+            id="slo_telegram_alert",
+            replace_existing=True,
+        )
+        scheduler.add_job(
             _run_episode_lifecycle,
             trigger="interval",
             minutes=5,
             id="episode_lifecycle",
             replace_existing=True,
+        )
+        scheduler.add_job(
+            _run_sqlite_backup,
+            trigger="cron",
+            hour=4,
+            minute=0,
+            id="sqlite_backup",
+            replace_existing=True,
+            misfire_grace_time=3600,
         )
         if settings.AUDIO_RETENTION_HOURS > 0:
             scheduler.add_job(
@@ -289,7 +447,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         scheduler.start()
         logger.info(
             "apscheduler_started",
-            jobs="compliance_cleanup@03:00, digest_precompute@12:00UTC(18:00ALM), episode_lifecycle@5m",
+            jobs="compliance_cleanup@03:00, sqlite_backup@04:00, digest_precompute@12:00UTC(18:00ALM), ingest_watchdog@15m, slo_telegram_alert@15m, episode_lifecycle@5m",
         )
     except ImportError:
         logger.warning("apscheduler_not_installed", hint="pip install apscheduler")

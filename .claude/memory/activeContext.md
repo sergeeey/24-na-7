@@ -1,52 +1,35 @@
 # Active Context — Reflexio 24/7
 
 ## Последнее обновление
-2026-03-08 (Session 3: Cascade JSON Fix + pyannote Activation)
+2026-03-12
 
 ## Текущая фаза
-**v0.4.5 Cascade Resilience + Speaker Diarization**
+**v0.5.2-beta branch gate / pre-production trusted episodic memory**
 
-## Сессия 2026-03-08 (часть 3): Cascade JSON Fix + pyannote
+## Что подтверждено локально
+- Ветка: `codex/episodic-memory-pass`
+- Полный regression suite зелёный: `669 passed, 26 skipped`
+- Admin recovery endpoints, truth layer, ingest watchdog/recovery и episodic pipeline проходят локальные тесты
+- E2E `test_full_pipeline` снова зелёный после замены пустой WAV фикстуры на короткий PCM speech-like sample
 
-### Cascade JSON Validation Fix (`c9584cd`):
-- **Баг:** Gemini 2.5 Flash возвращал обрезанный JSON → enrichment пустой
-- **Фикс:** `validate_fn` в CascadeLLMClient проверяет JSON parsability
-- При невалидном JSON → cascade пробует Haiku → enrichment полный
-- Живой тест: `cascade_provider_validation_failed` (Gemini) → Haiku подхватил
+## Что уже реализовано в коде ветки
+- watchdog для `received` и `asr_pending` с переводом в `retryable_error`
+- recovery retry backlog для ingest через `recover_retryable_ingest_tasks()`
+- расширенные `/ingest/pipeline-status` и `/ingest/pipeline-trends` с `ingest_health`, stale/recovery counters и latency
+- reprocess stale ingest для зависших `received/asr_pending`
+- bounded retry для async enrichment queue: до 2 повторов, затем graceful degradation в `transcribed`
+- SQLite backup automation hook в APScheduler (`04:00`, retention 7 дней)
+- SLO Telegram alert hook через existing Telegram sender при unhealthy > 30 минут
+- prod healthcheck timeout приведён к `10s`
 
-### pyannote.audio Activation (`541deb9`, `c4b515d`):
-- Раскомментирован в requirements.txt, HF_TOKEN уже в .env
-- Dockerfile: torch CPU-only (~300MB вместо 5GB CUDA)
-- Docker полный сброс (containerd corruption → rm -rf + restart)
-- **Образ:** 4.14GB (было 17.5GB), 22GB свободно
-- pyannote 4.0.4 + torch 2.10.0+cpu установлены
+## Что осталось внешним
+- merge ветки в `main`
+- push/tag
+- deploy на VPS `root@46.225.211.115`
+- post-deploy smoke (`/health`, `/ingest/pipeline-status`, `/ingest/pipeline-trends`, WebSocket ingest, `/digest/today`)
+- недельные фазы calibration / operational maturity / dogfooding
 
-### Все коммиты дня (pushed to main):
-- `c9584cd` — fix: cascade fallback on invalid JSON from Gemini
-- `541deb9` — feat: enable pyannote.audio for speaker diarization
-- `c4b515d` — fix: Dockerfile CPU-only torch
-- `803d3cd` — fix(android): wire HistoryScreen into UI
-- `d997d78` — feat(android): CommitmentsScreen
-- `cc439b8` — UI theme merge (Codex)
-- `e64d9a9` — feat: CCBM context optimizer
-- `5f463ec` — fix: speaker verification threshold 0.60→0.75
-- `06c9f4c` — fix(android): disconnect WebSocket in onDestroy
-- `8cd6f81` — feat: commitment extraction
-- `5d97d23` — fix: 1 uvicorn worker (OOM)
-- `6158fa7` — fix: speech filter thresholds
-- `36edf7d` — feat: async ingest pipeline + pipeline status UI
-
-## Продакшн статус
-- **API:** https://reflexio247.duckdns.org/health → ok
-- **VPS:** CX33, 22GB свободно, Docker образ 4.14GB
-- **pyannote:** 4.0.4 installed (дариазция готова, не интегрирована в pipeline)
-- **Cascade:** Gemini→Haiku→GPT-4o-mini с JSON validation
-- **APK:** CommitmentsScreen + HistoryScreen (не нужна пересборка)
-
-## СЛЕДУЮЩАЯ СЕССИЯ — Бэклог
-- Интеграция diarize.py в audio_processing.py pipeline
-- Мульти-профили голосов (enrollment семьи)
-- Классификация м/ж по pitch
-- Intent fallback (LLM classifier для /ask)
-- CCBM установка на VPS
-- Whisper watchdog
+## Риски на текущий момент
+- worktree грязный: есть незакоммиченные WIP-изменения в ingest/bootstrap/worker/test files
+- продовые операции зависят от наличия git/SSH/docker доступа из текущей сессии
+- Telegram alerting активируется только если на среде заданы `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID`

@@ -715,6 +715,108 @@ def test_reprocess_ingest_rejects_non_reprocessable(tmp_path):
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_reprocess_ingest_requeues_stale_received_item(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    uploads_path = storage_path / "uploads"
+    storage_path.mkdir()
+    uploads_path.mkdir()
+
+    old_storage = settings.STORAGE_PATH
+    old_uploads = settings.UPLOADS_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "UPLOADS_PATH", uploads_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        audio_path = uploads_path / "stale.wav"
+        audio_path.write_bytes(
+            b"RIFF$\x00\x00\x00WAVEfmt " + b"\x10\x00\x00\x00\x01\x00\x01\x00" +
+            b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+        )
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO ingest_queue (
+                    id, filename, file_path, file_size, status,
+                    transport_status, processing_status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ing-stale",
+                    "stale.wav",
+                    str(audio_path),
+                    audio_path.stat().st_size,
+                    "received",
+                    "received",
+                    "received",
+                    "2026-03-10T12:00:00",
+                ),
+            )
+
+        worker = MagicMock()
+        worker.submit = MagicMock()
+        client = TestClient(app)
+        with patch("src.api.routers.ingest.get_ingest_worker", return_value=worker):
+            resp = client.post("/ingest/reprocess/ing-stale")
+        assert resp.status_code == 200
+        refreshed = db.fetchone(
+            "SELECT status, processing_status, error_code FROM ingest_queue WHERE id = ?",
+            ("ing-stale",),
+        )
+        assert refreshed["status"] == "received"
+        assert refreshed["processing_status"] == "received"
+        assert refreshed["error_code"] is None
+        assert worker.submit.call_count == 1
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "UPLOADS_PATH", old_uploads)
+
+
+def test_reprocess_ingest_rejects_fresh_received_item(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO ingest_queue (
+                    id, filename, file_path, file_size, status,
+                    transport_status, processing_status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "ing-fresh",
+                    "fresh.wav",
+                    "D:/tmp/fresh.wav",
+                    44,
+                    "received",
+                    "received",
+                    "received",
+                    "2099-03-10T12:00:00",
+                ),
+            )
+
+        client = TestClient(app)
+        resp = client.post("/ingest/reprocess/ing-fresh")
+        assert resp.status_code == 409
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_admin_reset_all_clears_data_and_artifacts(tmp_path):
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables

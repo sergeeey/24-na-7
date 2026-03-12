@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi.testclient import TestClient
 
 from src.api.main import app
@@ -19,21 +21,21 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         db = get_reflexio_db(db_path)
         with db.transaction():
             rows = [
-                ("1", "received", "received"),
-                ("2", "asr_pending", "received"),
-                ("3", "event_ready", "server_acked"),
-                ("4", "retryable_error", "server_acked"),
-                ("5", "filtered", "server_acked"),
-                ("6", "quarantined", "server_acked"),
-                ("7", "transcribed", "deduplicated"),
+                ("1", "received", "received", "2099-03-10 12:00:00", None, None),
+                ("2", "asr_pending", "received", "2099-03-10 12:00:00", None, None),
+                ("3", "event_ready", "server_acked", "2099-03-10 12:00:00", "2099-03-10 12:02:00", None),
+                ("4", "retryable_error", "server_acked", "2099-03-10 12:00:00", "2099-03-10 12:03:00", "watchdog_stuck_received"),
+                ("5", "filtered", "server_acked", "2099-03-10 12:00:00", "2099-03-10 12:01:00", None),
+                ("6", "quarantined", "server_acked", "2099-03-10 12:00:00", "2099-03-10 12:04:00", None),
+                ("7", "transcribed", "deduplicated", "2099-03-10 12:00:00", "2099-03-10 12:01:30", "asr_runtime_error"),
             ]
-            for ingest_id, status, transport_status in rows:
+            for ingest_id, status, transport_status, created_at, processed_at, error_code in rows:
                 db.execute(
                     """
                     INSERT INTO ingest_queue (
                         id, segment_id, filename, file_path, file_size, status,
-                        transport_status, processing_status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        transport_status, processing_status, created_at, processed_at, error_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         ingest_id,
@@ -44,7 +46,9 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
                         status,
                         transport_status,
                         status,
-                        "2026-03-10T12:00:00",
+                        created_at,
+                        processed_at,
+                        error_code,
                     ),
                 )
 
@@ -179,6 +183,12 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         assert payload["quality_counts"]["uncertain"] == 1
         assert payload["quality_counts"]["garbage"] == 1
         assert payload["quality_counts"]["quarantined"] == 1
+        assert payload["ingest_health"]["stale_counts"]["received"] == 0
+        assert payload["ingest_health"]["stale_counts"]["asr_pending"] == 0
+        assert payload["ingest_health"]["recovery_counts"]["watchdog_retryable"] == 1
+        assert payload["ingest_health"]["recovery_counts"]["asr_runtime_retryable"] == 0
+        assert payload["ingest_health"]["latency_ms"]["received_to_terminal_avg"] == 138000.0
+        assert payload["ingest_health"]["latency_ms"]["received_to_event_ready_avg"] == 120000.0
         assert payload["day_thread_counts"]["total"] == 1
         assert payload["day_thread_counts"]["trusted"] == 1
         assert payload["day_thread_counts"]["low_confidence"] == 0
@@ -197,5 +207,289 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         assert payload["slo_state"]["beta_thresholds"]["min_trusted_fraction"] == 0.5
         assert payload["slo_state"]["snapshot"]["episodes_summarized"] == 2
         assert payload["slo_state"]["snapshot"]["day_threads_trusted"] == 1
+        assert payload["slo_state"]["snapshot"]["stale_received"] == 0
+        assert payload["slo_state"]["snapshot"]["stale_asr_pending"] == 0
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_ingest_watchdog_reaps_stale_received_and_asr_pending(tmp_path):
+    from src.core.bootstrap import _run_ingest_watchdog
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            rows = [
+                ("old-received", "received", "received", "2026-03-10T10:00:00"),
+                ("old-asr", "asr_pending", "asr_pending", "2026-03-10T10:00:00"),
+                ("fresh-asr", "asr_pending", "asr_pending", "2099-03-10T10:00:00"),
+            ]
+            for ingest_id, status, processing_status, created_at in rows:
+                db.execute(
+                    """
+                    INSERT INTO ingest_queue (
+                        id, segment_id, filename, file_path, file_size, status,
+                        transport_status, processing_status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ingest_id,
+                        f"seg-{ingest_id}",
+                        f"{ingest_id}.wav",
+                        f"/tmp/{ingest_id}.wav",
+                        100,
+                        status,
+                        "server_acked",
+                        processing_status,
+                        created_at,
+                    ),
+                )
+
+        _run_ingest_watchdog()
+
+        old_received = db.fetchone(
+            "SELECT status, processing_status, error_code FROM ingest_queue WHERE id = ?",
+            ("old-received",),
+        )
+        old_asr = db.fetchone(
+            "SELECT status, processing_status, error_code FROM ingest_queue WHERE id = ?",
+            ("old-asr",),
+        )
+        fresh_asr = db.fetchone(
+            "SELECT status, processing_status, error_code FROM ingest_queue WHERE id = ?",
+            ("fresh-asr",),
+        )
+
+        assert old_received["status"] == "retryable_error"
+        assert old_received["processing_status"] == "received"
+        assert old_received["error_code"] == "watchdog_stuck_received"
+        assert old_asr["status"] == "retryable_error"
+        assert old_asr["processing_status"] == "asr_pending"
+        assert old_asr["error_code"] == "watchdog_stuck_asr_pending"
+        assert fresh_asr["status"] == "asr_pending"
+        assert fresh_asr["processing_status"] == "asr_pending"
+        assert fresh_asr["error_code"] is None
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_recover_retryable_ingest_tasks_requeues_and_quarantines_missing(tmp_path):
+    from src.ingest.worker import IngestWorker, recover_retryable_ingest_tasks
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    uploads_path = storage_path / "uploads"
+    storage_path.mkdir()
+    uploads_path.mkdir()
+
+    db_path = storage_path / "reflexio.db"
+    ensure_ingest_tables(db_path)
+    audio_path = uploads_path / "retry.wav"
+    audio_path.write_bytes(
+        b"RIFF$\x00\x00\x00WAVEfmt " + b"\x10\x00\x00\x00\x01\x00\x01\x00" +
+        b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+    )
+    db = get_reflexio_db(db_path)
+    with db.transaction():
+        db.execute(
+            """
+            INSERT INTO ingest_queue (
+                id, segment_id, filename, file_path, file_size, status,
+                transport_status, processing_status, created_at, error_code, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "ok-retry",
+                "seg-ok",
+                "retry.wav",
+                str(audio_path),
+                audio_path.stat().st_size,
+                "retryable_error",
+                "server_acked",
+                "asr_pending",
+                "2026-03-10T10:00:00",
+                "watchdog_stuck_asr_pending",
+                "boom",
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO ingest_queue (
+                id, segment_id, filename, file_path, file_size, status,
+                transport_status, processing_status, created_at, error_code, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "missing-retry",
+                "seg-missing",
+                "missing.wav",
+                str(uploads_path / "missing.wav"),
+                44,
+                "retryable_error",
+                "server_acked",
+                "received",
+                "2026-03-10T10:00:00",
+                "watchdog_stuck_received",
+                "boom",
+            ),
+        )
+
+    worker = IngestWorker(registry={})
+    worker._running = True
+    submitted: list[str] = []
+    original_submit = worker.submit
+
+    def _capture(task):
+        submitted.append(task.ingest_id)
+        original_submit(task)
+
+    worker.submit = _capture  # type: ignore[method-assign]
+    result = recover_retryable_ingest_tasks(worker, db_path=db_path, limit=10)
+
+    ok_row = db.fetchone(
+        "SELECT status, processing_status, error_code FROM ingest_queue WHERE id = ?",
+        ("ok-retry",),
+    )
+    missing_row = db.fetchone(
+        "SELECT status, processing_status, error_code, quarantine_reason FROM ingest_queue WHERE id = ?",
+        ("missing-retry",),
+    )
+
+    assert result == {"requeued": 1, "missing_audio": 1}
+    assert submitted == ["ok-retry"]
+    assert ok_row["status"] == "received"
+    assert ok_row["processing_status"] == "received"
+    assert ok_row["error_code"] is None
+    assert missing_row["status"] == "quarantined"
+    assert missing_row["processing_status"] == "quarantined"
+    assert missing_row["error_code"] == "missing_audio"
+    assert missing_row["quarantine_reason"] == "missing_audio"
+
+
+def test_recover_retryable_ingest_tasks_respects_limit(tmp_path):
+    from src.ingest.worker import IngestWorker, recover_retryable_ingest_tasks
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+
+    storage_path = tmp_path / "storage"
+    uploads_path = storage_path / "uploads"
+    storage_path.mkdir()
+    uploads_path.mkdir()
+
+    db_path = storage_path / "reflexio.db"
+    ensure_ingest_tables(db_path)
+    db = get_reflexio_db(db_path)
+    with db.transaction():
+        for idx in range(2):
+            audio_path = uploads_path / f"retry-{idx}.wav"
+            audio_path.write_bytes(
+                b"RIFF$\x00\x00\x00WAVEfmt " + b"\x10\x00\x00\x00\x01\x00\x01\x00" +
+                b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+            )
+            db.execute(
+                """
+                INSERT INTO ingest_queue (
+                    id, segment_id, filename, file_path, file_size, status,
+                    transport_status, processing_status, created_at, error_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"retry-{idx}",
+                    f"seg-{idx}",
+                    audio_path.name,
+                    str(audio_path),
+                    audio_path.stat().st_size,
+                    "retryable_error",
+                    "server_acked",
+                    "received",
+                    f"2026-03-10T10:00:0{idx}",
+                    "watchdog_stuck_received",
+                ),
+            )
+
+    worker = IngestWorker(registry={})
+    worker._running = True
+    submitted: list[str] = []
+    worker.submit = lambda task: submitted.append(task.ingest_id)  # type: ignore[method-assign]
+
+    result = recover_retryable_ingest_tasks(worker, db_path=db_path, limit=1)
+
+    remaining = db.fetchall(
+        "SELECT id, status FROM ingest_queue WHERE status = 'retryable_error' ORDER BY id"
+    )
+    assert result == {"requeued": 1, "missing_audio": 0}
+    assert len(submitted) == 1
+    assert len(remaining) == 1
+
+
+def test_pipeline_trends_include_ingest_metrics(tmp_path):
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        today = date.today().isoformat()
+        with db.transaction():
+            rows = [
+                ("rx-1", "received", None, None),
+                ("ax-1", "asr_pending", None, None),
+                ("ev-1", "event_ready", f"{today} 00:02:00", None),
+                ("rt-1", "retryable_error", f"{today} 00:03:00", "watchdog_stuck_received"),
+                ("q-1", "quarantined", f"{today} 00:04:00", None),
+            ]
+            for ingest_id, status, processed_at, error_code in rows:
+                db.execute(
+                    """
+                    INSERT INTO ingest_queue (
+                        id, segment_id, filename, file_path, file_size, status,
+                        transport_status, processing_status, created_at, processed_at, error_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        ingest_id,
+                        f"seg-{ingest_id}",
+                        f"{ingest_id}.wav",
+                        f"/tmp/{ingest_id}.wav",
+                        100,
+                        status,
+                        "server_acked",
+                        status,
+                        f"{today} 00:00:00",
+                        processed_at,
+                        error_code,
+                    ),
+                )
+
+        client = TestClient(app)
+        response = client.get("/ingest/pipeline-trends?days_back=1")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["days_back"] == 1
+        recent_day = payload["recent_days"][0]
+        assert recent_day["received_count"] == 1
+        assert recent_day["asr_pending_count"] == 1
+        assert recent_day["event_ready_count"] == 1
+        assert recent_day["retryable_error_count"] == 1
+        assert recent_day["quarantined_ingest_count"] == 1
+        assert recent_day["avg_received_to_processed_ms"] == 180000.0
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)

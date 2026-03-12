@@ -12,12 +12,19 @@ from pathlib import Path
 from typing import Any
 
 from src.core.audio_processing import process_audio_from_artifact_sync
+from src.storage.db import get_reflexio_db
 from src.utils.logging import get_logger
 
 logger = get_logger("ingest.worker")
 
 _NUM_WORKERS = 2
 _QUEUE_MAXSIZE = 200
+_RECOVERABLE_ERROR_CODES = {
+    "asr_runtime_error",
+    "watchdog_stuck_pending",
+    "watchdog_stuck_received",
+    "watchdog_stuck_asr_pending",
+}
 
 
 @dataclass
@@ -180,3 +187,82 @@ def get_ingest_worker(registry: dict[str, asyncio.Queue[dict[str, Any] | None]])
     if _worker is None:
         _worker = IngestWorker(registry=registry)
     return _worker
+
+
+def recover_retryable_ingest_tasks(
+    worker: IngestWorker,
+    *,
+    db_path: Path,
+    limit: int = 25,
+) -> dict[str, int]:
+    """Requeue bounded retryable ingest backlog from SQLite into the in-memory worker."""
+    if not worker.running:
+        logger.warning("ingest_recovery_skipped_worker_not_running")
+        return {"requeued": 0, "missing_audio": 0}
+
+    db = get_reflexio_db(db_path)
+    rows = db.fetchall(
+        """
+        SELECT id, file_path, error_code
+        FROM ingest_queue
+        WHERE status = 'retryable_error'
+          AND error_code IN (?, ?, ?, ?)
+        ORDER BY created_at ASC
+        LIMIT ?
+        """,
+        (*sorted(_RECOVERABLE_ERROR_CODES), limit),
+    )
+
+    requeued = 0
+    missing_audio = 0
+    for row in rows:
+        file_path = Path(row["file_path"])
+        if not file_path.exists():
+            with db.transaction():
+                db.execute(
+                    """
+                    UPDATE ingest_queue
+                    SET status='quarantined',
+                        processing_status='quarantined',
+                        error_code='missing_audio',
+                        quarantine_reason='missing_audio',
+                        error_message='Audio artifact missing'
+                    WHERE id=?
+                    """,
+                    (row["id"],),
+                )
+            missing_audio += 1
+            continue
+
+        with db.transaction():
+            db.execute(
+                """
+                UPDATE ingest_queue
+                SET status='received',
+                    processing_status='received',
+                    error_code=NULL,
+                    error_message=NULL,
+                    quarantine_reason=NULL,
+                    processed_at=NULL
+                WHERE id=?
+                """,
+                (row["id"],),
+            )
+        worker.submit(
+            IngestTask(
+                ingest_id=row["id"],
+                file_path=file_path,
+                connection_id="recovery",
+                enrichment_prefix=None,
+            )
+        )
+        requeued += 1
+
+    if requeued or missing_audio:
+        logger.info(
+            "ingest_recovery_enqueued",
+            requeued=requeued,
+            missing_audio=missing_audio,
+            scanned=len(rows),
+        )
+    return {"requeued": requeued, "missing_audio": missing_audio}

@@ -38,7 +38,7 @@ async def recognize_intent(request: Request, response: Response):
             raise HTTPException(status_code=400, detail="text is required")
 
         try:
-            from src.experimental.voice_agent.voiceflow_rag import get_voiceflow_client
+            from src.voice_agent.voiceflow_rag import get_voiceflow_client
         except ImportError:
             logger.warning("voiceflow_client_unavailable", reason="experimental module not installed")
             raise HTTPException(

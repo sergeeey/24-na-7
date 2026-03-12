@@ -1,7 +1,7 @@
 """Роутер для загрузки и обработки аудио."""
 import json
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
@@ -18,6 +18,17 @@ from src.utils.rate_limiter import RateLimitConfig
 logger = get_logger("api.ingest")
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+_REPROCESS_STALE_MINUTES = 30
+
+
+def _is_stale_for_reprocess(created_at: str | None) -> bool:
+    if not created_at:
+        return False
+    try:
+        created = datetime.fromisoformat(created_at)
+    except ValueError:
+        return False
+    return created <= datetime.now() - timedelta(minutes=_REPROCESS_STALE_MINUTES)
 
 
 def _build_slo_state(
@@ -27,12 +38,21 @@ def _build_slo_state(
     day_thread_counts: dict[str, int],
     quality_counts: dict[str, int],
     memory_health: dict[str, float | int | bool],
+    ingest_health: dict[str, object] | None = None,
 ) -> dict[str, object]:
     alerts: list[str] = []
     trusted_fraction = float(memory_health.get("trusted_fraction", 0.0) or 0.0)
     review_fraction = float(memory_health.get("review_fraction", 0.0) or 0.0)
     thread_coverage = float(memory_health.get("thread_coverage", 0.0) or 0.0)
     digest_incomplete = int(memory_health.get("digest_incomplete_context_total", 0) or 0)
+    ingest_health = ingest_health or {}
+    stale_counts = ingest_health.get("stale_counts", {}) if isinstance(ingest_health, dict) else {}
+    if isinstance(stale_counts, dict):
+        stale_received = int(stale_counts.get("received", 0) or 0)
+        stale_asr_pending = int(stale_counts.get("asr_pending", 0) or 0)
+    else:
+        stale_received = 0
+        stale_asr_pending = 0
 
     if trusted_fraction < 0.5:
         alerts.append("low_trusted_fraction")
@@ -46,6 +66,10 @@ def _build_slo_state(
         alerts.append("low_day_thread_coverage")
     if digest_incomplete > 0:
         alerts.append("degraded_digest_present")
+    if stale_received > 0:
+        alerts.append("stale_received_present")
+    if stale_asr_pending > 0:
+        alerts.append("stale_asr_pending_present")
 
     status = "healthy"
     if alerts:
@@ -75,6 +99,8 @@ def _build_slo_state(
             "digest_incomplete_context_total": digest_incomplete,
             "episodes_summarized": int(episode_counts.get("summarized", 0)),
             "day_threads_trusted": int(day_thread_counts.get("trusted", 0)),
+            "stale_received": stale_received,
+            "stale_asr_pending": stale_asr_pending,
         },
     }
 
@@ -127,6 +153,36 @@ def _build_recent_day_trends(db, *, days_back: int) -> list[dict[str, object]]:
             """,
             (day_key,),
         )[0]
+        received_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'received'",
+            (day_key,),
+        )[0]
+        asr_pending_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'asr_pending'",
+            (day_key,),
+        )[0]
+        event_ready_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'event_ready'",
+            (day_key,),
+        )[0]
+        retryable_error_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'retryable_error'",
+            (day_key,),
+        )[0]
+        quarantined_ingest_count = db.fetchone(
+            "SELECT COUNT(*) FROM ingest_queue WHERE date(created_at) = ? AND status = 'quarantined'",
+            (day_key,),
+        )[0]
+        avg_received_to_processed_ms = db.fetchone(
+            """
+            SELECT AVG((julianday(processed_at) - julianday(created_at)) * 86400000.0)
+            FROM ingest_queue
+            WHERE date(created_at) = ?
+              AND processed_at IS NOT NULL
+              AND status IN ('transcribed', 'event_ready', 'retryable_error', 'quarantined', 'filtered')
+            """,
+            (day_key,),
+        )[0]
         digest_payload = {}
         if day_key in digest_rows:
             try:
@@ -143,6 +199,16 @@ def _build_recent_day_trends(db, *, days_back: int) -> list[dict[str, object]]:
                 "review_count": uncertain_count + garbage_count + quarantined_count,
                 "day_thread_count": day_thread_count,
                 "long_thread_count": long_thread_count,
+                "received_count": received_count,
+                "asr_pending_count": asr_pending_count,
+                "event_ready_count": event_ready_count,
+                "retryable_error_count": retryable_error_count,
+                "quarantined_ingest_count": quarantined_ingest_count,
+                "avg_received_to_processed_ms": (
+                    round(float(avg_received_to_processed_ms), 1)
+                    if avg_received_to_processed_ms is not None
+                    else None
+                ),
                 "degraded_digest": bool(
                     digest_payload.get("degraded") or digest_payload.get("incomplete_context")
                 ),
@@ -256,6 +322,11 @@ async def get_pipeline_status():
             "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
             "long_thread_counts": {"total": 0, "active": 0, "resolved": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
+            "ingest_health": {
+                "stale_counts": {"received": 0, "asr_pending": 0},
+                "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
+                "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
+            },
             "memory_health": {
                 "trusted_fraction": 0.0,
                 "review_fraction": 0.0,
@@ -279,6 +350,8 @@ async def get_pipeline_status():
                     "digest_incomplete_context_total": 0,
                     "episodes_summarized": 0,
                     "day_threads_trusted": 0,
+                    "stale_received": 0,
+                    "stale_asr_pending": 0,
                 },
             },
         }
@@ -342,6 +415,74 @@ async def get_pipeline_status():
             "garbage": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'garbage'")[0],
             "quarantined": db.fetchone("SELECT COUNT(*) FROM episodes WHERE quality_state = 'quarantined'")[0],
         }
+        stale_counts = {
+            "received": db.fetchone(
+                """
+                SELECT COUNT(*) FROM ingest_queue
+                WHERE status = 'received'
+                  AND created_at < datetime('now', '-30 minutes')
+                """
+            )[0],
+            "asr_pending": db.fetchone(
+                """
+                SELECT COUNT(*) FROM ingest_queue
+                WHERE status = 'asr_pending'
+                  AND created_at < datetime('now', '-45 minutes')
+                """
+            )[0],
+        }
+        recovery_counts = {
+            "watchdog_retryable": db.fetchone(
+                """
+                SELECT COUNT(*) FROM ingest_queue
+                WHERE status = 'retryable_error'
+                  AND error_code IN (
+                    'watchdog_stuck_pending',
+                    'watchdog_stuck_received',
+                    'watchdog_stuck_asr_pending'
+                  )
+                """
+            )[0],
+            "asr_runtime_retryable": db.fetchone(
+                """
+                SELECT COUNT(*) FROM ingest_queue
+                WHERE status = 'retryable_error'
+                  AND error_code = 'asr_runtime_error'
+                """
+            )[0],
+        }
+        received_to_terminal_avg = db.fetchone(
+            """
+            SELECT AVG((julianday(processed_at) - julianday(created_at)) * 86400000.0)
+            FROM ingest_queue
+            WHERE processed_at IS NOT NULL
+              AND status IN ('transcribed', 'event_ready', 'retryable_error', 'quarantined', 'filtered')
+            """
+        )[0]
+        received_to_event_ready_avg = db.fetchone(
+            """
+            SELECT AVG((julianday(processed_at) - julianday(created_at)) * 86400000.0)
+            FROM ingest_queue
+            WHERE processed_at IS NOT NULL
+              AND status = 'event_ready'
+            """
+        )[0]
+        ingest_health = {
+            "stale_counts": stale_counts,
+            "recovery_counts": recovery_counts,
+            "latency_ms": {
+                "received_to_terminal_avg": (
+                    round(float(received_to_terminal_avg), 1)
+                    if received_to_terminal_avg is not None
+                    else None
+                ),
+                "received_to_event_ready_avg": (
+                    round(float(received_to_event_ready_avg), 1)
+                    if received_to_event_ready_avg is not None
+                    else None
+                ),
+            },
+        }
         digest_rows = db.fetchall("SELECT digest_json FROM digest_cache")
         digest_incomplete_context_total = 0
         for row in digest_rows:
@@ -373,6 +514,7 @@ async def get_pipeline_status():
             day_thread_counts=day_thread_counts,
             quality_counts=quality_counts,
             memory_health=memory_health,
+            ingest_health=ingest_health,
         )
     except Exception as e:
         logger.warning("pipeline_status_failed", error=str(e))
@@ -387,6 +529,11 @@ async def get_pipeline_status():
             "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
             "long_thread_counts": {"total": 0, "active": 0, "resolved": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
+            "ingest_health": {
+                "stale_counts": {"received": 0, "asr_pending": 0},
+                "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
+                "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
+            },
             "memory_health": {
                 "trusted_fraction": 0.0,
                 "review_fraction": 0.0,
@@ -410,6 +557,8 @@ async def get_pipeline_status():
                     "digest_incomplete_context_total": 0,
                     "episodes_summarized": 0,
                     "day_threads_trusted": 0,
+                    "stale_received": 0,
+                    "stale_asr_pending": 0,
                 },
             },
             "_error": str(e),
@@ -426,6 +575,7 @@ async def get_pipeline_status():
         "day_thread_counts": day_thread_counts,
         "long_thread_counts": long_thread_counts,
         "quality_counts": quality_counts,
+        "ingest_health": ingest_health,
         "memory_health": memory_health,
         "slo_state": slo_state,
     }
@@ -467,7 +617,7 @@ async def reprocess_ingest(file_id: str):
     db = get_reflexio_db(db_path)
     row = db.fetchone(
         """
-        SELECT id, file_path, status FROM ingest_queue
+        SELECT id, file_path, status, created_at FROM ingest_queue
         WHERE id = ?
         LIMIT 1
         """,
@@ -476,7 +626,10 @@ async def reprocess_ingest(file_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="Ingest item not found")
 
-    if row["status"] not in {"retryable_error", "quarantined"}:
+    stale_reprocessable = {"received", "asr_pending"}
+    if row["status"] not in {"retryable_error", "quarantined"} and not (
+        row["status"] in stale_reprocessable and _is_stale_for_reprocess(row["created_at"])
+    ):
         raise HTTPException(status_code=409, detail="Ingest item is not reprocessable")
 
     file_path = Path(row["file_path"])

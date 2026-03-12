@@ -28,6 +28,21 @@ logger = get_logger("storage.ingest_persist")
 QUALITY_STATES = ("trusted", "uncertain", "garbage", "quarantined")
 
 
+def _existing_columns(cursor: sqlite3.Cursor, table_name: str) -> set[str]:
+    rows = cursor.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
+def _ensure_columns(cursor: sqlite3.Cursor, table_name: str, column_defs: list[str]) -> None:
+    existing = _existing_columns(cursor, table_name)
+    for col_def in column_defs:
+        column_name = col_def.split()[0]
+        if column_name in existing:
+            continue
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_def}")
+        existing.add(column_name)
+
+
 def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
     """Создаёт таблицы ingest_queue и transcriptions в SQLite при отсутствии."""
     cursor = conn.cursor()
@@ -59,7 +74,9 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    for col_def in [
+    _ensure_columns(cursor, "ingest_queue", [
+        "file_path TEXT NOT NULL DEFAULT ''",
+        "status TEXT NOT NULL DEFAULT 'pending'",
         "segment_id TEXT",
         "transport_status TEXT NOT NULL DEFAULT 'received'",
         "processing_status TEXT NOT NULL DEFAULT 'received'",
@@ -68,17 +85,16 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
         "attempt_count INTEGER NOT NULL DEFAULT 0",
         "next_attempt_at TEXT",
         "error_code TEXT",
+        "created_at TEXT",
+        "processed_at TEXT",
+        "error_message TEXT",
         "quarantine_reason TEXT",
         "quality_score REAL",
         "needs_recheck INTEGER NOT NULL DEFAULT 0",
         "quality_state TEXT NOT NULL DEFAULT 'trusted'",
         "quality_reasons_json TEXT NOT NULL DEFAULT '[]'",
         "review_required INTEGER NOT NULL DEFAULT 0",
-    ]:
-        try:
-            cursor.execute(f"ALTER TABLE ingest_queue ADD COLUMN {col_def}")
-        except Exception:
-            pass
+    ])
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ingest_queue_segment_id ON ingest_queue(segment_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ingest_queue_status ON ingest_queue(status)")
     cursor.execute(
@@ -106,10 +122,10 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    for col_def in [
+    _ensure_columns(cursor, "transcriptions", [
+        "episode_id TEXT",
         "transcript_raw TEXT",
         "transcript_clean TEXT",
-        "episode_id TEXT",
         "asr_model TEXT",
         "asr_confidence REAL",
         "garbage_flag INTEGER NOT NULL DEFAULT 0",
@@ -118,11 +134,10 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
         "quality_state TEXT NOT NULL DEFAULT 'trusted'",
         "quality_reasons_json TEXT NOT NULL DEFAULT '[]'",
         "review_required INTEGER NOT NULL DEFAULT 0",
-    ]:
-        try:
-            cursor.execute(f"ALTER TABLE transcriptions ADD COLUMN {col_def}")
-        except Exception:
-            pass
+        "speaker_id INTEGER",
+        "is_user INTEGER NOT NULL DEFAULT 1",
+        "speaker_confidence REAL DEFAULT 0.0",
+    ])
     _ensure_digest_cache_table(conn)
     _ensure_quality_transition_table(conn)
     conn.commit()
