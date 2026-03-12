@@ -1022,6 +1022,49 @@ def test_contextual_transcription_risk_does_not_quarantine_single_repetitive_rep
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_contextual_transcription_risk_does_not_quarantine_duplicate_conversational_sentence(tmp_path):
+    from src.core.audio_processing import _assess_contextual_transcription_risk
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        phrase = "Мама я после магазина зайду к тебе вечером и всё расскажу"
+        with db.transaction():
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-1", "ing-1", phrase, phrase, "2099-03-10T12:00:00"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-2", "ing-2", phrase, phrase, "2099-03-10T12:00:10"),
+            )
+            db.execute(
+                "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("tr-3", "ing-3", phrase, phrase, "2099-03-10T12:00:20"),
+            )
+
+        flagged, reason, penalty = _assess_contextual_transcription_risk(
+            db_path,
+            "tr-3",
+            None,
+            {"text": phrase, "transcript_clean": phrase},
+        )
+        assert flagged is False
+        assert reason is None
+        assert penalty == 0
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_evaluate_episode_truth_marks_repeated_noise_as_garbage(tmp_path):
     from src.memory.truth import evaluate_episode_truth
     from src.storage.db import get_reflexio_db

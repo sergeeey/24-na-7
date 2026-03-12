@@ -314,6 +314,7 @@ def _assess_contextual_transcription_risk(
 
     counts = Counter(words)
     dominant_share = max(counts.values()) / len(words)
+    unique_ratio = len(counts) / len(words)
     bigrams = list(zip(words, words[1:]))
     repeated_bigram_count = max(Counter(bigrams).values(), default=0)
 
@@ -338,9 +339,15 @@ def _assess_contextual_transcription_risk(
             duplicate_neighbors += 1
     repeated_phrase = len(words) >= 6 and (dominant_share >= 0.45 or repeated_bigram_count >= 2)
     extreme_repetition = len(words) >= 8 and (dominant_share >= 0.7 or repeated_bigram_count >= 3)
+    low_information_duplicate = (
+        dominant_share >= 0.5
+        or unique_ratio <= 0.55
+        or len(counts) <= 3
+        or len(words) <= 5
+    )
     if repeated_phrase and (duplicate_neighbors >= 1 or extreme_repetition):
         return True, "repeated_phrase_pattern", 0.45
-    if duplicate_neighbors >= 2:
+    if duplicate_neighbors >= 2 and low_information_duplicate:
         return True, "duplicate_neighbor_pattern", 0.4
 
     episode_context = get_episode_context(db_path, episode_id)
