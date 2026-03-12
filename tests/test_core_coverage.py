@@ -1,9 +1,13 @@
 """
 Тесты для повышения покрытия ядра (api, config, digest, memory, utils).
 """
+import asyncio
 import os
+import io
+import wave
 from pathlib import Path
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 # --- config ---
@@ -226,6 +230,93 @@ def test_enrich_transcription_preserves_structured_speakers(monkeypatch):
 
     assert event.speakers == ["Я", "Марат"]
     assert event.commitments[0].person == "Марат"
+
+
+def test_process_audio_bytes_non_user_speaker_is_annotated_not_filtered(tmp_path):
+    from src.core.audio_processing import process_audio_bytes
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    uploads_path = storage_path / "uploads"
+    uploads_path.mkdir()
+
+    old_storage = settings.STORAGE_PATH
+    old_uploads = settings.UPLOADS_PATH
+    old_filter_music = settings.FILTER_MUSIC
+    old_speaker_verification = settings.SPEAKER_VERIFICATION_ENABLED
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x01\x00" * 4000)
+    wav_bytes = buf.getvalue()
+
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "UPLOADS_PATH", uploads_path)
+    object.__setattr__(settings, "FILTER_MUSIC", False)
+    object.__setattr__(settings, "SPEAKER_VERIFICATION_ENABLED", True)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+
+        with patch(
+            "src.speaker.verify_speaker",
+            return_value=SimpleNamespace(
+                is_user=False,
+                confidence=0.91,
+                method="embedding",
+                speaker_id=7,
+            ),
+        ):
+            out = asyncio.run(
+                process_audio_bytes(
+                    content=wav_bytes,
+                    content_type="audio/wav",
+                    original_filename="segment.wav",
+                    transcribe_fn=lambda _path, language=None: {
+                        "text": "обсудили курсы и время встречи",
+                        "language": "ru",
+                        "language_probability": 0.95,
+                        "duration": 4.5,
+                        "segments": [],
+                    },
+                    run_enrichment=False,
+                    delete_audio_after=False,
+                )
+            )
+
+        assert out["status"] == "transcribed"
+        assert out["result"]["is_user"] is False
+        assert out["result"]["speaker_confidence"] == 0.91
+        assert out["result"]["speaker_id"] == 7
+        assert out["result"]["speaker_role"] == "other"
+
+        db = get_reflexio_db(db_path)
+        row = db.fetchone(
+            """
+            SELECT iq.status, iq.error_code, t.is_user, t.speaker_confidence, t.speaker_id
+            FROM ingest_queue iq
+            JOIN transcriptions t ON t.ingest_id = iq.id
+            ORDER BY iq.created_at DESC
+            LIMIT 1
+            """
+        )
+        assert row["status"] == "transcribed"
+        assert row["error_code"] in (None, "")
+        assert row["is_user"] == 0
+        assert row["speaker_id"] == 7
+        assert row["speaker_confidence"] == 0.91
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "UPLOADS_PATH", old_uploads)
+        object.__setattr__(settings, "FILTER_MUSIC", old_filter_music)
+        object.__setattr__(settings, "SPEAKER_VERIFICATION_ENABLED", old_speaker_verification)
 
 
 def test_api_density_analysis(tmp_path):

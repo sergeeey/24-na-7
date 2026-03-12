@@ -820,8 +820,6 @@ def persist_ws_transcription(
 
             segments_str = None
             if segments is not None:
-                import json
-
                 try:
                     segments_str = (
                         json.dumps(segments) if not isinstance(segments, str) else segments

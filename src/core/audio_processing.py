@@ -793,24 +793,13 @@ def process_audio_from_artifact_sync(
                     "speaker_id": verification.speaker_id,
                 }
                 if not verification.is_user:
-                    _mark_ingest_status(
-                        db_path,
-                        ingest_id,
-                        "filtered",
-                        "not_user_speaker",
-                        transport_status="server_acked",
-                        processing_status="filtered",
-                        error_code="speaker_filtered",
+                    logger.info(
+                        "speaker_verification_soft_pass",
+                        ingest_id=ingest_id,
+                        speaker_confidence=verification.confidence,
+                        speaker_id=verification.speaker_id,
+                        speaker_role="other",
                     )
-                    if delete_audio_after:
-                        file_path.unlink(missing_ok=True)
-                    return {
-                        "status": "filtered",
-                        "reason": "not_user_speaker",
-                        "ingest_id": ingest_id,
-                        "filename": filename,
-                        "speaker_confidence": verification.confidence,
-                    }
             else:
                 speaker_data = None
         else:
@@ -909,6 +898,7 @@ def process_audio_from_artifact_sync(
             result["speaker_confidence"] = speaker_data["speaker_confidence"]
             result["is_user"] = speaker_data["is_user"]
             result["speaker_id"] = speaker_data["speaker_id"]
+            result["speaker_role"] = "user" if speaker_data["is_user"] else "other"
 
         transcription_id = persist_ws_transcription(
             db_path=db_path,
@@ -1260,24 +1250,13 @@ async def process_audio_bytes(
                     "speaker_id": verification.speaker_id,
                 }
                 if not verification.is_user:
-                    _mark_ingest_status(
-                        db_path,
-                        ingest_id,
-                        "filtered",
-                        "not_user_speaker",
-                        transport_status="server_acked",
-                        processing_status="filtered",
-                        error_code="speaker_filtered",
+                    logger.info(
+                        "speaker_verification_soft_pass",
+                        ingest_id=ingest_id,
+                        speaker_confidence=verification.confidence,
+                        speaker_id=verification.speaker_id,
+                        speaker_role="other",
                     )
-                    if delete_audio_after:
-                        dest_path.unlink(missing_ok=True)
-                    return {
-                        "status": "filtered",
-                        "reason": "not_user_speaker",
-                        "ingest_id": ingest_id,
-                        "filename": filename,
-                        "speaker_confidence": verification.confidence,
-                    }
             else:
                 speaker_data = None
         else:
@@ -1390,6 +1369,7 @@ async def process_audio_bytes(
             result["speaker_confidence"] = speaker_data["speaker_confidence"]
             result["is_user"] = speaker_data["is_user"]
             result["speaker_id"] = speaker_data["speaker_id"]
+            result["speaker_role"] = "user" if speaker_data["is_user"] else "other"
 
         transcription_id = persist_ws_transcription(
             db_path=db_path,
