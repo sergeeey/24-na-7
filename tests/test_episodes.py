@@ -1206,6 +1206,45 @@ def test_evaluate_transcription_truth_preserves_coherent_orphan_as_trusted(tmp_p
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_evaluate_transcription_truth_marks_low_information_short_phrase_as_uncertain(tmp_path):
+    from src.memory.truth import evaluate_transcription_truth
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """
+                INSERT INTO transcriptions (
+                    id, ingest_id, text, transcript_clean, created_at, quality_state
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "tr-1",
+                    "ing-1",
+                    "Мария отпуск согласован",
+                    "Мария отпуск согласован",
+                    "2026-03-10T12:00:00",
+                    "trusted",
+                ),
+            )
+
+        truth = evaluate_transcription_truth(db_path, "tr-1")
+        assert truth is not None
+        assert truth["quality_state"] == "uncertain"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_contextual_quarantine_syncs_ingest_and_truth_states(tmp_path):
     from src.core.audio_processing import _mark_ingest_status, _mark_transcription_for_review
     from src.storage.db import get_reflexio_db

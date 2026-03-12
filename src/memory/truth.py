@@ -156,9 +156,11 @@ def evaluate_transcription_truth(
     score = max(0.0, min(1.0, score))
     if contradiction and duplicate_neighbors >= 2:
         quality_state = "quarantined"
-    elif repeated_phrase or token_count == 0:
+    elif token_count == 0:
         quality_state = "garbage"
-    elif score < 0.72:
+    elif repeated_phrase and (duplicate_neighbors >= 1 or dominant_share >= 0.55):
+        quality_state = "garbage"
+    elif score < 0.72 or repeated_phrase:
         quality_state = "uncertain"
     else:
         quality_state = "trusted"
@@ -276,11 +278,11 @@ def evaluate_episode_truth(db_path: Path, episode_id: str) -> dict[str, Any] | N
     score = max(0.0, min(1.0, score))
     if contradiction and duplicate_neighbors >= 1:
         quality_state = "quarantined"
-    elif repeated_phrase:
-        quality_state = "garbage"
     elif token_count == 0:
         quality_state = "garbage"
-    elif score < 0.72 or contradiction:
+    elif repeated_phrase and (duplicate_neighbors >= 1 or dominant_share >= 0.55):
+        quality_state = "garbage"
+    elif score < 0.72 or contradiction or repeated_phrase:
         quality_state = "uncertain"
     else:
         quality_state = "trusted"
