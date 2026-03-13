@@ -36,12 +36,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import com.reflexio.app.data.calendar.CalendarReader
+import com.reflexio.app.data.db.RecordingDatabase
+import com.reflexio.app.data.model.CachedCalendarEvent
 import com.reflexio.app.domain.network.DailyDigestData
 import com.reflexio.app.domain.network.MemoryApi
 import com.reflexio.app.domain.network.ServerEndpointResolver
+import com.reflexio.app.ui.permissions.CalendarPermissionGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
+import java.time.ZoneId
 
 private sealed class DigestUiState {
     object Loading : DigestUiState()
@@ -59,6 +64,8 @@ fun DailySummaryScreen(
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var retryKey by remember { mutableStateOf(0) }
     var state by remember { mutableStateOf<DigestUiState>(DigestUiState.Loading) }
+    var calendarEvents by remember { mutableStateOf<List<CachedCalendarEvent>>(emptyList()) }
+    var calendarGranted by remember { mutableStateOf(false) }
 
     LaunchedEffect(baseHttpUrl, selectedDate, retryKey) {
         state = DigestUiState.Loading
@@ -69,6 +76,28 @@ fun DailySummaryScreen(
             DigestUiState.Success(result)
         } catch (e: Exception) {
             DigestUiState.Error(ServerEndpointResolver.userFacingError(e.message, baseHttpUrl))
+        }
+    }
+
+    // Calendar events for selected date
+    LaunchedEffect(selectedDate, calendarGranted) {
+        if (!calendarGranted) return@LaunchedEffect
+        calendarEvents = withContext(Dispatchers.IO) {
+            try {
+                val zone = ZoneId.systemDefault()
+                val dayStart = selectedDate.atStartOfDay(zone).toInstant().toEpochMilli()
+                val dayEnd = selectedDate.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                // Sync calendar → Room if stale (>5 min)
+                val db = RecordingDatabase.getInstance(context)
+                val lastSync = db.calendarCacheDao().lastSyncTime() ?: 0L
+                if (System.currentTimeMillis() - lastSync > 5 * 60_000) {
+                    val fresh = CalendarReader.readEvents(context.contentResolver)
+                    db.calendarCacheDao().insertAll(fresh)
+                }
+                db.calendarCacheDao().eventsForDay(dayStart, dayEnd)
+            } catch (_: Exception) {
+                emptyList()
+            }
         }
     }
 
@@ -144,6 +173,12 @@ fun DailySummaryScreen(
             }
         }
 
+        CalendarPermissionGate(onGranted = { calendarGranted = true })
+
+        if (calendarEvents.isNotEmpty()) {
+            CalendarEventsCard(calendarEvents)
+        }
+
         when (val current = state) {
             DigestUiState.Loading -> {
                 Text("Собираю дайджест...", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -153,6 +188,54 @@ fun DailySummaryScreen(
             }
             is DigestUiState.Success -> {
                 DigestBody(current.data)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalendarEventsCard(events: List<CachedCalendarEvent>) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "Встречи дня (${events.size})",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            events.forEach { event ->
+                val timeStr = if (event.allDay) {
+                    "Весь день"
+                } else {
+                    val start = java.time.Instant.ofEpochMilli(event.startMs)
+                        .atZone(java.time.ZoneId.systemDefault())
+                    val end = java.time.Instant.ofEpochMilli(event.endMs)
+                        .atZone(java.time.ZoneId.systemDefault())
+                    "${start.hour}:${"%02d".format(start.minute)}–${end.hour}:${"%02d".format(end.minute)}"
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = event.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = timeStr,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }

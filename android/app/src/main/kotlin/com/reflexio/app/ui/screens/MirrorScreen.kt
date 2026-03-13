@@ -31,10 +31,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.reflexio.app.data.db.RecordingDatabase
+import com.reflexio.app.data.health.HealthConnectReader
+import com.reflexio.app.data.model.CachedHealthMetric
 import com.reflexio.app.domain.network.InsightCard
 import com.reflexio.app.domain.network.MemoryApi
 import com.reflexio.app.domain.network.MirrorPortrait
 import com.reflexio.app.domain.network.ServerEndpointResolver
+import com.reflexio.app.ui.permissions.HealthPermissionGate
+import androidx.compose.ui.platform.LocalContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -57,13 +62,18 @@ fun MirrorScreen(
     onOpenThreads: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    // ПОЧЕМУ: три независимых LaunchedEffect — секции грузятся параллельно
+    val context = LocalContext.current
+
+    // ПОЧЕМУ: независимые LaunchedEffect — секции грузятся параллельно
     // и не блокируют друг друга при частичной недоступности API
     var portrait by remember { mutableStateOf<MirrorPortrait?>(null) }
     var portraitError by remember { mutableStateOf<String?>(null) }
 
     var insights by remember { mutableStateOf<List<InsightCard>>(emptyList()) }
     var insightsError by remember { mutableStateOf<String?>(null) }
+
+    var healthMetrics by remember { mutableStateOf<List<CachedHealthMetric>>(emptyList()) }
+    var healthGranted by remember { mutableStateOf(false) }
 
     LaunchedEffect(baseHttpUrl) {
         portraitError = null
@@ -81,6 +91,26 @@ fun MirrorScreen(
             insights = withContext(Dispatchers.IO) { MemoryApi.fetchBalanceInsights(baseHttpUrl, today) }
         } catch (e: Exception) {
             insightsError = ServerEndpointResolver.userFacingError(e.message, baseHttpUrl)
+        }
+    }
+
+    // Health Connect → Room → UI
+    LaunchedEffect(healthGranted) {
+        if (!healthGranted) return@LaunchedEffect
+        healthMetrics = withContext(Dispatchers.IO) {
+            try {
+                val reader = HealthConnectReader(context)
+                val db = RecordingDatabase.getInstance(context)
+                val lastSync = db.healthMetricDao().lastSyncTime() ?: 0L
+                if (System.currentTimeMillis() - lastSync > 15 * 60_000) {
+                    val all = reader.readSleep() + reader.readSteps() + reader.readHeartRate()
+                    if (all.isNotEmpty()) db.healthMetricDao().insertAll(all)
+                }
+                val today = LocalDate.now().toString()
+                db.healthMetricDao().metricsForDate(today)
+            } catch (_: Exception) {
+                emptyList()
+            }
         }
     }
 
@@ -110,6 +140,13 @@ fun MirrorScreen(
             )
             portraitError != null -> ErrorText(portraitError!!)
             else -> LoadingRow()
+        }
+
+        HealthPermissionGate(onGranted = { healthGranted = true })
+
+        if (healthMetrics.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            HealthMetricsRow(healthMetrics)
         }
 
         Spacer(Modifier.height(16.dp))
@@ -308,6 +345,37 @@ private fun LoadingRow() {
         horizontalArrangement = Arrangement.Center,
     ) {
         CircularProgressIndicator()
+    }
+}
+
+@Composable
+private fun HealthMetricsRow(metrics: List<CachedHealthMetric>) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
+        ),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Здоровье сегодня",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                metrics.forEach { m ->
+                    val (label, display) = when (m.metricType) {
+                        "sleep_hours" -> "Сон" to "%.1f ч".format(m.value)
+                        "steps" -> "Шаги" to "%,.0f".format(m.value)
+                        "heart_rate_avg" -> "Пульс" to "%.0f bpm".format(m.value)
+                        else -> m.metricType to "%.1f".format(m.value)
+                    }
+                    StatItem(label = label, value = display)
+                }
+            }
+        }
     }
 }
 
