@@ -117,4 +117,10 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    // Health Connect SDK
+    implementation("androidx.health.connect:connect-client:1.1.0-alpha07")
+
+    // Google Play Services Location (passive geolocation)
+    implementation("com.google.android.gms:play-services-location:21.1.0")
 }

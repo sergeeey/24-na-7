@@ -7,6 +7,9 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.reflexio.app.data.model.CachedCall
+import com.reflexio.app.data.model.CachedCalendarEvent
+import com.reflexio.app.data.model.CachedHealthMetric
+import com.reflexio.app.data.model.CachedLocation
 import com.reflexio.app.data.model.PendingUpload
 import com.reflexio.app.data.model.Recording
 
@@ -76,9 +79,71 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
     }
 }
 
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS calendar_event_cache (
+                eventId INTEGER NOT NULL PRIMARY KEY,
+                title TEXT NOT NULL,
+                startMs INTEGER NOT NULL,
+                endMs INTEGER NOT NULL,
+                location TEXT,
+                allDay INTEGER NOT NULL,
+                syncedAt INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_calendar_event_cache_startMs ON calendar_event_cache(startMs)")
+    }
+}
+
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS health_metric_cache (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                metricType TEXT NOT NULL,
+                value REAL NOT NULL,
+                unit TEXT NOT NULL,
+                syncedAt INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_health_metric_cache_date_metricType ON health_metric_cache(date, metricType)")
+    }
+}
+
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS location_cache (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                accuracy REAL NOT NULL,
+                timestampMs INTEGER NOT NULL,
+                resolvedPlace TEXT,
+                syncedAt INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+    }
+}
+
 @Database(
-    entities = [Recording::class, PendingUpload::class, CachedCall::class],
-    version = 5,
+    entities = [
+        Recording::class,
+        PendingUpload::class,
+        CachedCall::class,
+        CachedCalendarEvent::class,
+        CachedHealthMetric::class,
+        CachedLocation::class,
+    ],
+    version = 8,
     exportSchema = false
 )
 abstract class RecordingDatabase : RoomDatabase() {
@@ -86,6 +151,9 @@ abstract class RecordingDatabase : RoomDatabase() {
     abstract fun recordingDao(): RecordingDao
     abstract fun pendingUploadDao(): PendingUploadDao
     abstract fun callLogCacheDao(): CallLogCacheDao
+    abstract fun calendarCacheDao(): CalendarCacheDao
+    abstract fun healthMetricDao(): HealthMetricDao
+    abstract fun locationCacheDao(): LocationCacheDao
 
     companion object {
         @Volatile
@@ -98,7 +166,10 @@ abstract class RecordingDatabase : RoomDatabase() {
                     RecordingDatabase::class.java,
                     "reflexio_recordings.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(
+                        MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                        MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+                    )
                     .build()
                     .also { INSTANCE = it }
             }
