@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import com.reflexio.app.domain.network.DailyDigestData
 import com.reflexio.app.domain.network.MemoryApi
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -67,7 +68,7 @@ fun DailySummaryScreen(
             }
             DigestUiState.Success(result)
         } catch (e: Exception) {
-            DigestUiState.Error(e.message ?: "Не удалось загрузить дайджест")
+            DigestUiState.Error(ServerEndpointResolver.userFacingError(e.message, baseHttpUrl))
         }
     }
 
@@ -95,8 +96,8 @@ fun DailySummaryScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
-                Text("Daily digest", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                Text("Итог дня", style = MaterialTheme.typography.headlineMedium)
+                Text("Дневной срез памяти", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                Text("Итог", style = MaterialTheme.typography.headlineMedium)
             }
             Row {
                 IconButton(onClick = { retryKey++ }) {

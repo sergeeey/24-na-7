@@ -31,6 +31,7 @@ import com.reflexio.app.data.model.UploadRetryPolicy
 import com.reflexio.app.debug.DebugLog
 import com.reflexio.app.domain.network.EnrichmentApiClient
 import com.reflexio.app.domain.network.IngestWebSocketClient
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import com.reflexio.app.domain.pipeline.PipelineDiagnostics
 import com.reflexio.app.domain.vad.VadSegmentWriter
 import com.reflexio.app.domain.workers.UploadWorker
@@ -114,8 +115,12 @@ class AudioRecordingService : Service() {
         }
         startForeground(NOTIFICATION_ID, createForegroundNotification())
         acquireWakeLock()
-        val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
-        wsClient = IngestWebSocketClient(baseUrl = baseUrl, apiKey = BuildConfig.SERVER_API_KEY)
+        val baseUrl = ServerEndpointResolver.resolveBackgroundWsUrl()
+        Log.d(TAG, "Creating wsClient with baseUrl=$baseUrl")
+        wsClient = IngestWebSocketClient(
+            baseUrl = baseUrl,
+            apiKey = ServerEndpointResolver.apiKeyForUrl(ServerEndpointResolver.wsToHttp(baseUrl)),
+        )
         startRecording()
         scope.launch {
             cleanupOrphanSegments()
@@ -434,9 +439,11 @@ class AudioRecordingService : Service() {
 
     private suspend fun fetchEnrichment(recordingId: Long, fileId: String) {
         delay(3000L)
-        val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
-        val httpUrl = baseUrl.replace("ws://", "http://").replace("wss://", "https://")
-        val apiClient = EnrichmentApiClient(baseUrl = httpUrl, apiKey = BuildConfig.SERVER_API_KEY)
+        val httpUrl = ServerEndpointResolver.resolveBackgroundHttpUrl()
+        val apiClient = EnrichmentApiClient(
+            baseUrl = httpUrl,
+            apiKey = ServerEndpointResolver.apiKeyForUrl(httpUrl),
+        )
         PipelineDiagnostics.setStage(this, "enriching")
 
         repeat(12) { attempt ->

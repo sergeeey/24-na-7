@@ -3,6 +3,7 @@ package com.reflexio.app.domain.network
 import android.util.Log
 import android.util.Base64
 import android.util.Base64OutputStream
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
@@ -58,11 +59,20 @@ class IngestWebSocketClient(
 
     private fun openSession(): Session {
         val channel = Channel<JSONObject>(capacity = 16)
+        val openSignal = CompletableDeferred<Unit>()
+        Log.d(TAG, "Opening websocket session baseUrl=$baseUrl wsUrl=$wsUrl")
         val request = Request.Builder().url(wsUrl).apply {
             if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey")
         }.build()
 
         val listener = object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.d(TAG, "WebSocket opened")
+                if (!openSignal.isCompleted) {
+                    openSignal.complete(Unit)
+                }
+            }
+
             override fun onMessage(webSocket: WebSocket, text: String) {
                 try {
                     val json = JSONObject(text)
@@ -74,12 +84,20 @@ class IngestWebSocketClient(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "WebSocket connection failed", t)
+                if (!openSignal.isCompleted) {
+                    openSignal.completeExceptionally(t)
+                }
                 channel.close(t)
                 clearActiveSession(webSocket, channel)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "WebSocket closed: $code $reason")
+                if (!openSignal.isCompleted) {
+                    openSignal.completeExceptionally(
+                        IllegalStateException("WebSocket closed before open: $code $reason")
+                    )
+                }
                 channel.close()
                 clearActiveSession(webSocket, channel)
             }
@@ -88,7 +106,7 @@ class IngestWebSocketClient(
         val ws = client.newWebSocket(request, listener)
         activeSocket = ws
         activeChannel = channel
-        return Session(ws, channel)
+        return Session(ws, channel, openSignal)
     }
 
     /**
@@ -144,6 +162,10 @@ class IngestWebSocketClient(
             session = openSession()
             val ws = session.webSocket
             val ch = session.channel
+            val opened = withTimeoutOrNull(5_000L) { session.openSignal.await() }
+            if (opened == null) {
+                return Result.failure(RuntimeException("Timeout waiting for websocket open"))
+            }
 
             val requestPayload = JSONObject().apply {
                 put("type", "audio")
@@ -197,6 +219,7 @@ class IngestWebSocketClient(
         return message.contains("websocket send failed") ||
             message.contains("channel was closed") ||
             message.contains("timeout waiting for received") ||
+            message.contains("timeout waiting for websocket open") ||
             message.contains("no response channel")
     }
 
@@ -222,6 +245,7 @@ class IngestWebSocketClient(
     private data class Session(
         val webSocket: WebSocket,
         val channel: Channel<JSONObject>,
+        val openSignal: CompletableDeferred<Unit>,
     )
 
     companion object {

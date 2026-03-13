@@ -135,7 +135,7 @@ data class MirrorPortrait(
     val topEmotions: List<String>,
     val topTopics: List<String>,
     val topPeople: List<String>,
-    val avgSentiment: Float,
+    val avgSentiment: Float?,
     val episodesCount: Int,
     val openCommitments: Int,
 )
@@ -346,8 +346,7 @@ object MemoryApi {
         NetworkClients.sharedClient.newCall(request).execute().use { resp ->
             val raw = resp.body?.string() ?: throw RuntimeException("Empty response")
             if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}: $raw")
-            val json = JSONObject(raw)
-            val arr = json.optJSONArray("persons") ?: JSONArray()
+            val arr = parseRootArray(raw, "persons")
             return buildList {
                 for (i in 0 until arr.length()) {
                     val item = arr.optJSONObject(i) ?: continue
@@ -370,8 +369,7 @@ object MemoryApi {
         NetworkClients.sharedClient.newCall(request).execute().use { resp ->
             val raw = resp.body?.string() ?: throw RuntimeException("Empty response")
             if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}: $raw")
-            val json = JSONObject(raw)
-            val arr = json.optJSONArray("pending") ?: JSONArray()
+            val arr = parseRootArray(raw, "pending")
             return buildList {
                 for (i in 0 until arr.length()) {
                     val item = arr.optJSONObject(i) ?: continue
@@ -460,7 +458,7 @@ object MemoryApi {
                         arr.optJSONObject(i)?.optString("person")?.takeIf { it.isNotBlank() }?.let(::add)
                     }
                 },
-                avgSentiment = json.optDouble("avg_sentiment", 0.0).toFloat(),
+                avgSentiment = if (json.isNull("avg_sentiment")) null else json.optDouble("avg_sentiment", 0.0).toFloat(),
                 episodesCount = json.optInt("episodes_count", 0),
                 openCommitments = json.optInt("open_commitments", 0),
             )
@@ -469,11 +467,7 @@ object MemoryApi {
 
     private fun requestBuilder(url: String): Request.Builder {
         val builder = Request.Builder().url(url)
-        val apiKey = BuildConfig.SERVER_API_KEY
-        if (apiKey.isNotBlank()) {
-            builder.addHeader("Authorization", "Bearer $apiKey")
-        }
-        return builder
+        return ServerEndpointResolver.attachAuth(builder, url)
     }
 
     private fun parseDigestData(data: JSONObject): DigestSummaryData {
@@ -571,6 +565,15 @@ object MemoryApi {
             jsonArrayToList(JSONArray(raw))
         } catch (_: Exception) {
             emptyList()
+        }
+    }
+
+    private fun parseRootArray(raw: String, fieldName: String): JSONArray {
+        val trimmed = raw.trim()
+        return when {
+            trimmed.startsWith("[") -> JSONArray(trimmed)
+            trimmed.startsWith("{") -> JSONObject(trimmed).optJSONArray(fieldName) ?: JSONArray()
+            else -> JSONArray()
         }
     }
 }

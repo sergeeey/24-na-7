@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.reflexio.app.BuildConfig
 import com.reflexio.app.data.db.RecordingDatabase
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import com.reflexio.app.domain.pipeline.PipelineDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -110,11 +111,7 @@ fun PipelineStatusStrip(
                     .connectTimeout(5, TimeUnit.SECONDS)
                     .readTimeout(5, TimeUnit.SECONDS)
                     .build()
-                val req = Request.Builder().url(url).apply {
-                    if (BuildConfig.SERVER_API_KEY.isNotEmpty()) {
-                        addHeader("Authorization", "Bearer ${BuildConfig.SERVER_API_KEY}")
-                    }
-                }.build()
+                val req = ServerEndpointResolver.attachAuth(Request.Builder().url(url), url).build()
                 client.newCall(req).execute().use { resp ->
                     if (resp.isSuccessful) {
                         val body = resp.body?.string() ?: ""

@@ -48,10 +48,14 @@ android {
             //   WiFi             → ws://192.168.1.XXX:8000 (в local.properties)
             val deviceUrl = localProps.getProperty("SERVER_WS_URL_DEVICE", "ws://localhost:8000")
             buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"$deviceUrl\"")
+            val fallbackUrl = localProps.getProperty("PROD_SERVER_URL", "")
+            buildConfigField("String", "SERVER_WS_URL_FALLBACK", "\"$fallbackUrl\"")
             // API key for server auth — читаем из local.properties (gitignored, безопасно).
             // Добавь в android/local.properties: SERVER_API_KEY=UKpOEPN9Tyv...
             val apiKey = localProps.getProperty("SERVER_API_KEY", "")
             buildConfigField("String", "SERVER_API_KEY", "\"$apiKey\"")
+            val fallbackApiKey = localProps.getProperty("PROD_API_KEY", "")
+            buildConfigField("String", "SERVER_API_KEY_FALLBACK", "\"$fallbackApiKey\"")
             // Доп. debug ingest для локальной отладки. По умолчанию выключен, чтобы не шуметь на реальном устройстве.
             val debugLogIngestUrl = localProps.getProperty("DEBUG_LOG_INGEST_URL", "")
             buildConfigField("String", "DEBUG_LOG_INGEST_URL", "\"$debugLogIngestUrl\"")
@@ -68,8 +72,10 @@ android {
             val prodUrl = localProps.getProperty("PROD_SERVER_URL", "wss://api.reflexio.example.com")
             buildConfigField("String", "SERVER_WS_URL", "\"$prodUrl\"")
             buildConfigField("String", "SERVER_WS_URL_DEVICE", "\"$prodUrl\"")
+            buildConfigField("String", "SERVER_WS_URL_FALLBACK", "\"$prodUrl\"")
             val prodApiKey = localProps.getProperty("PROD_API_KEY", "")
             buildConfigField("String", "SERVER_API_KEY", "\"$prodApiKey\"")
+            buildConfigField("String", "SERVER_API_KEY_FALLBACK", "\"$prodApiKey\"")
             buildConfigField("String", "DEBUG_LOG_INGEST_URL", "\"\"")
         }
     }

@@ -41,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.reflexio.app.domain.network.AskResponseData
 import com.reflexio.app.domain.network.MemoryApi
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -83,7 +84,7 @@ fun AskScreen(
                 }
                 AskUiState.Success(result)
             } catch (e: Exception) {
-                AskUiState.Error(e.message ?: "Ошибка соединения")
+                AskUiState.Error(ServerEndpointResolver.userFacingError(e.message, baseHttpUrl))
             }
         }
     }
@@ -114,12 +115,12 @@ fun AskScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
-                    text = "One interface for your memory",
+                    text = "Главный вход в память",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                 )
                 Text(
-                    text = "Спросите обычным языком, а Reflexio вернёт сжатый ответ и улики из памяти.",
+                    text = "Спроси обычным языком про людей, обещания, темы дня или повторяющиеся линии.",
                     style = MaterialTheme.typography.bodyLarge,
                 )
             }
@@ -162,7 +163,7 @@ fun AskScreen(
         when (val current = state) {
             AskUiState.Idle -> {
                 Text(
-                    text = "Лучше всего работают вопросы про людей, обещания, повторяющиеся темы и выводы по дню.",
+                    text = "Лучше всего работают вопросы про людей, обещания, деньги, повторяющиеся темы и выводы по дню.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -225,7 +226,7 @@ private fun AskAnswerView(
                     )
                     result.warning?.let {
                         Text(
-                            text = it,
+                            text = humanizeWarning(it),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -342,5 +343,14 @@ private fun AskAnswerView(
                 }
             }
         }
+    }
+}
+
+private fun humanizeWarning(warning: String): String {
+    val normalized = warning.lowercase()
+    return if ("мало данных" in normalized || "недостаточно данных" in normalized) {
+        "За выбранный период пока мало осмысленных записей. Попробуй спросить про вчера, про человека или про более длинный период."
+    } else {
+        warning
     }
 }

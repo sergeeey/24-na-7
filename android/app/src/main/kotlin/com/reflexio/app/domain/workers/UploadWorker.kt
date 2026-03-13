@@ -17,6 +17,7 @@ import com.reflexio.app.data.model.TransportStatus
 import com.reflexio.app.data.model.UploadRetryPolicy
 import com.reflexio.app.domain.network.EnrichmentApiClient
 import com.reflexio.app.domain.network.IngestWebSocketClient
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import com.reflexio.app.domain.pipeline.PipelineDiagnostics
 import kotlinx.coroutines.delay
 import java.io.File
@@ -31,8 +32,12 @@ class UploadWorker(
         val pendingDao = db.pendingUploadDao()
         val recordingDao = db.recordingDao()
 
-        val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
-        val wsClient = IngestWebSocketClient(baseUrl = baseUrl, apiKey = BuildConfig.SERVER_API_KEY)
+        val baseUrl = ServerEndpointResolver.resolveBackgroundWsUrl()
+        Log.d(TAG, "Starting upload worker with baseUrl=$baseUrl")
+        val wsClient = IngestWebSocketClient(
+            baseUrl = baseUrl,
+            apiKey = ServerEndpointResolver.apiKeyForUrl(ServerEndpointResolver.wsToHttp(baseUrl)),
+        )
 
         val pending = pendingDao.getRetryable(
             UploadRetryPolicy.MAX_RETRY_ATTEMPTS,
@@ -144,7 +149,7 @@ class UploadWorker(
 
             WorkManager.getInstance(context).enqueueUniqueWork(
                 WORK_NAME,
-                ExistingWorkPolicy.REPLACE,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
                 request,
             )
         }
@@ -161,9 +166,11 @@ class UploadWorker(
         fileId: String,
     ) {
         delay(3000L)
-        val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
-        val httpUrl = baseUrl.replace("ws://", "http://").replace("wss://", "https://")
-        val apiClient = EnrichmentApiClient(baseUrl = httpUrl, apiKey = BuildConfig.SERVER_API_KEY)
+        val httpUrl = ServerEndpointResolver.resolveBackgroundHttpUrl()
+        val apiClient = EnrichmentApiClient(
+            baseUrl = httpUrl,
+            apiKey = ServerEndpointResolver.apiKeyForUrl(httpUrl),
+        )
         PipelineDiagnostics.setStage(applicationContext, "enriching")
 
         repeat(12) { attempt ->

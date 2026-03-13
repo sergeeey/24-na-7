@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,6 +30,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -44,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import com.reflexio.app.domain.network.MemoryApi
 import com.reflexio.app.domain.network.PendingApproval
 import com.reflexio.app.domain.network.PersonListItem
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -52,6 +56,7 @@ import kotlinx.coroutines.withContext
 // совпадают с палитрой остальных экранов (SearchScreen, ThreadsScreen)
 private val IndigoAccent = Color(0xFF7C6CFF)
 private val TealAccent = Color(0xFF00E5CC)
+private val AmberAccent = Color(0xFFFFC75A)
 
 private sealed class PeopleUiState {
     object Loading : PeopleUiState()
@@ -62,12 +67,47 @@ private sealed class PeopleUiState {
     ) : PeopleUiState()
 }
 
+private data class PeopleNotebookSections(
+    val priority: List<PersonListItem>,
+    val recent: List<PersonListItem>,
+    val others: List<PersonListItem>,
+)
+
+private fun buildPeopleSections(persons: List<PersonListItem>): PeopleNotebookSections {
+    if (persons.isEmpty()) return PeopleNotebookSections(emptyList(), emptyList(), emptyList())
+    val ranked = persons.sortedByDescending(::personPriorityScore).distinctBy { it.name }
+    val priority = ranked.take(4)
+    val recent = ranked.drop(priority.size).take(6)
+    val others = ranked.drop(priority.size + recent.size)
+    return PeopleNotebookSections(priority, recent, others)
+}
+
+private fun personPriorityScore(person: PersonListItem): Int {
+    var score = person.sampleCount * 3
+    if (person.voiceReady) score += 14
+    if (person.relationship != "unknown" && person.relationship.isNotBlank()) score += 6
+    if (!person.lastSeen.isNullOrBlank()) score += 10
+    return score
+}
+
+private fun buildPersonSubtitle(person: PersonListItem): String {
+    val bits = mutableListOf<String>()
+    person.relationship
+        .takeIf { it.isNotBlank() && it != "unknown" }
+        ?.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+        ?.let(bits::add)
+    person.lastSeen?.take(10)?.let { bits.add("контакт $it") }
+    if (person.sampleCount > 0) bits.add("голосовых следов ${person.sampleCount}")
+    return bits.joinToString(" · ").ifBlank { "Пока мало контекста, но карточка уже готова для накопления памяти." }
+}
+
 /**
  * Экран "Люди" — социальный граф пользователя.
  *
  * Отображает список известных людей и коллапсируемую секцию ожидающих подтверждения.
  * Approve/Reject обрабатываются немедленно через MemoryApi; после действия pending обновляется.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun PeopleScreen(
     baseHttpUrl: String,
@@ -76,6 +116,7 @@ fun PeopleScreen(
 ) {
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<PeopleUiState>(PeopleUiState.Loading) }
+    var search by remember { mutableStateOf("") }
 
     // ПОЧЕМУ: reload вынесен как локальная suspend-функция — вызывается и при старте (LaunchedEffect)
     // и после каждого approve/reject, чтобы оба списка всегда были актуальны
@@ -86,7 +127,7 @@ fun PeopleScreen(
             val pending = withContext(Dispatchers.IO) { MemoryApi.fetchPending(baseHttpUrl) }
             PeopleUiState.Success(persons, pending)
         } catch (e: Exception) {
-            PeopleUiState.Error(e.message ?: "Не удалось загрузить данные")
+            PeopleUiState.Error(ServerEndpointResolver.userFacingError(e.message, baseHttpUrl))
         }
     }
 
@@ -115,6 +156,29 @@ fun PeopleScreen(
         ) {
             item { Box(modifier = Modifier.padding(top = 8.dp)) }
 
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Личная записная книжка по людям",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = "Открывай человека и быстро вспоминай контекст: о чём вы говорите, что обещали и что важно сейчас.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = search,
+                        onValueChange = { search = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        singleLine = true,
+                        label = { Text("Найти человека") },
+                    )
+                }
+            }
+
             // Секция ожидающих подтверждения — коллапсируемая
             item {
                 PendingSection(
@@ -142,17 +206,10 @@ fun PeopleScreen(
                 )
             }
 
-            if (current.persons.isNotEmpty()) {
-                item {
-                    Text(
-                        text = "Все люди (${current.persons.size})",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp, start = 4.dp),
-                    )
-                }
+            val filteredPersons = current.persons.filter {
+                search.isBlank() || it.name.contains(search.trim(), ignoreCase = true)
             }
+            val sections = buildPeopleSections(filteredPersons)
 
             if (current.persons.isEmpty()) {
                 item {
@@ -176,13 +233,120 @@ fun PeopleScreen(
                         }
                     }
                 }
+            } else if (filteredPersons.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+                        ),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text("Никого не нашли", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Попробуйте короче имя или откройте кого-то из найденных разговоров.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             } else {
-                items(current.persons, key = { it.name }) { person ->
-                    PersonListCard(person = person, onClick = { onOpenPerson(person.name) })
+                if (sections.priority.isNotEmpty()) {
+                    item {
+                        SectionHeader(
+                            title = "Важно сейчас",
+                            subtitle = "Люди с самым плотным и полезным контекстом.",
+                        )
+                    }
+                    item {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            sections.priority.forEach { person ->
+                                PersonNotebookChip(person = person, onClick = { onOpenPerson(person.name) })
+                            }
+                        }
+                    }
+                }
+
+                if (sections.recent.isNotEmpty()) {
+                    item {
+                        SectionHeader(
+                            title = "Недавние и частые",
+                            subtitle = "Открой и быстро вспомни, что у вас по этому человеку.",
+                        )
+                    }
+                    items(sections.recent, key = { it.name }) { person ->
+                        PersonListCard(person = person, onClick = { onOpenPerson(person.name) })
+                    }
+                }
+
+                if (sections.others.isNotEmpty()) {
+                    item {
+                        SectionHeader(
+                            title = "Вся записная книжка",
+                            subtitle = "${filteredPersons.size} человек в памяти.",
+                        )
+                    }
+                    items(sections.others, key = { it.name }) { person ->
+                        PersonListCard(person = person, onClick = { onOpenPerson(person.name) })
+                    }
                 }
             }
 
             item { Box(modifier = Modifier.padding(bottom = 16.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String, subtitle: String) {
+    Column(
+        modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = subtitle,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+        )
+    }
+}
+
+@Composable
+private fun PersonNotebookChip(
+    person: PersonListItem,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = IndigoAccent.copy(alpha = 0.12f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(person.name, fontWeight = FontWeight.Bold)
+            Text(
+                buildPersonSubtitle(person),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -335,6 +499,7 @@ private fun PendingApprovalCard(
 /**
  * Карточка одного известного человека из социального графа.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun PersonListCard(
     person: PersonListItem,
@@ -377,23 +542,36 @@ private fun PersonListCard(
                 }
             }
 
-            if (person.relationship.isNotBlank() && person.relationship != "unknown") {
-                AssistChip(
-                    onClick = {},
-                    label = { Text(person.relationship) },
-                    colors = AssistChipDefaults.assistChipColors(
-                        containerColor = IndigoAccent.copy(alpha = 0.15f),
-                        labelColor = IndigoAccent,
-                    ),
-                )
-            }
+            Text(
+                text = buildPersonSubtitle(person),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
-            person.lastSeen?.takeIf { it.isNotBlank() }?.let { date ->
-                Text(
-                    text = "Последний раз: ${date.take(10)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (person.relationship.isNotBlank() && person.relationship != "unknown") {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(person.relationship) },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = IndigoAccent.copy(alpha = 0.15f),
+                            labelColor = IndigoAccent,
+                        ),
+                    )
+                }
+                if (person.sampleCount > 0) {
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("${person.sampleCount} следов") },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = AmberAccent.copy(alpha = 0.18f),
+                            labelColor = AmberAccent,
+                        ),
+                    )
+                }
             }
         }
     }

@@ -42,6 +42,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -51,8 +52,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.reflexio.app.BuildConfig
 import com.reflexio.app.data.db.RecordingDatabase
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import com.reflexio.app.domain.services.AudioRecordingService
 import com.reflexio.app.ui.components.AmbientBackdrop
 import com.reflexio.app.ui.components.BalanceWheelVisualizer
@@ -65,11 +66,13 @@ import com.reflexio.app.ui.screens.SplashScreen
 import com.reflexio.app.ui.screens.ThreadsScreen
 import com.reflexio.app.ui.screens.VoiceEnrollmentScreen
 import com.reflexio.app.ui.theme.ReflexioTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 // ПОЧЕМУ enum а не sealed class: фиксированный набор экранов, sealed class — overkill
 private enum class Screen(val title: String, val icon: ImageVector) {
     ASK("Спросить", Icons.Default.Search),
-    DAY("Итог дня", Icons.Default.DateRange),
+    DAY("Итог", Icons.Default.DateRange),
     PEOPLE("Люди", Icons.Default.Home),
     MIRROR("Зеркало", Icons.Default.Insights),
     RECORD("Запись", Icons.Default.RecordVoiceOver),
@@ -186,7 +189,7 @@ fun RecordingApp(
 
     val hasPermission by hasRecordingPermission
     var recordingActive by remember(hasPermission) { mutableStateOf(hasPermission) }
-    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var selectedTab by remember { mutableIntStateOf(Screen.ASK.ordinal) }
     var showVoiceEnrollment by remember { mutableStateOf(false) }
     var showThreads by remember { mutableStateOf(false) }
     var personDraft by rememberSaveable { mutableStateOf("") }
@@ -194,12 +197,10 @@ fun RecordingApp(
 
     // ПОЧЕМУ isEmulator() а не BuildConfig.DEBUG: DEBUG=true и на телефоне и на эмуляторе.
     // 10.0.2.2 работает ТОЛЬКО в эмуляторе. На телефоне с adb reverse нужен localhost.
-    val baseHttpUrl = remember {
-        val isEmu = android.os.Build.FINGERPRINT.contains("generic")
-                || android.os.Build.MODEL.contains("sdk")
-                || android.os.Build.MODEL.contains("Android SDK")
-        val ws = if (isEmu) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
-        ws.replace("ws://", "http://").replace("wss://", "https://")
+    val baseHttpUrl by produceState(initialValue = ServerEndpointResolver.primaryHttpUrl()) {
+        value = withContext(Dispatchers.IO) {
+            ServerEndpointResolver.resolveUiHttpBaseUrl()
+        }
     }
 
     val screens = Screen.entries
@@ -387,6 +388,14 @@ fun RecordingApp(
                     PersonScreen(
                         baseHttpUrl = baseHttpUrl,
                         name = personDraft,
+                        onAskPerson = { question ->
+                            askDraft = question
+                            personDraft = ""
+                            selectedTab = Screen.ASK.ordinal
+                        },
+                        onOpenThreads = {
+                            showThreads = true
+                        },
                         modifier = Modifier.weight(1f),
                     )
                 }

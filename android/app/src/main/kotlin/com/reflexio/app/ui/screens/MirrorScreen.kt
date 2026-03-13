@@ -20,7 +20,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,17 +34,10 @@ import androidx.compose.ui.unit.dp
 import com.reflexio.app.domain.network.InsightCard
 import com.reflexio.app.domain.network.MemoryApi
 import com.reflexio.app.domain.network.MirrorPortrait
-import com.reflexio.app.domain.network.ThreadSummary
-import com.reflexio.app.ui.components.BalanceWheelVisualizer
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
-
-// ПОЧЕМУ: DensityInfo — локальная модель экрана, не нужна в общем network-слое
-private data class DensityInfo(
-    val percentage: Float,
-    val verdict: String?,
-)
 
 // ПОЧЕМУ: цвета ролей вынесены в константу — они семантически фиксированы
 // и не должны меняться вместе с темой
@@ -73,27 +65,12 @@ fun MirrorScreen(
     var insights by remember { mutableStateOf<List<InsightCard>>(emptyList()) }
     var insightsError by remember { mutableStateOf<String?>(null) }
 
-    var threads by remember { mutableStateOf<List<ThreadSummary>>(emptyList()) }
-    var threadsError by remember { mutableStateOf<String?>(null) }
-
-    var density by remember { mutableStateOf<DensityInfo?>(null) }
-
-    LaunchedEffect(baseHttpUrl) {
-        try {
-            density = withContext(Dispatchers.IO) {
-                fetchDensity(baseHttpUrl)
-            }
-        } catch (_: Exception) {
-            density = null
-        }
-    }
-
     LaunchedEffect(baseHttpUrl) {
         portraitError = null
         try {
             portrait = withContext(Dispatchers.IO) { MemoryApi.fetchMirrorPortrait(baseHttpUrl) }
         } catch (e: Exception) {
-            portraitError = e.message
+            portraitError = ServerEndpointResolver.userFacingError(e.message, baseHttpUrl)
         }
     }
 
@@ -103,18 +80,7 @@ fun MirrorScreen(
             val today = LocalDate.now().toString()
             insights = withContext(Dispatchers.IO) { MemoryApi.fetchBalanceInsights(baseHttpUrl, today) }
         } catch (e: Exception) {
-            insightsError = e.message
-        }
-    }
-
-    LaunchedEffect(baseHttpUrl) {
-        threadsError = null
-        try {
-            threads = withContext(Dispatchers.IO) {
-                MemoryApi.queryThreads(baseHttpUrl, daysBack = 30)
-            }.take(5)
-        } catch (e: Exception) {
-            threadsError = e.message
+            insightsError = ServerEndpointResolver.userFacingError(e.message, baseHttpUrl)
         }
     }
 
@@ -124,45 +90,16 @@ fun MirrorScreen(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        // Зеркало дня
-        density?.let { d ->
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
-                ),
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        "Зеркало дня",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        "Память дня заполнена на ${"%.0f".format(d.percentage)}%",
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
-                    d.verdict?.let { v ->
-                        Text(
-                            v,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-        }
-
-        // ── Section 1: Portrait ──────────────────────────────────────────────
         Text(
             text = "Зеркало",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "Не хроника дня, а короткая интерпретация: кто ты сейчас, какие темы повторяются и что тянется фоном.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(12.dp))
 
@@ -177,27 +114,8 @@ fun MirrorScreen(
 
         Spacer(Modifier.height(16.dp))
 
-        // ── Section 2: Balance Wheel ─────────────────────────────────────────
         Text(
-            text = "Колесо баланса",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.height(8.dp))
-
-        BalanceWheelVisualizer(
-            baseHttpUrl = baseHttpUrl,
-            showCenterControl = false,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(300.dp),
-        )
-
-        Spacer(Modifier.height(16.dp))
-
-        // ── Section 3: Insights ──────────────────────────────────────────────
-        Text(
-            text = "Инсайты дня",
+            text = "Что это говорит о тебе",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
         )
@@ -209,35 +127,8 @@ fun MirrorScreen(
                 Spacer(Modifier.height(6.dp))
             }
             insightsError != null -> ErrorText(insightsError!!)
-            else -> LoadingRow()
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // ── Section 4: Threads ───────────────────────────────────────────────
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = "Потоки",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            TextButton(onClick = onOpenThreads) {
-                Text("Показать все")
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-
-        when {
-            threads.isNotEmpty() -> threads.forEach { thread ->
-                ThreadRow(thread = thread)
-                Spacer(Modifier.height(6.dp))
-            }
-            threadsError != null -> ErrorText(threadsError!!)
-            else -> LoadingRow()
+            portrait == null -> LoadingRow()
+            else -> CompactEmptyMirrorState()
         }
 
         Spacer(Modifier.height(24.dp))
@@ -262,7 +153,7 @@ private fun PortraitCard(
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
             Text(
-                text = "Вот кто ты за последнюю неделю",
+                text = "Срез последних дней",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
             )
@@ -272,7 +163,7 @@ private fun PortraitCard(
                 StatItem(label = "Эпизодов", value = portrait.episodesCount.toString())
                 StatItem(
                     label = "Настроение",
-                    value = "${((portrait.avgSentiment + 1f) / 2f * 100).toInt()}%",
+                    value = portrait.avgSentiment?.let { "${((it + 1f) / 2f * 100).toInt()}%" } ?: "—",
                 )
                 StatItem(label = "Обязательств", value = portrait.openCommitments.toString())
             }
@@ -352,6 +243,14 @@ private fun StatItem(label: String, value: String) {
 @Composable
 private fun InsightRow(card: InsightCard) {
     val accentColor = roleColors[card.role] ?: MaterialTheme.colorScheme.primary
+    val roleTitle = when (card.role) {
+        "psychologist" -> "Психолог"
+        "coach" -> "Коуч"
+        "pattern_detector" -> "Паттерны"
+        "devil_advocate" -> "Проверка на самообман"
+        "future_predictor" -> "Прогноз"
+        else -> card.role.replace("_", " ").replaceFirstChar { it.uppercase() }
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -363,7 +262,7 @@ private fun InsightRow(card: InsightCard) {
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                text = card.role.replace("_", " ").replaceFirstChar { it.uppercase() },
+                text = roleTitle,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
                 color = accentColor,
@@ -377,47 +276,25 @@ private fun InsightRow(card: InsightCard) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ThreadRow(thread: ThreadSummary) {
+private fun CompactEmptyMirrorState() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top,
-            ) {
-                Text(
-                    text = thread.summary.ifBlank { thread.latestSummary },
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = "${(thread.continuityScore * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
-
-            if (thread.participants.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    thread.participants.forEach { participant ->
-                        AssistChip(
-                            onClick = {},
-                            label = { Text(participant, style = MaterialTheme.typography.labelSmall) },
-                        )
-                    }
-                }
-            }
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text("Пока мало интерпретаций", fontWeight = FontWeight.SemiBold)
+            Text(
+                "Когда накопится больше осмысленных записей, здесь появятся повторяющиеся линии и короткие выводы о тебе.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -444,28 +321,3 @@ private fun ErrorText(message: String) {
     )
 }
 
-// ПОЧЕМУ: fetchDensity вынесен как top-level private fun (не suspend) —
-// вызывается внутри withContext(Dispatchers.IO), OkHttp синхронный по дизайну
-private fun fetchDensity(baseHttpUrl: String): DensityInfo {
-    val today = java.time.LocalDate.now().toString()
-    val request = okhttp3.Request.Builder()
-        .url("${baseHttpUrl.removeSuffix("/")}/digest/$today/density")
-        .apply {
-            if (com.reflexio.app.BuildConfig.SERVER_API_KEY.isNotEmpty()) {
-                addHeader("Authorization", "Bearer ${com.reflexio.app.BuildConfig.SERVER_API_KEY}")
-            }
-        }
-        .get()
-        .build()
-    com.reflexio.app.domain.network.NetworkClients.sharedClient.newCall(request).execute().use { resp ->
-        if (!resp.isSuccessful) return DensityInfo(0f, null)
-        val body = resp.body?.string() ?: return DensityInfo(0f, null)
-        val json = org.json.JSONObject(body)
-        return DensityInfo(
-            percentage = json.optDouble("density_percentage", 0.0).toFloat(),
-            verdict = json.optString("verdict").ifBlank {
-                json.optString("summary_text").ifBlank { null }
-            },
-        )
-    }
-}

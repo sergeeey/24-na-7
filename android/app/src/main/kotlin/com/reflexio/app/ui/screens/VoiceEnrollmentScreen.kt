@@ -27,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -42,16 +43,16 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.reflexio.app.BuildConfig
 import com.reflexio.app.domain.audio.SampleRecorder
+import com.reflexio.app.domain.network.NetworkClients
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 // Цвета в стиле приложения
 private val ColorSuccess = Color(0xFF00E5CC)   // DarkSecondary
@@ -65,6 +66,7 @@ private val ColorRecording = Color(0xFFFF6B6B) // DarkError
 private sealed class EnrollState {
     object Idle : EnrollState()
     data class Recording(val slot: Int) : EnrollState()
+    object Checking : EnrollState()
     object Uploading : EnrollState()
     object Success : EnrollState()
     data class Error(val message: String) : EnrollState()
@@ -90,9 +92,14 @@ fun VoiceEnrollmentScreen(
 
     // 3 слота: null = не записан, File = готов
     val samples = remember { mutableStateListOf<File?>(null, null, null) }
-    var enrollState by remember { mutableStateOf<EnrollState>(EnrollState.Idle) }
+    var enrollState by remember { mutableStateOf<EnrollState>(EnrollState.Checking) }
 
     val allRecorded = samples.all { it != null }
+
+    LaunchedEffect(baseHttpUrl) {
+        val hasProfile = withContext(Dispatchers.IO) { fetchEnrollmentStatus(baseHttpUrl) }
+        enrollState = if (hasProfile) EnrollState.Success else EnrollState.Idle
+    }
 
     Column(
         modifier = modifier
@@ -211,6 +218,16 @@ fun VoiceEnrollmentScreen(
                 )
             }
 
+            is EnrollState.Checking -> {
+                CircularProgressIndicator(color = ColorSuccess)
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "Проверяю голосовой профиль…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
             else -> {
                 Button(
                     onClick = {
@@ -218,12 +235,16 @@ fun VoiceEnrollmentScreen(
                             withContext(Dispatchers.Main) {
                                 enrollState = EnrollState.Uploading
                             }
-                            enrollSamples(
+                            val result = enrollSamples(
                                 baseHttpUrl = baseHttpUrl,
                                 files = samples.filterNotNull(),
-                                onSuccess = { enrollState = EnrollState.Success },
-                                onError = { msg -> enrollState = EnrollState.Error(msg) },
                             )
+                            withContext(Dispatchers.Main) {
+                                enrollState = result.fold(
+                                    onSuccess = { EnrollState.Success },
+                                    onFailure = { EnrollState.Error(it.message ?: "Нет соединения с сервером") },
+                                )
+                            }
                         }
                     },
                     enabled = allRecorded && enrollState is EnrollState.Idle,
@@ -338,16 +359,8 @@ private fun SampleCard(
 private fun enrollSamples(
     baseHttpUrl: String,
     files: List<File>,
-    onSuccess: () -> Unit,
-    onError: (String) -> Unit,
-) {
-    try {
-        val client = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .writeTimeout(60, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .build()
-
+): Result<Unit> {
+    return runCatching {
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .also { builder ->
@@ -361,29 +374,44 @@ private fun enrollSamples(
             }
             .build()
 
-        val request = Request.Builder()
-            .url("${baseHttpUrl.removeSuffix("/")}/voice/enroll")
-            .apply {
-                if (BuildConfig.SERVER_API_KEY.isNotEmpty()) {
-                    addHeader("Authorization", "Bearer ${BuildConfig.SERVER_API_KEY}")
-                }
-            }
+        val url = "${baseHttpUrl.removeSuffix("/")}/voice/enroll"
+        val request = ServerEndpointResolver.attachAuth(
+            Request.Builder().url(url),
+            url,
+        )
             .post(body)
             .build()
 
-        val response = client.newCall(request).execute()
-        if (response.isSuccessful) {
-            onSuccess()
-        } else {
-            val raw = response.body?.string() ?: ""
-            val msg = try {
-                org.json.JSONObject(raw).optString("detail", raw).take(300)
-            } catch (_: Exception) {
-                raw.take(300).ifEmpty { "HTTP ${response.code}" }
+        NetworkClients.sharedClient.newCall(request).execute().use { response ->
+            val raw = response.body?.string().orEmpty()
+            android.util.Log.i("VoiceEnrollment", "enroll_response code=${response.code} body=${raw.take(300)}")
+            if (!response.isSuccessful) {
+                val msg = try {
+                    org.json.JSONObject(raw).optString("detail", raw).take(300)
+                } catch (_: Exception) {
+                    raw.take(300).ifEmpty { "HTTP ${response.code}" }
+                }
+                throw IllegalStateException(msg.ifEmpty { "HTTP ${response.code}" })
             }
-            onError(msg.ifEmpty { "HTTP ${response.code}" })
         }
-    } catch (e: Exception) {
-        onError(e.message ?: "Нет соединения с сервером")
+    }
+}
+
+private fun fetchEnrollmentStatus(baseHttpUrl: String): Boolean {
+    return try {
+        val url = "${baseHttpUrl.removeSuffix("/")}/voice/enroll/status"
+        val request = ServerEndpointResolver.attachAuth(
+            Request.Builder().url(url),
+            url,
+        )
+            .get()
+            .build()
+        NetworkClients.sharedClient.newCall(request).execute().use { response ->
+            val raw = response.body?.string().orEmpty()
+            if (!response.isSuccessful) return false
+            org.json.JSONObject(raw).optBoolean("has_profile", false)
+        }
+    } catch (_: Exception) {
+        false
     }
 }

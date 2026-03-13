@@ -49,6 +49,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import com.reflexio.app.BuildConfig
+import com.reflexio.app.domain.network.ServerEndpointResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -600,13 +601,11 @@ private fun fetchWheelScores(baseHttpUrl: String): WheelUiModel {
             .readTimeout(10, TimeUnit.SECONDS)
             .build()
 
-        val request = Request.Builder()
-            .url("${baseHttpUrl.removeSuffix("/")}/balance/wheel?date=$today")
-            .apply {
-                if (BuildConfig.SERVER_API_KEY.isNotEmpty()) {
-                    addHeader("Authorization", "Bearer ${BuildConfig.SERVER_API_KEY}")
-                }
-            }
+        val url = "${baseHttpUrl.removeSuffix("/")}/balance/wheel?date=$today"
+        val request = ServerEndpointResolver.attachAuth(
+            Request.Builder().url(url),
+            url,
+        )
             .get()
             .build()
 
