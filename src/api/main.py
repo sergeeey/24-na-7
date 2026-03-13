@@ -30,6 +30,7 @@ from src.api.routers import websocket
 from src.api.routers import query
 from src.api.routers import commitments
 from src.api.routers import admin
+from src.api.routers import mirror
 from src.core.bootstrap import lifespan
 from src.utils.config import settings
 from src.utils.logging import get_logger, setup_logging
@@ -90,6 +91,7 @@ app.include_router(compliance.router)  # Sprint 2: KZ GDPR Compliance
 app.include_router(query.router)  # v1.0: Query Engine (5 unified tools)
 app.include_router(commitments.router)  # v0.5: Commitment Extraction (Relationship Guardian)
 app.include_router(admin.router)
+app.include_router(mirror.router)  # Mirror portrait endpoint
 
 # ── v1 compatibility layer ────────────────────
 # ПОЧЕМУ alias-слой вместо немедленного hard cutover:
@@ -114,6 +116,7 @@ for _router in (
     query.router,
     commitments.router,
     admin.router,
+    mirror.router,
 ):
     app.include_router(_router, prefix="/v1")
 

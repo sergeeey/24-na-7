@@ -111,7 +111,4 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     implementation("androidx.work:work-runtime-ktx:2.9.0")
-
-    // 2.0.10 собрана под Kotlin 2.2; 2.0.5 совместима с Kotlin 1.9
-    implementation("com.github.gkonovalov.android-vad:webrtc:2.0.5")
 }

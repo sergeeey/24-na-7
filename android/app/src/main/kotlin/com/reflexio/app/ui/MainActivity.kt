@@ -16,26 +16,19 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -54,8 +47,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
@@ -65,23 +56,23 @@ import com.reflexio.app.data.db.RecordingDatabase
 import com.reflexio.app.domain.services.AudioRecordingService
 import com.reflexio.app.ui.components.AmbientBackdrop
 import com.reflexio.app.ui.components.BalanceWheelVisualizer
-import com.reflexio.app.ui.components.PipelineStatusStrip
-import com.reflexio.app.ui.components.RecordingFab
 import com.reflexio.app.ui.screens.AskScreen
-import com.reflexio.app.ui.screens.CommitmentsScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
-import com.reflexio.app.ui.screens.HistoryScreen
-import com.reflexio.app.ui.screens.VoiceEnrollmentScreen
+import com.reflexio.app.ui.screens.MirrorScreen
+import com.reflexio.app.ui.screens.PeopleScreen
+import com.reflexio.app.ui.screens.PersonScreen
 import com.reflexio.app.ui.screens.SplashScreen
+import com.reflexio.app.ui.screens.ThreadsScreen
+import com.reflexio.app.ui.screens.VoiceEnrollmentScreen
 import com.reflexio.app.ui.theme.ReflexioTheme
 
 // ПОЧЕМУ enum а не sealed class: фиксированный набор экранов, sealed class — overkill
 private enum class Screen(val title: String, val icon: ImageVector) {
-    ASK("Спросить", Icons.Default.Search),        // One Interface — первый таб
-    HOME("Запись", Icons.Default.Home),
-    DIGEST("Итог дня", Icons.Default.DateRange),
-    COMMITMENTS("Обещания", Icons.Default.Insights),
-    VOICE("Голос", Icons.Default.RecordVoiceOver),
+    ASK("Спросить", Icons.Default.Search),
+    DAY("Итог дня", Icons.Default.DateRange),
+    PEOPLE("Люди", Icons.Default.Home),
+    MIRROR("Зеркало", Icons.Default.Insights),
+    RECORD("Запись", Icons.Default.RecordVoiceOver),
 }
 
 class MainActivity : ComponentActivity() {
@@ -196,7 +187,10 @@ fun RecordingApp(
     val hasPermission by hasRecordingPermission
     var recordingActive by remember(hasPermission) { mutableStateOf(hasPermission) }
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
-    var showHistory by remember { mutableStateOf(false) }
+    var showVoiceEnrollment by remember { mutableStateOf(false) }
+    var showThreads by remember { mutableStateOf(false) }
+    var personDraft by rememberSaveable { mutableStateOf("") }
+    var askDraft by rememberSaveable { mutableStateOf("") }
 
     // ПОЧЕМУ isEmulator() а не BuildConfig.DEBUG: DEBUG=true и на телефоне и на эмуляторе.
     // 10.0.2.2 работает ТОЛЬКО в эмуляторе. На телефоне с adb reverse нужен localhost.
@@ -209,8 +203,6 @@ fun RecordingApp(
     }
 
     val screens = Screen.entries
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val database = remember { RecordingDatabase.getInstance(context) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         AmbientBackdrop()
@@ -223,6 +215,14 @@ fun RecordingApp(
                             text = screens[selectedTab].title,
                             style = MaterialTheme.typography.titleLarge
                         )
+                    },
+                    actions = {
+                        IconButton(onClick = { showVoiceEnrollment = true }) {
+                            Icon(
+                                imageVector = Icons.Default.RecordVoiceOver,
+                                contentDescription = "Голос",
+                            )
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = Color.Transparent,
@@ -258,9 +258,30 @@ fun RecordingApp(
                 when (tab) {
                     0 -> AskScreen(
                         baseHttpUrl = baseHttpUrl,
+                        initialQuestion = askDraft,
+                        onInitialQuestionConsumed = { askDraft = "" },
+                        onOpenSearch = { query ->
+                            askDraft = query
+                        },
+                        onOpenPeople = { selectedTab = Screen.PEOPLE.ordinal },
                         modifier = Modifier.padding(padding),
                     )
-                    1 -> HomeScreen(
+                    1 -> DailySummaryScreen(
+                        baseHttpUrl = baseHttpUrl,
+                        modifier = Modifier.padding(padding),
+                    )
+                    2 -> PeopleScreen(
+                        baseHttpUrl = baseHttpUrl,
+                        onOpenPerson = { name -> personDraft = name },
+                        modifier = Modifier.padding(padding),
+                    )
+                    3 -> MirrorScreen(
+                        baseHttpUrl = baseHttpUrl,
+                        onOpenPerson = { name -> personDraft = name },
+                        onOpenThreads = { showThreads = true },
+                        modifier = Modifier.padding(padding),
+                    )
+                    4 -> RecordScreen(
                         hasPermission = hasPermission,
                         recordingActive = recordingActive,
                         baseHttpUrl = baseHttpUrl,
@@ -274,27 +295,12 @@ fun RecordingApp(
                         },
                         modifier = Modifier.padding(padding),
                     )
-                    2 -> DailySummaryScreen(
-                        onOpenHistory = { showHistory = true },
-                        baseHttpUrl = baseHttpUrl,
-                        modifier = Modifier.padding(padding),
-                    )
-                    3 -> CommitmentsScreen(
-                        baseHttpUrl = baseHttpUrl,
-                        modifier = Modifier.padding(padding),
-                    )
-                    4 -> VoiceEnrollmentScreen(
-                        baseHttpUrl = baseHttpUrl,
-                        modifier = Modifier.padding(padding),
-                    )
                 }
             }
         }
 
-        // ПОЧЕМУ overlay а не 6-й таб: History — вспомогательный экран,
-        // не заслуживает постоянного места в навигации. Доступен через иконку в Digest.
         androidx.compose.animation.AnimatedVisibility(
-            visible = showHistory,
+            visible = showVoiceEnrollment,
             enter = androidx.compose.animation.slideInVertically { it },
             exit = androidx.compose.animation.slideOutVertically { it },
         ) {
@@ -311,13 +317,76 @@ fun RecordingApp(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("История записей", style = MaterialTheme.typography.titleLarge)
-                        TextButton(onClick = { showHistory = false }) {
+                        Text("Голос", style = MaterialTheme.typography.titleLarge)
+                        TextButton(onClick = { showVoiceEnrollment = false }) {
                             Text("Закрыть")
                         }
                     }
-                    HistoryScreen(
-                        database = database,
+                    VoiceEnrollmentScreen(
+                        baseHttpUrl = baseHttpUrl,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+
+        androidx.compose.animation.AnimatedVisibility(
+            visible = showThreads,
+            enter = androidx.compose.animation.slideInVertically { it },
+            exit = androidx.compose.animation.slideOutVertically { it },
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Потоки", style = MaterialTheme.typography.titleLarge)
+                        TextButton(onClick = { showThreads = false }) {
+                            Text("Закрыть")
+                        }
+                    }
+                    ThreadsScreen(
+                        baseHttpUrl = baseHttpUrl,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+
+        androidx.compose.animation.AnimatedVisibility(
+            visible = personDraft.isNotBlank(),
+            enter = androidx.compose.animation.slideInVertically { it },
+            exit = androidx.compose.animation.slideOutVertically { it },
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background),
+            ) {
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(personDraft, style = MaterialTheme.typography.titleLarge)
+                        TextButton(onClick = { personDraft = "" }) {
+                            Text("Закрыть")
+                        }
+                    }
+                    PersonScreen(
+                        baseHttpUrl = baseHttpUrl,
+                        name = personDraft,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -326,25 +395,8 @@ fun RecordingApp(
     }
 }
 
-// ──────────────────────────────────────────────
-// Home Screen — колесо баланса + кнопка записи
-// ──────────────────────────────────────────────
-
-/**
- * Главный экран переработан: вместо списка записей — Колесо Баланса.
- *
- * ПОЧЕМУ убрали RecordingListScreen: пользователь не хотел видеть поток записей
- * на главном экране. Список — техническая деталь, не ценность. Ценность —
- * визуализация того, как распределяется внимание по жизненным сферам.
- *
- * ПОЧЕМУ убрали AudioSpectrumAnalyzer/ParticleFieldVisualizer: они дублировали
- * анимацию. BalanceWheelVisualizer сам анимируется при записи (3D tilt + вращение).
- *
- * Layout: WelcomeBlock (компактный) → колесо (weight(1f) = занимает всё пространство)
- * → статус + FAB внизу. Колесо всегда видно, при записи — оживает.
- */
 @Composable
-private fun HomeScreen(
+private fun RecordScreen(
     hasPermission: Boolean,
     recordingActive: Boolean,
     baseHttpUrl: String,
@@ -352,187 +404,20 @@ private fun HomeScreen(
     onToggleRecording: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+    Box(
+        modifier = modifier.fillMaxSize(),
     ) {
-        Spacer(modifier = Modifier.height(8.dp))
-        RecordingHeroPanel(recordingActive = recordingActive)
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Колесо баланса — главный визуальный элемент
-        // ПОЧЕМУ weight(1f): занимает всё доступное пространство между
-        // WelcomeBlock сверху и кнопкой снизу. Responsive — работает на любом экране.
         BalanceWheelVisualizer(
             baseHttpUrl = baseHttpUrl,
             isRecording = recordingActive,
+            hasPermission = hasPermission,
+            onToggleRecording = onToggleRecording,
+            onRequestPermission = onRequestPermission,
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
-        )
-        Text(
-            text = "Темы дня по вашим записям.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-
-        PipelineStatusStrip(baseHttpUrl = baseHttpUrl)
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        if (!hasPermission) {
-            Text(
-                text = "Для записи нужен доступ к микрофону",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            FilledTonalButton(onClick = onRequestPermission) {
-                Text("Разрешить доступ к микрофону")
-            }
-        } else {
-            Text(
-                text = if (recordingActive) "Запись идет" else "Нажмите, чтобы начать запись",
-                style = MaterialTheme.typography.titleMedium,
-                color = if (recordingActive)
-                    MaterialTheme.colorScheme.secondary
-                else
-                    MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            RecordingFab(
-                isRecording = recordingActive,
-                onClick = onToggleRecording,
-            )
-        }
-        Spacer(modifier = Modifier.height(16.dp))
-    }
-}
-
-// ──────────────────────────────────────────────
-// Welcome Block
-// ──────────────────────────────────────────────
-
-@Composable
-private fun RecordingHeroPanel(recordingActive: Boolean) {
-    val greeting = remember {
-        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-        when {
-            hour in 5..11 -> "Доброе утро"
-            hour in 12..16 -> "Добрый день"
-            else -> "Добрый вечер"
-        }
-    }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
-        ),
-        shape = RoundedCornerShape(28.dp),
-    ) {
-        Column(
-            modifier = Modifier
-                .background(
-                    brush = Brush.linearGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f),
-                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.18f),
-                        ),
-                    ),
-                )
-                .padding(horizontal = 18.dp, vertical = 18.dp),
-        ) {
-            StatusPill(
-                text = if (recordingActive) "Память дня" else "Готов к записи",
-                active = recordingActive,
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = "$greeting, Reflexio на записи",
-                style = MaterialTheme.typography.headlineMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = if (recordingActive)
-                    "Система слушает речь и сохраняет важные фрагменты дня."
-                else
-                    "Один взгляд на экран должен говорить только одно: запись готова к старту.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.86f),
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Row {
-                HeroMetric(
-                    label = "Статус",
-                    value = if (recordingActive) "Слушаю" else "Ожидание",
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                HeroMetric(
-                    label = "Режим",
-                    value = if (recordingActive) "Фиксация" else "Память",
-                    modifier = Modifier.weight(1f),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun HeroMetric(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.22f))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
-    }
-}
-
-@Composable
-private fun StatusPill(text: String, active: Boolean) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(
-                if (active) MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f)
-                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-            )
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(8.dp)
-                .background(
-                    color = if (active) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline,
-                    shape = CircleShape,
-                ),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelMedium,
-            color = if (active) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                .fillMaxHeight(0.965f)
+                .align(Alignment.Center)
+                .padding(horizontal = 2.dp, vertical = 2.dp),
         )
     }
 }

@@ -76,15 +76,17 @@ class IngestWorker:
         self._workers.clear()
         logger.info("ingest_workers_stopped", pending=self._queue.qsize())
 
-    def submit(self, task: IngestTask) -> None:
-        """Поставить задачу в очередь. Не блокирует. При переполнении — логируем и не принимаем."""
+    def submit(self, task: IngestTask) -> bool:
+        """Поставить задачу в очередь. Возвращает False при перегрузе или если worker не запущен."""
         if not self._running:
             logger.warning("ingest_worker_not_running", ingest_id=task.ingest_id)
-            return
+            return False
         try:
             self._queue.put_nowait(task)
+            return True
         except asyncio.QueueFull:
             logger.warning("ingest_queue_full", dropping=task.ingest_id)
+            return False
 
     def _deliver(self, connection_id: str, msg: dict[str, Any]) -> None:
         """Положить сообщение в очередь соединения, если оно ещё в реестре."""

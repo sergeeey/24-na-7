@@ -49,6 +49,14 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Configuring adb reverse tcp:8000 -> tcp:8000..." -ForegroundColor Cyan
+& $adb reverse --remove tcp:8000 | Out-Null
+& $adb reverse tcp:8000 tcp:8000
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "adb reverse failed. Check device connection." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
 Write-Host "Launching app..." -ForegroundColor Green
 & $adb shell am start -n "$PackageId/.ui.MainActivity"
 exit 0

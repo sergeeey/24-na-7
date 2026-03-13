@@ -20,6 +20,7 @@ router = APIRouter(tags=["websocket"])
 
 # Реестр соединений: connection_id -> Queue для доставки результатов фоновой обработки.
 _ingest_result_registry: dict[str, asyncio.Queue[dict[str, Any] | None]] = {}
+_REQUEUEABLE_INGEST_STATUSES = {"asr_pending", "retryable_error"}
 
 
 def get_ingest_result_registry() -> dict[str, asyncio.Queue[dict[str, Any] | None]]:
@@ -115,11 +116,31 @@ def _enqueue_audio_segment(
         queue_status="received",
     )
     if artifact.get("duplicate"):
+        existing_status = str(artifact.get("existing_status") or "")
+        existing_path = artifact.get("dest_path")
+        existing_result = artifact.get("existing_result")
+        if (
+            existing_status in _REQUEUEABLE_INGEST_STATUSES
+            and existing_path is not None
+            and not existing_result
+        ):
+            enrichment_prefix = _conn_state.recent_text(connection_id)
+            worker = get_ingest_worker(get_ingest_result_registry())
+            enqueued = worker.submit(
+                IngestTask(
+                    ingest_id=artifact["ingest_id"],
+                    file_path=Path(existing_path),
+                    connection_id=connection_id,
+                    enrichment_prefix=enrichment_prefix or None,
+                )
+            )
+            if enqueued is False:
+                raise RuntimeError("Ingest worker overloaded")
         return artifact
     dest_path: Path = artifact["dest_path"]
     enrichment_prefix = _conn_state.recent_text(connection_id)
     worker = get_ingest_worker(get_ingest_result_registry())
-    worker.submit(
+    enqueued = worker.submit(
         IngestTask(
             ingest_id=file_id,
             file_path=dest_path,
@@ -127,6 +148,8 @@ def _enqueue_audio_segment(
             enrichment_prefix=enrichment_prefix or None,
         )
     )
+    if enqueued is False:
+        raise RuntimeError("Ingest worker overloaded")
     return artifact
 
 

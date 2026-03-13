@@ -71,9 +71,6 @@ def classify_domains(text: str, topics: list[str] | None = None, db_path: Path |
         if any(keyword in source for keyword in rule.keywords):
             domains.append(rule.domain)
 
-    if not domains and source.strip():
-        domains.append("work")
-
     uniq: list[str] = []
     seen = set()
     for d in domains:

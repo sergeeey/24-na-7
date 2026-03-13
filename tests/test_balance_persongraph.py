@@ -210,7 +210,9 @@ class TestGetBalanceWheel:
             to_date=date(2025, 1, 31),
         )
         assert result["balance_score"] == 0.0
+        assert result["has_data"] is False
         assert result["domains"] == []
+        assert result["empty_reason"] == "no_structured_events"
         assert "from" in result
         assert "to" in result
         assert "alert" in result
@@ -234,6 +236,9 @@ class TestGetBalanceWheel:
 
         result = get_balance_wheel(db, date(2025, 1, 1), date(2025, 1, 31))
         assert len(result["domains"]) == 1
+        assert result["has_data"] is True
+        assert result["covered_domains"] == 1
+        assert result["total_mentions"] == 3
         assert result["domains"][0]["domain"] == "work"
         assert result["domains"][0]["mentions"] == 3
         assert result["domains"][0]["score"] == 10.0
@@ -301,6 +306,20 @@ class TestGetBalanceWheel:
         assert len(result["domains"]) == 4
         # При равных упоминаниях variance=0, balance_score=1/(1+0)=1.0
         assert result["balance_score"] == 1.0
+
+
+class TestDomainClassifier:
+    def test_unclassified_text_returns_empty_domains(self):
+        from src.enrichment.domain_classifier import classify_domains
+
+        result = classify_domains("абстрактный разговор без ключевых слов")
+        assert result == []
+
+    def test_keyword_match_returns_expected_domain(self):
+        from src.enrichment.domain_classifier import classify_domains
+
+        result = classify_domains("нужно закрыть проект и обсудить клиента")
+        assert "work" in result
 
 
 # ---------------------------------------------------------------------------

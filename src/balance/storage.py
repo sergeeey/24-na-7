@@ -190,11 +190,18 @@ def get_balance_wheel(db_path: Path, from_date: date, to_date: date) -> dict[str
             alert = f"Дисбаланс: домен '{dominant['domain']}' доминирует в дне."
             recommendation = "Запланируй 30-60 минут на недопредставленный домен."
 
+    has_data = bool(domains)
+    empty_reason = None if has_data else "no_structured_events"
+
     return {
         "from": from_date.isoformat(),
         "to": to_date.isoformat(),
         "domains": domains,
         "balance_score": balance_score,
+        "has_data": has_data,
+        "covered_domains": len(domains),
+        "total_mentions": total_mentions,
+        "empty_reason": empty_reason,
         "alert": alert,
         "recommendation": recommendation,
     }

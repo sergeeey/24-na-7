@@ -38,8 +38,11 @@ import com.reflexio.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -54,8 +57,10 @@ import java.util.UUID
 class AudioRecordingService : Service() {
 
     private var audioRecord: AudioRecord? = null
+    @Volatile
     private var isRecording = false
-    private val scope = CoroutineScope(Dispatchers.Default + Job())
+    private val serviceJob = SupervisorJob()
+    private val scope = CoroutineScope(Dispatchers.Default + serviceJob)
     private var recordingDao: RecordingDao? = null
     private var pendingUploadDao: PendingUploadDao? = null
     // ПОЧЕМУ WakeLock: без него CPU засыпает при выключенном экране,
@@ -64,6 +69,7 @@ class AudioRecordingService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     // ПОЧЕМУ один wsClient на весь сервис: persistent WebSocket — один TCP+TLS handshake
     // вместо нового на каждый 3-секундный сегмент. Sequential sending через Mutex внутри.
+    @Volatile
     private var wsClient: IngestWebSocketClient? = null
 
     companion object {
@@ -111,6 +117,10 @@ class AudioRecordingService : Service() {
         val baseUrl = if (isEmulator()) BuildConfig.SERVER_WS_URL else BuildConfig.SERVER_WS_URL_DEVICE
         wsClient = IngestWebSocketClient(baseUrl = baseUrl, apiKey = BuildConfig.SERVER_API_KEY)
         startRecording()
+        scope.launch {
+            cleanupOrphanSegments()
+            drainRetryableUploads()
+        }
         // UploadWorker — fallback для offline: подберёт pending записи при появлении сети
         UploadWorker.enqueue(this)
         return START_STICKY
@@ -200,13 +210,18 @@ class AudioRecordingService : Service() {
                 if (read < 0) break
                 if (read > 0) pendingOffset += read
                 if (pendingOffset >= frameSize) {
-                    vadWriter.processFrame(frameBuffer)?.let { segments ->
-                        for (segmentSamples in segments) {
-                            segmentIndex++
-                            val file = File(audioDir, "segment_${baseTimestamp}_${segmentIndex.toString().padStart(3, '0')}.wav")
-                            writeSegmentToWav(segmentSamples, file)
-                            insertSegmentRecording(file, segmentSamples.size)
+                    try {
+                        vadWriter.processFrame(frameBuffer)?.let { segments ->
+                            for (segmentSamples in segments) {
+                                segmentIndex++
+                                val file = File(audioDir, "segment_${baseTimestamp}_${segmentIndex.toString().padStart(3, '0')}.wav")
+                                persistSegment(file, segmentSamples)
+                            }
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "VAD frame processing failed, dropping frame", e)
+                        PipelineDiagnostics.setStage(this@AudioRecordingService, "error")
+                        PipelineDiagnostics.setError(this@AudioRecordingService, "vad_frame_failed")
                     }
                     pendingOffset = 0
                 }
@@ -215,10 +230,29 @@ class AudioRecordingService : Service() {
             vadWriter.flush()?.let { segmentSamples ->
                 segmentIndex++
                 val file = File(audioDir, "segment_${baseTimestamp}_${segmentIndex.toString().padStart(3, '0')}.wav")
-                writeSegmentToWav(segmentSamples, file)
-                insertSegmentRecording(file, segmentSamples.size)
+                persistSegment(file, segmentSamples)
             }
         }
+    }
+
+    private suspend fun persistSegment(file: File, samples: ShortArray) {
+        val recordingId = insertSegmentRecording(file, samples.size) ?: return
+        try {
+            writeSegmentToWav(samples, file)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to write WAV after DB insert", e)
+            withContext(Dispatchers.IO) {
+                pendingUploadDao?.deleteByRecordingId(recordingId)
+                val dao = recordingDao ?: return@withContext
+                val rec = dao.getById(recordingId) ?: return@withContext
+                dao.update(rec.copy(status = RecordingStatus.FAILED))
+            }
+            PipelineDiagnostics.setStage(this, "error")
+            PipelineDiagnostics.setError(this, "wav_write_failed")
+            runCatching { if (file.exists()) file.delete() }
+            return
+        }
+        sendAudioToServer(file, recordingId)
     }
 
     private fun writeSegmentToWav(samples: ShortArray, file: File) {
@@ -231,7 +265,7 @@ class AudioRecordingService : Service() {
         }
     }
 
-    private suspend fun insertSegmentRecording(file: File, sampleCount: Int) {
+    private suspend fun insertSegmentRecording(file: File, sampleCount: Int): Long? {
         val durationSeconds = sampleCount / SAMPLE_RATE
         val recording = Recording(
             segmentId = UUID.randomUUID().toString(),
@@ -253,13 +287,10 @@ class AudioRecordingService : Service() {
                 )
                 PipelineDiagnostics.setStage(this@AudioRecordingService, "queued")
             }
-            // ПОЧЕМУ sendAudioToServer напрямую (не scope.launch):
-            // IngestWebSocketClient внутри использует Mutex — sequential отправка.
-            // scope.launch создавал 10+ параллельных WebSocket → timeout → потеря данных.
-            // UploadWorker подберёт pending записи если онлайн-отправка не прошла.
-            sendAudioToServer(file, id)
+            return id
         } catch (e: Exception) {
             Log.e(TAG, "Failed to insert recording", e)
+            return null
         }
     }
 
@@ -341,7 +372,9 @@ class AudioRecordingService : Service() {
                 )
                 pendingUploadDao?.deleteByRecordingId(recordingId)
                 PipelineDiagnostics.setStage(this@AudioRecordingService, "server_acked")
-                PipelineDiagnostics.setStage(this@AudioRecordingService, "transcribed")
+                if (!ingestResult?.transcription.isNullOrBlank()) {
+                    PipelineDiagnostics.setStage(this@AudioRecordingService, "transcribed")
+                }
                 PipelineDiagnostics.clearError(this@AudioRecordingService)
                 runCatching { if (file.exists()) file.delete() }
                 PipelineDiagnostics.setStage(this@AudioRecordingService, "deleted")
@@ -431,6 +464,47 @@ class AudioRecordingService : Service() {
         }
     }
 
+    private suspend fun drainRetryableUploads() {
+        val dao = pendingUploadDao ?: return
+        while (true) {
+            val retryable = withContext(Dispatchers.IO) {
+                dao.getPending()
+            }
+            if (retryable.isEmpty()) {
+                return
+            }
+            for (item in retryable) {
+                val file = File(item.filePath)
+                if (!file.exists()) {
+                    withContext(Dispatchers.IO) {
+                        pendingUploadDao?.deleteByRecordingId(item.recordingId)
+                    }
+                    continue
+                }
+                sendAudioToServer(file, item.recordingId)
+            }
+        }
+    }
+
+    private suspend fun cleanupOrphanSegments() {
+        val audioDir = File(filesDir, "audio_records")
+        if (!audioDir.exists()) return
+        val knownRecordingPaths = withContext(Dispatchers.IO) {
+            recordingDao?.getAllFilePaths().orEmpty().toSet()
+        }
+        val knownPendingPaths = withContext(Dispatchers.IO) {
+            pendingUploadDao?.getAllFilePaths().orEmpty().toSet()
+        }
+        val protectedPaths = knownRecordingPaths + knownPendingPaths
+        audioDir.listFiles()
+            ?.filter { it.isFile && it.extension.equals("wav", ignoreCase = true) }
+            ?.forEach { wavFile ->
+                if (wavFile.absolutePath !in protectedPaths) {
+                    runCatching { wavFile.delete() }
+                }
+            }
+    }
+
     private fun acquireWakeLock() {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "reflexio:recording").apply {
@@ -451,7 +525,9 @@ class AudioRecordingService : Service() {
         wsClient = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
-        scope.coroutineContext[Job]?.cancel()
+        runBlocking {
+            serviceJob.cancelAndJoin()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

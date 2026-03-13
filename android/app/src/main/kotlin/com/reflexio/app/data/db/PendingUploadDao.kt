@@ -35,6 +35,9 @@ interface PendingUploadDao {
     @Query("DELETE FROM pending_uploads WHERE recordingId = :recordingId")
     suspend fun deleteByRecordingId(recordingId: Long)
 
+    @Query("SELECT filePath FROM pending_uploads")
+    suspend fun getAllFilePaths(): List<String>
+
     @Query("SELECT * FROM pending_uploads WHERE status = 'failed' ORDER BY createdAt DESC LIMIT 1")
     suspend fun getLastFailed(): PendingUpload?
 }

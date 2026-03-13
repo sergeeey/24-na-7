@@ -2,6 +2,7 @@ package com.reflexio.app.domain.network
 
 import android.util.Log
 import android.util.Base64
+import android.util.Base64OutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
@@ -14,8 +15,8 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 /**
  * Результат отправки аудио на сервер.
@@ -41,13 +42,8 @@ class IngestWebSocketClient(
     private val baseUrl: String = "ws://10.0.2.2:8000",
     private val apiKey: String = "",
 ) {
-    // ПОЧЕМУ один OkHttpClient: connection pooling, один thread pool на все запросы
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(120, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .pingInterval(30, TimeUnit.SECONDS)  // keep-alive ping
-        .build()
+    // ПОЧЕМУ shared client: не плодим TCP/thread pools на каждый worker/service.
+    private val client = NetworkClients.sharedClient
 
     private val wsUrl: String
         get() = baseUrl.removeSuffix("/") + "/ws/ingest"
@@ -112,15 +108,15 @@ class IngestWebSocketClient(
             if (!file.exists()) return@withContext Result.failure(
                 IllegalArgumentException("File not found: ${file.absolutePath}")
             )
-            val bytes = file.readBytes()
-            if (bytes.isEmpty()) return@withContext Result.failure(
+            val payload = encodeFileAsBase64(file)
+            if (payload.isEmpty()) return@withContext Result.failure(
                 IllegalArgumentException("Empty file")
             )
 
             sendMutex.withLock {
                 var lastError: Throwable? = null
                 repeat(2) { attempt ->
-                    val result = sendSegmentOnce(bytes, segmentId, capturedAt, onStage)
+                    val result = sendSegmentUntilReceived(payload, segmentId, capturedAt, onStage)
                     if (result.isSuccess) {
                         return@withLock result
                     }
@@ -137,8 +133,8 @@ class IngestWebSocketClient(
             }
         }
 
-    private suspend fun sendSegmentOnce(
-        bytes: ByteArray,
+    private suspend fun sendSegmentUntilReceived(
+        base64Payload: String,
         segmentId: String?,
         capturedAt: Long?,
         onStage: ((String) -> Unit)?,
@@ -151,7 +147,7 @@ class IngestWebSocketClient(
 
             val requestPayload = JSONObject().apply {
                 put("type", "audio")
-                put("data", Base64.encodeToString(bytes, Base64.NO_WRAP))
+                put("data", base64Payload)
                 if (!segmentId.isNullOrBlank()) put("segment_id", segmentId)
                 if (capturedAt != null) put("captured_at", capturedAt)
             }
@@ -160,9 +156,8 @@ class IngestWebSocketClient(
                 return Result.failure(RuntimeException("WebSocket send failed"))
             }
 
-            var fileId: String? = null
-            var transcription: String? = null
-            var ackStatus: String? = null
+            var fileId: String?
+            var ackStatus: String?
 
             val receivedResult = withTimeoutOrNull(20_000L) { ch.receiveCatching() }
             if (receivedResult == null) {
@@ -188,36 +183,7 @@ class IngestWebSocketClient(
                     )
                 }
             }
-
-            val result = withTimeoutOrNull(90_000L) { ch.receiveCatching() }
-            if (result == null) {
-                return Result.success(
-                    IngestResult(transcription = null, fileId = fileId, ackStatus = ackStatus)
-                )
-            }
-            val responsePayload = result.getOrNull()
-                ?: return Result.success(
-                    IngestResult(transcription = null, fileId = fileId, ackStatus = ackStatus)
-                )
-
-            when (responsePayload.optString("type")) {
-                "transcription" -> {
-                    transcription = responsePayload.optString("text", "").ifEmpty { null }
-                    if (fileId == null) fileId = responsePayload.optString("file_id", "").ifEmpty { null }
-                }
-                "filtered" -> {
-                    if (fileId == null) fileId = responsePayload.optString("file_id", "").ifEmpty { null }
-                }
-                "error" -> {
-                    return Result.failure(
-                        RuntimeException(responsePayload.optString("message", "Processing error"))
-                    )
-                }
-            }
-
-            Result.success(
-                IngestResult(transcription = transcription, fileId = fileId, ackStatus = ackStatus)
-            )
+            Result.success(IngestResult(transcription = null, fileId = fileId, ackStatus = ackStatus))
         } catch (e: Exception) {
             Log.e(TAG, "sendSegment failed", e)
             Result.failure(e)
@@ -260,5 +226,20 @@ class IngestWebSocketClient(
 
     companion object {
         private const val TAG = "IngestWebSocket"
+    }
+
+    private fun encodeFileAsBase64(file: File): String {
+        val output = ByteArrayOutputStream((file.length() * 1.4).toInt().coerceAtLeast(1024))
+        Base64OutputStream(output, Base64.NO_WRAP).use { base64Stream ->
+            file.inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    base64Stream.write(buffer, 0, read)
+                }
+            }
+        }
+        return output.toString(Charsets.US_ASCII.name())
     }
 }

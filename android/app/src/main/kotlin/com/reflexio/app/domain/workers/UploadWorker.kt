@@ -76,7 +76,9 @@ class UploadWorker(
                 )
                 pendingDao.deleteByRecordingId(item.recordingId)
                 PipelineDiagnostics.setStage(applicationContext, "server_acked")
-                PipelineDiagnostics.setStage(applicationContext, "transcribed")
+                if (!ingest?.transcription.isNullOrBlank()) {
+                    PipelineDiagnostics.setStage(applicationContext, "transcribed")
+                }
                 PipelineDiagnostics.clearError(applicationContext)
                 runCatching { if (file.exists()) file.delete() }
                 PipelineDiagnostics.setStage(applicationContext, "deleted")
@@ -142,7 +144,7 @@ class UploadWorker(
 
             WorkManager.getInstance(context).enqueueUniqueWork(
                 WORK_NAME,
-                ExistingWorkPolicy.KEEP,
+                ExistingWorkPolicy.REPLACE,
                 request,
             )
         }

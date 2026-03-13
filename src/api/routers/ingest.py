@@ -154,7 +154,23 @@ def _build_slo_state(
 
 
 def _build_recent_day_trends(db, *, days_back: int) -> list[dict[str, object]]:
-    today = date.today()
+    anchor_candidates: list[date] = []
+    for query in (
+        "SELECT MAX(day_key) FROM episodes",
+        "SELECT MAX(day_key) FROM day_threads",
+        "SELECT MAX(date) FROM digest_cache",
+        "SELECT MAX(date(created_at)) FROM ingest_queue",
+        "SELECT MAX(date(created_at)) FROM structured_events WHERE is_current = 1",
+    ):
+        row = db.fetchone(query)
+        value = row[0] if row and row[0] else None
+        if not value:
+            continue
+        try:
+            anchor_candidates.append(date.fromisoformat(str(value)))
+        except ValueError:
+            continue
+    today = max(anchor_candidates) if anchor_candidates else date.today()
     digest_rows = {
         row["date"]: row["digest_json"]
         for row in db.fetchall(

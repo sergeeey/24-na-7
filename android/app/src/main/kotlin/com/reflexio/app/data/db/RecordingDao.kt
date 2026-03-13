@@ -29,6 +29,9 @@ interface RecordingDao {
     @Query("SELECT COUNT(*) FROM recordings WHERE status = :status")
     suspend fun getCountByStatus(status: String): Int
 
+    @Query("SELECT filePath FROM recordings")
+    suspend fun getAllFilePaths(): List<String>
+
     @Query("SELECT createdAt FROM recordings WHERE status = 'processed' ORDER BY createdAt DESC LIMIT 1")
     suspend fun getLastProcessedCreatedAt(): Long?
 }
