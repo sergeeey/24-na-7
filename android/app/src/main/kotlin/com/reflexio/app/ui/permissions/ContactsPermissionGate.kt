@@ -1,0 +1,99 @@
+package com.reflexio.app.ui.permissions
+
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+
+// ПОЧЕМУ opt-in на PeopleScreen а не при старте:
+// пользователь ещё не понимает зачем. PeopleScreen — контекстное место,
+// где польза от контактов очевидна ("вижу людей, но без истории звонков").
+@Composable
+fun ContactsPermissionGate(
+    onGranted: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    var dismissed by remember { mutableStateOf(false) }
+
+    val hasContacts = ContextCompat.checkSelfPermission(
+        context, Manifest.permission.READ_CONTACTS
+    ) == PackageManager.PERMISSION_GRANTED
+    val hasCallLog = ContextCompat.checkSelfPermission(
+        context, Manifest.permission.READ_CALL_LOG
+    ) == PackageManager.PERMISSION_GRANTED
+
+    if (hasContacts && hasCallLog) {
+        onGranted()
+        return
+    }
+    if (dismissed) return
+
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        if (results.values.all { it }) {
+            onGranted()
+        }
+    }
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                "Подключить контакты и журнал звонков?",
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                "Увидишь историю звонков по каждому человеку и привязку записей к разговорам. Номера телефонов остаются на устройстве.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = {
+                    launcher.launch(
+                        arrayOf(
+                            Manifest.permission.READ_CONTACTS,
+                            Manifest.permission.READ_CALL_LOG,
+                        )
+                    )
+                }) {
+                    Text("Подключить")
+                }
+                TextButton(onClick = { dismissed = true }) {
+                    Text("Не сейчас")
+                }
+            }
+        }
+    }
+}

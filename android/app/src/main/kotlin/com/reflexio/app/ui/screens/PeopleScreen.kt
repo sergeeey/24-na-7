@@ -40,14 +40,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import android.content.Context
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.reflexio.app.data.contacts.CallLogReader
+import com.reflexio.app.data.db.CallAggregate
+import com.reflexio.app.data.db.RecordingDatabase
+import com.reflexio.app.domain.contacts.ContactMatcher
 import com.reflexio.app.domain.network.MemoryApi
 import com.reflexio.app.domain.network.PendingApproval
 import com.reflexio.app.domain.network.PersonListItem
 import com.reflexio.app.domain.network.ServerEndpointResolver
+import com.reflexio.app.ui.permissions.ContactsPermissionGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -64,6 +71,7 @@ private sealed class PeopleUiState {
     data class Success(
         val persons: List<PersonListItem>,
         val pending: List<PendingApproval>,
+        val callStats: Map<String, CallAggregate> = emptyMap(),
     ) : PeopleUiState()
 }
 
@@ -73,31 +81,51 @@ private data class PeopleNotebookSections(
     val others: List<PersonListItem>,
 )
 
-private fun buildPeopleSections(persons: List<PersonListItem>): PeopleNotebookSections {
+private fun buildPeopleSections(
+    persons: List<PersonListItem>,
+    callStats: Map<String, CallAggregate> = emptyMap(),
+): PeopleNotebookSections {
     if (persons.isEmpty()) return PeopleNotebookSections(emptyList(), emptyList(), emptyList())
-    val ranked = persons.sortedByDescending(::personPriorityScore).distinctBy { it.name }
+    val ranked = persons.sortedByDescending { personPriorityScore(it, callStats) }.distinctBy { it.name }
     val priority = ranked.take(4)
     val recent = ranked.drop(priority.size).take(6)
     val others = ranked.drop(priority.size + recent.size)
     return PeopleNotebookSections(priority, recent, others)
 }
 
-private fun personPriorityScore(person: PersonListItem): Int {
+private fun personPriorityScore(
+    person: PersonListItem,
+    callStats: Map<String, CallAggregate> = emptyMap(),
+): Int {
     var score = person.sampleCount * 3
     if (person.voiceReady) score += 14
     if (person.relationship != "unknown" && person.relationship.isNotBlank()) score += 6
     if (!person.lastSeen.isNullOrBlank()) score += 10
+
+    // ПОЧЕМУ caps: без них человек с 100 пропущенными от колл-центра обгонит реальных друзей.
+    val stats = callStats[person.name]
+    if (stats != null) {
+        score += minOf(stats.callCount * 5, 40)
+        score += minOf(stats.totalSeconds / 60, 30)
+        val daysAgo = (System.currentTimeMillis() - stats.lastCallMs) / 86_400_000L
+        if (daysAgo < 7) score += 15
+    }
     return score
 }
 
-private fun buildPersonSubtitle(person: PersonListItem): String {
+private fun buildPersonSubtitle(
+    person: PersonListItem,
+    callStats: Map<String, CallAggregate> = emptyMap(),
+): String {
     val bits = mutableListOf<String>()
     person.relationship
         .takeIf { it.isNotBlank() && it != "unknown" }
         ?.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
         ?.let(bits::add)
     person.lastSeen?.take(10)?.let { bits.add("контакт $it") }
-    if (person.sampleCount > 0) bits.add("голосовых следов ${person.sampleCount}")
+    if (person.sampleCount > 0) bits.add("следов ${person.sampleCount}")
+    val stats = callStats[person.name]
+    if (stats != null) bits.add("звонков ${stats.callCount}")
     return bits.joinToString(" · ").ifBlank { "Пока мало контекста, но карточка уже готова для накопления памяти." }
 }
 
@@ -114,9 +142,11 @@ fun PeopleScreen(
     onOpenPerson: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<PeopleUiState>(PeopleUiState.Loading) }
     var search by remember { mutableStateOf("") }
+    var contactsGranted by remember { mutableStateOf(false) }
 
     // ПОЧЕМУ: reload вынесен как локальная suspend-функция — вызывается и при старте (LaunchedEffect)
     // и после каждого approve/reject, чтобы оба списка всегда были актуальны
@@ -125,13 +155,20 @@ fun PeopleScreen(
         state = try {
             val persons = withContext(Dispatchers.IO) { MemoryApi.fetchPersons(baseHttpUrl) }
             val pending = withContext(Dispatchers.IO) { MemoryApi.fetchPending(baseHttpUrl) }
-            PeopleUiState.Success(persons, pending)
+            // ПОЧЕМУ call sync здесь: данные нужны только для ranking на этом экране.
+            // Sync = read ContentResolver → write Room cache → aggregate.
+            val callStats = if (contactsGranted) {
+                withContext(Dispatchers.IO) { syncAndAggregateCallLog(context, persons) }
+            } else {
+                emptyMap()
+            }
+            PeopleUiState.Success(persons, pending, callStats)
         } catch (e: Exception) {
             PeopleUiState.Error(ServerEndpointResolver.userFacingError(e.message, baseHttpUrl))
         }
     }
 
-    LaunchedEffect(baseHttpUrl) { reload() }
+    LaunchedEffect(baseHttpUrl, contactsGranted) { reload() }
 
     when (val current = state) {
         PeopleUiState.Loading -> Box(
@@ -179,6 +216,15 @@ fun PeopleScreen(
                 }
             }
 
+            // Opt-in для контактов и журнала звонков
+            if (!contactsGranted) {
+                item {
+                    ContactsPermissionGate(
+                        onGranted = { contactsGranted = true },
+                    )
+                }
+            }
+
             // Секция ожидающих подтверждения — коллапсируемая
             item {
                 PendingSection(
@@ -209,7 +255,7 @@ fun PeopleScreen(
             val filteredPersons = current.persons.filter {
                 search.isBlank() || it.name.contains(search.trim(), ignoreCase = true)
             }
-            val sections = buildPeopleSections(filteredPersons)
+            val sections = buildPeopleSections(filteredPersons, current.callStats)
 
             if (current.persons.isEmpty()) {
                 item {
@@ -269,7 +315,7 @@ fun PeopleScreen(
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
                             sections.priority.forEach { person ->
-                                PersonNotebookChip(person = person, onClick = { onOpenPerson(person.name) })
+                                PersonNotebookChip(person = person, callStats = current.callStats, onClick = { onOpenPerson(person.name) })
                             }
                         }
                     }
@@ -283,7 +329,7 @@ fun PeopleScreen(
                         )
                     }
                     items(sections.recent, key = { it.name }) { person ->
-                        PersonListCard(person = person, onClick = { onOpenPerson(person.name) })
+                        PersonListCard(person = person, callStats = current.callStats, onClick = { onOpenPerson(person.name) })
                     }
                 }
 
@@ -295,7 +341,7 @@ fun PeopleScreen(
                         )
                     }
                     items(sections.others, key = { it.name }) { person ->
-                        PersonListCard(person = person, onClick = { onOpenPerson(person.name) })
+                        PersonListCard(person = person, callStats = current.callStats, onClick = { onOpenPerson(person.name) })
                     }
                 }
             }
@@ -328,6 +374,7 @@ private fun SectionHeader(title: String, subtitle: String) {
 @Composable
 private fun PersonNotebookChip(
     person: PersonListItem,
+    callStats: Map<String, CallAggregate> = emptyMap(),
     onClick: () -> Unit,
 ) {
     Card(
@@ -343,7 +390,7 @@ private fun PersonNotebookChip(
         ) {
             Text(person.name, fontWeight = FontWeight.Bold)
             Text(
-                buildPersonSubtitle(person),
+                buildPersonSubtitle(person, callStats),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -503,6 +550,7 @@ private fun PendingApprovalCard(
 @Composable
 private fun PersonListCard(
     person: PersonListItem,
+    callStats: Map<String, CallAggregate> = emptyMap(),
     onClick: () -> Unit,
 ) {
     Card(
@@ -543,7 +591,7 @@ private fun PersonListCard(
             }
 
             Text(
-                text = buildPersonSubtitle(person),
+                text = buildPersonSubtitle(person, callStats),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -572,7 +620,54 @@ private fun PersonListCard(
                         ),
                     )
                 }
+                callStats[person.name]?.let { stats ->
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("${stats.callCount} звонков") },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = TealAccent.copy(alpha = 0.18f),
+                            labelColor = TealAccent,
+                        ),
+                    )
+                }
             }
         }
     }
+}
+
+/**
+ * Синхронизирует call log из ContentResolver в Room кэш и возвращает агрегаты.
+ * Matching: имена из call log сопоставляются с серверными именами через ContactMatcher.
+ */
+private suspend fun syncAndAggregateCallLog(
+    context: Context,
+    serverPersons: List<PersonListItem>,
+): Map<String, CallAggregate> {
+    val dao = RecordingDatabase.getInstance(context).callLogCacheDao()
+
+    // Sync: read ContentResolver → Room (max раз в 5 минут)
+    val lastSync = dao.lastSyncTime() ?: 0L
+    if (System.currentTimeMillis() - lastSync > 5 * 60 * 1000L) {
+        val calls = CallLogReader.readCallLog(context.contentResolver)
+        if (calls.isNotEmpty()) {
+            dao.insertAll(calls)
+            // Удаляем записи старше 35 дней
+            dao.deleteOlderThan(System.currentTimeMillis() - 35 * 86_400_000L)
+        }
+    }
+
+    // Aggregate
+    val aggregates = dao.aggregateByContact()
+    val callLogNames = aggregates.map { it.contactName }.toSet()
+    val result = mutableMapOf<String, CallAggregate>()
+
+    for (person in serverPersons) {
+        val matchedName = ContactMatcher.matchCallLogName(person.name, callLogNames)
+        if (matchedName != null) {
+            aggregates.firstOrNull { it.contactName == matchedName }?.let {
+                result[person.name] = it
+            }
+        }
+    }
+    return result
 }

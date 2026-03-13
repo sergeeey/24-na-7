@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.reflexio.app.data.model.CachedCall
 import com.reflexio.app.data.model.PendingUpload
 import com.reflexio.app.data.model.Recording
 
@@ -55,15 +56,36 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
     }
 }
 
+// ПОЧЕМУ отдельная таблица а не JOIN с recordings:
+// call_log_cache = локальный кэш ContentResolver, независим от серверных данных.
+// Matching звонков с записями — domain-level логика, не DB-level.
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS call_log_cache (
+                callTimestampMs INTEGER NOT NULL PRIMARY KEY,
+                contactName TEXT NOT NULL,
+                durationSeconds INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                syncedAt INTEGER NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_call_log_cache_contactName ON call_log_cache(contactName)")
+    }
+}
+
 @Database(
-    entities = [Recording::class, PendingUpload::class],
-    version = 4,
+    entities = [Recording::class, PendingUpload::class, CachedCall::class],
+    version = 5,
     exportSchema = false
 )
 abstract class RecordingDatabase : RoomDatabase() {
 
     abstract fun recordingDao(): RecordingDao
     abstract fun pendingUploadDao(): PendingUploadDao
+    abstract fun callLogCacheDao(): CallLogCacheDao
 
     companion object {
         @Volatile
@@ -76,7 +98,7 @@ abstract class RecordingDatabase : RoomDatabase() {
                     RecordingDatabase::class.java,
                     "reflexio_recordings.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { INSTANCE = it }
             }
