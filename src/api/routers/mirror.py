@@ -1,10 +1,8 @@
 """Mirror API — еженедельный портрет пользователя на основе накопленных эпизодов."""
 
 import json
-import sqlite3
 from collections import Counter
 from datetime import date, timedelta
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Query, Request, Response
@@ -13,7 +11,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from src.core.tool_result import add_meta
-from src.utils.config import settings
+from src.storage.db import get_reflexio_db
 from src.utils.logging import get_logger
 
 logger = get_logger("api.mirror")
@@ -90,7 +88,7 @@ def _parse_json_column(raw: str | None) -> list[str]:
         return []
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+def _table_exists(conn, table_name: str) -> bool:
     """Проверяет существование таблицы без исключений."""
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -100,7 +98,6 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 
 def _query_portrait(
-    db_path: Path,
     date_from: date,
     date_to: date,
 ) -> dict[str, Any]:
@@ -118,11 +115,9 @@ def _query_portrait(
     balance_trend: list[dict[str, Any]] = []
     open_commitments = 0
 
-    # ПОЧЕМУ read-only URI: Mirror — агрегация без записи.
-    # Режим "ro" предотвращает случайное создание БД при несуществующем пути.
-    uri = f"file:{db_path}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    # ПОЧЕМУ get_reflexio_db(): на проде БД может быть sqlcipher-зашифрована,
+    # прямой sqlite3.connect() не сможет открыть файл.
+    conn = get_reflexio_db()
 
     try:
         # --- enriched_episodes: эмоции, темы, люди, сентимент ---
@@ -179,7 +174,7 @@ def _query_portrait(
             logger.info("mirror.table_missing", table="commitments")
 
     finally:
-        conn.close()
+        pass  # ПОЧЕМУ не close(): get_reflexio_db() возвращает shared connection
 
     avg_sentiment: float | None = (
         round(sentiment_sum / sentiment_count, 4) if sentiment_count > 0 else None
@@ -217,7 +212,6 @@ async def get_portrait(
     date_to = date.today()
     # ПОЧЕМУ days_back - 1: при days_back=7 включаем сегодня + 6 предыдущих = 7 дней итого.
     date_from = date_to - timedelta(days=days_back - 1)
-    db_path = settings.STORAGE_PATH / "reflexio.db"
 
     logger.info(
         "mirror.portrait_request",
@@ -226,24 +220,7 @@ async def get_portrait(
         date_to=date_to.isoformat(),
     )
 
-    if not db_path.exists():
-        # ПОЧЕМУ 200 с пустыми данными, не 404: БД ещё не создана на свежем инстансе.
-        # Клиент обязан показать "нет данных", а не ошибку.
-        logger.info("mirror.db_not_found", db_path=str(db_path))
-        empty: dict[str, Any] = {
-            "days_back": days_back,
-            "period": {"from": date_from.isoformat(), "to": date_to.isoformat()},
-            "top_emotions": [],
-            "top_topics": [],
-            "top_people": [],
-            "avg_sentiment": None,
-            "episodes_count": 0,
-            "balance_trend": [],
-            "open_commitments": 0,
-        }
-        return add_meta(empty, confidence=0.0, evidence_count=0, tool="mirror_portrait")
-
-    agg = _query_portrait(db_path, date_from, date_to)
+    agg = _query_portrait(date_from, date_to)
     episodes_count: int = agg["episodes_count"]
 
     result: dict[str, Any] = {
