@@ -115,6 +115,8 @@ TRANSCRIPT_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]{2,}")
 # 2 слова = минимальная единица смысла ("идём домой", "позвони маме").
 MIN_WORDS = 2
 MIN_AUDIO_DURATION_SECONDS = 0.5
+MIN_SHORT_UTTERANCE_DURATION_SECONDS = 0.45
+MIN_SHORT_UTTERANCE_LANG_PROBABILITY = 0.75
 # ПОЧЕМУ 0.4: Whisper confidence < 0.4 = фоновый шум или чужая речь.
 # Тестировано: 0.3 пропускает мусор, 0.5 режет казахский (kk) с акцентом.
 MIN_LANG_PROBABILITY = 0.4
@@ -145,6 +147,17 @@ def _read_wav_as_numpy(wav_path: Path) -> np.ndarray | None:
             return np.frombuffer(frames, dtype=np.int16).astype(np.float32)
     except Exception as e:
         logger.warning("wav_read_failed", path=str(wav_path), error=str(e))
+        return None
+
+
+def _read_wav_duration_seconds(wav_path: Path) -> float | None:
+    try:
+        with wave.open(str(wav_path), "rb") as wf:
+            frame_count = wf.getnframes()
+            sample_rate = wf.getframerate() or settings.AUDIO_SAMPLE_RATE
+        return frame_count / float(sample_rate or 1)
+    except Exception as e:
+        logger.warning("wav_duration_read_failed", path=str(wav_path), error=str(e))
         return None
 
 
@@ -242,10 +255,9 @@ def _precheck_audio_artifact(wav_path: Path) -> tuple[bool, str | None]:
     try:
         if not wav_path.exists() or wav_path.stat().st_size <= 44:
             return False, "empty_audio"
-        with wave.open(str(wav_path), "rb") as wf:
-            frame_count = wf.getnframes()
-            sample_rate = wf.getframerate() or settings.AUDIO_SAMPLE_RATE
-            duration = frame_count / float(sample_rate or 1)
+        duration = _read_wav_duration_seconds(wav_path)
+        if duration is None:
+            return False, "invalid_wav"
         if duration < MIN_AUDIO_DURATION_SECONDS:
             return False, "too_short"
     except Exception:
@@ -585,7 +597,11 @@ def validate_safe_file_size(content: bytes, suffix: str, safe_checker: Any, safe
             raise HTTPException(status_code=400, detail=f"SAFE validation failed: {size_reason}")
 
 
-def is_meaningful_transcription(text: str, lang_prob: float = 1.0) -> bool:
+def is_meaningful_transcription(
+    text: str,
+    lang_prob: float = 1.0,
+    duration_seconds: float | None = None,
+) -> bool:
     """Check if transcription text likely contains meaningful speech."""
     normalized = (text or "").strip()
     if not normalized:
@@ -603,6 +619,11 @@ def is_meaningful_transcription(text: str, lang_prob: float = 1.0) -> bool:
         token = words[0].strip(".,!?;:\"'()[]{}").lower()
         if token in NOISE_PHRASES:
             return False
+        if (lang_prob or 0.0) < MIN_SHORT_UTTERANCE_LANG_PROBABILITY:
+            return False
+        duration = float(duration_seconds or 0.0)
+        if duration >= MIN_SHORT_UTTERANCE_DURATION_SECONDS:
+            return len(token) >= 2
         return len(token) >= 4
     return True
 
@@ -903,6 +924,10 @@ def process_audio_from_artifact_sync(
         text = (result.get("text") or "").strip()
         lang_prob = result.get("language_probability", 1.0) or 1.0
         detected_lang = (result.get("language") or "").lower()
+        audio_duration = float(result.get("duration") or 0.0)
+        if audio_duration <= 0:
+            audio_duration = float(_read_wav_duration_seconds(file_path) or 0.0)
+            result["duration"] = audio_duration
 
         if not is_allowed_language(detected_lang):
             _mark_ingest_status(
@@ -924,7 +949,7 @@ def process_audio_from_artifact_sync(
                 "filename": filename,
             }
 
-        if not is_meaningful_transcription(text, lang_prob):
+        if not is_meaningful_transcription(text, lang_prob, audio_duration):
             _mark_ingest_status(
                 db_path,
                 ingest_id,
@@ -1380,6 +1405,10 @@ async def process_audio_bytes(
         text = (result.get("text") or "").strip()
         lang_prob = result.get("language_probability", 1.0) or 1.0
         detected_lang = (result.get("language") or "").lower()
+        audio_duration = float(result.get("duration") or 0.0)
+        if audio_duration <= 0:
+            audio_duration = float(_read_wav_duration_seconds(dest_path) or 0.0)
+            result["duration"] = audio_duration
 
         if not is_allowed_language(detected_lang):
             _mark_ingest_status(
@@ -1401,7 +1430,7 @@ async def process_audio_bytes(
                 "filename": filename,
             }
 
-        if not is_meaningful_transcription(text, lang_prob):
+        if not is_meaningful_transcription(text, lang_prob, audio_duration):
             _mark_ingest_status(
                 db_path,
                 ingest_id,

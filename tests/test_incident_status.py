@@ -120,6 +120,27 @@ def test_incident_status_exposes_runtime_signals(tmp_path):
                         f"{today}T11:00:10+00:00",
                     ),
                 )
+            db.execute(
+                """
+                INSERT INTO ingest_queue (
+                    id, segment_id, filename, file_path, file_size, status,
+                    transport_status, processing_status, created_at, processed_at, error_code
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "noise-filtered",
+                    "seg-noise",
+                    "noise.wav",
+                    "/tmp/noise.wav",
+                    2048,
+                    "filtered",
+                    "server_acked",
+                    "filtered",
+                    f"{today}T11:10:00+00:00",
+                    f"{today}T11:10:10+00:00",
+                    "noise",
+                ),
+            )
 
         ledger_payload = {
             "incidents": [
@@ -198,6 +219,21 @@ def test_incident_status_exposes_runtime_signals(tmp_path):
                     "owner": "",
                     "status": "open",
                 },
+                {
+                    "incident_id": "INC-006",
+                    "signature": "vad_noise_filtering_overrejects_valid_short_speech",
+                    "title": "noise filtered speech",
+                    "symptoms": ["symptom"],
+                    "root_cause": "(уточнить)",
+                    "evidence": ["db"],
+                    "what_worked": "",
+                    "what_failed": "",
+                    "guardrail": "",
+                    "regression_test": "",
+                    "signpost": "filtered noise rate",
+                    "owner": "",
+                    "status": "open",
+                },
             ]
         }
 
@@ -222,8 +258,8 @@ def test_incident_status_exposes_runtime_signals(tmp_path):
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["summary"]["total"] == 5
-        assert payload["summary"]["alerting"] == 4
+        assert payload["summary"]["total"] == 6
+        assert payload["summary"]["alerting"] == 5
         assert payload["summary"]["unknown"] == 0
 
         signal_by_signature = {
@@ -238,5 +274,7 @@ def test_incident_status_exposes_runtime_signals(tmp_path):
         assert signal_by_signature["micro_wav_segments_under_min_size"]["state"] == "alert"
         assert signal_by_signature["micro_wav_segments_under_min_size"]["value"] == 1
         assert signal_by_signature["unsupported_language_unknown_filters_valid_ru_audio"]["state"] == "ok"
+        assert signal_by_signature["vad_noise_filtering_overrejects_valid_short_speech"]["state"] == "alert"
+        assert signal_by_signature["vad_noise_filtering_overrejects_valid_short_speech"]["value"] == 1
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)

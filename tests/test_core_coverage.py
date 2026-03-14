@@ -595,6 +595,73 @@ def test_precheck_audio_artifact_rejects_sub_half_second_wav(tmp_path):
     assert reason == "too_short"
 
 
+def test_is_meaningful_transcription_accepts_confident_short_one_word_utterance():
+    from src.core.audio_processing import is_meaningful_transcription
+
+    assert is_meaningful_transcription("да", lang_prob=0.95, duration_seconds=0.7) is True
+
+
+def test_is_meaningful_transcription_rejects_short_filler_even_when_confident():
+    from src.core.audio_processing import is_meaningful_transcription
+
+    assert is_meaningful_transcription("ну", lang_prob=0.95, duration_seconds=0.7) is False
+
+
+def test_process_audio_bytes_accepts_confident_short_one_word_from_wav_duration(tmp_path):
+    from src.core.audio_processing import process_audio_bytes
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    uploads_path = storage_path / "uploads"
+    uploads_path.mkdir()
+
+    old_storage = settings.STORAGE_PATH
+    old_uploads = settings.UPLOADS_PATH
+    old_filter_music = settings.FILTER_MUSIC
+    old_speaker_verification = settings.SPEAKER_VERIFICATION_ENABLED
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x01\x00" * 8800)  # ~0.55 sec
+    wav_bytes = buf.getvalue()
+
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+    object.__setattr__(settings, "UPLOADS_PATH", uploads_path)
+    object.__setattr__(settings, "FILTER_MUSIC", False)
+    object.__setattr__(settings, "SPEAKER_VERIFICATION_ENABLED", False)
+
+    try:
+        out = asyncio.run(
+            process_audio_bytes(
+                content=wav_bytes,
+                content_type="audio/wav",
+                original_filename="short-yes.wav",
+                transcribe_fn=lambda _path, language=None: {
+                    "text": "да",
+                    "language": "ru",
+                    "language_probability": 0.95,
+                    "duration": 0.0,
+                    "segments": [],
+                },
+                run_enrichment=False,
+                delete_audio_after=False,
+            )
+        )
+
+        assert out["status"] == "transcribed"
+        assert out["result"]["text"] == "да"
+        assert out["result"]["duration"] >= 0.5
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+        object.__setattr__(settings, "UPLOADS_PATH", old_uploads)
+        object.__setattr__(settings, "FILTER_MUSIC", old_filter_music)
+        object.__setattr__(settings, "SPEAKER_VERIFICATION_ENABLED", old_speaker_verification)
+
+
 def test_transcribe_with_allowed_language_fallback_retries_configured_language(tmp_path):
     from src.core.audio_processing import _transcribe_with_allowed_language_fallback
 

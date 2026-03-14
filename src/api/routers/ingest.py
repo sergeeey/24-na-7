@@ -422,6 +422,15 @@ def _build_incident_status_report(db, *, start_iso: str, end_iso: str) -> dict[s
         """,
         (start_iso, end_iso),
     )[0]
+    filtered_noise = db.fetchone(
+        """
+        SELECT COUNT(*) FROM ingest_queue
+        WHERE created_at BETWEEN ? AND ?
+          AND error_code = 'noise'
+          AND file_size > 512
+        """,
+        (start_iso, end_iso),
+    )[0]
     android_routing_alerts = db.fetchone(
         """
         SELECT COUNT(*) FROM client_signposts
@@ -475,6 +484,12 @@ def _build_incident_status_report(db, *, start_iso: str, end_iso: str) -> dict[s
             value=int(unsupported_language),
             source="ingest_queue.error_code = unsupported_language",
             details="Сколько сегментов за сегодня были отфильтрованы как unsupported_language.",
+        ),
+        "vad_noise_filtering_overrejects_valid_short_speech": _build_incident_signal_state(
+            state="alert" if filtered_noise > 0 else "ok",
+            value=int(filtered_noise),
+            source="ingest_queue.error_code = noise with file_size > 512 bytes",
+            details="Сколько немикро-сегментов за сегодня были отфильтрованы как noise после ASR.",
         ),
     }
 
