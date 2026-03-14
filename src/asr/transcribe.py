@@ -124,7 +124,7 @@ def get_asr_provider():
 
                 provider_kwargs = {}
                 if provider_name == "openai":
-                    provider_kwargs["api_key"] = os.getenv("OPENAI_API_KEY")
+                    provider_kwargs["api_key"] = settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
                 elif provider_name == "whisperx":
                     provider_kwargs["model_size"] = os.getenv("WHISPERX_MODEL_SIZE", "large-v3")
                     provider_kwargs["device"] = getattr(settings, "ASR_DEVICE", None) or os.getenv("ASR_DEVICE", "cuda")

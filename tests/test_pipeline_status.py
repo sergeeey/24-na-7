@@ -243,6 +243,15 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         assert payload["slo_state"]["snapshot"]["day_threads_trusted"] == 1
         assert payload["slo_state"]["snapshot"]["stale_received"] == 0
         assert payload["slo_state"]["snapshot"]["stale_asr_pending"] == 0
+        assert payload["incident_status"]["summary"]["total"] >= 5
+        assert payload["incident_status"]["summary"]["unknown"] >= 1
+        assert "incidents" in payload["incident_status"]
+        assert payload["golden_path"]["checks"]["server_ok"] is True
+        assert payload["golden_path"]["checks"]["stale_received_ok"] is True
+        assert payload["golden_path"]["checks"]["stale_asr_pending_ok"] is True
+        assert payload["golden_path"]["checks"]["runtime_storage"] is False
+        assert payload["golden_path"]["checks"]["transcription_available"] is False
+        assert payload["golden_path"]["non_blocking_checks"] == ["android_route_signpost_observed"]
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 

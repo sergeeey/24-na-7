@@ -66,8 +66,8 @@ class LLMClient:
         self.provider = provider
         self.model = model
         self.temperature = temperature
-        self.api_key = None
-        self.client = None
+        self.api_key: Optional[str] = None
+        self.client: Any = None
 
     def call(self, prompt: str, system_prompt: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """
@@ -335,7 +335,7 @@ class GoogleGeminiClient(LLMClient):
         try:
             # ПОЧЕМУ google.genai: старый google.generativeai задепрекейтен Google (2025).
             # Новый SDK: from google import genai → client = genai.Client(api_key=...).
-            from google import genai
+            from google import genai  # type: ignore[import-untyped]
 
             self.client = genai.Client(api_key=self.api_key)
         except ImportError:
@@ -362,7 +362,7 @@ class GoogleGeminiClient(LLMClient):
 
             # ПОЧЕМУ contents=full_prompt: новый SDK принимает строку напрямую,
             # generation_config через types.GenerateContentConfig.
-            from google.genai import types
+            from google.genai import types  # type: ignore[import-untyped]
 
             response = self.client.models.generate_content(
                 model=self.model,
@@ -506,10 +506,10 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
     try:
         from src.utils.config import settings as _settings
 
-        provider_name = getattr(_settings, "LLM_PROVIDER", None) or os.getenv(
+        provider_name_raw = getattr(_settings, "LLM_PROVIDER", None) or os.getenv(
             "LLM_PROVIDER", "openai"
         )
-        provider_name = provider_name.lower()
+        provider_name = str(provider_name_raw).lower()
 
         model_attr = f"LLM_MODEL_{role.upper()}"
         model_env_key = f"LLM_MODEL_{role.upper()}"
@@ -530,9 +530,10 @@ def get_llm_client(role: str = "actor") -> Optional[LLMClient]:
 
         temp_attr = f"LLM_TEMPERATURE_{role.upper()}"
         default_temp = 0.3 if role == "actor" else 0.0
-        temperature = float(
-            getattr(_settings, temp_attr, None) or os.getenv(temp_attr, str(default_temp))
-        )
+        temperature_raw = getattr(_settings, temp_attr, None)
+        if temperature_raw is None:
+            temperature_raw = os.getenv(temp_attr, str(default_temp))
+        temperature = float(str(temperature_raw))
     except Exception:
         # Fallback если settings недоступны
         provider_name = os.getenv("LLM_PROVIDER", "openai").lower()

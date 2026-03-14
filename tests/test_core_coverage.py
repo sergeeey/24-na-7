@@ -253,7 +253,7 @@ def test_process_audio_bytes_non_user_speaker_is_annotated_not_filtered(tmp_path
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(16000)
-        wf.writeframes(b"\x01\x00" * 4000)
+        wf.writeframes(b"\x01\x00" * 8000)
     wav_bytes = buf.getvalue()
 
     object.__setattr__(settings, "STORAGE_PATH", storage_path)
@@ -578,3 +578,43 @@ def test_check_speech_gate_rejects_clear_not_speech(monkeypatch, tmp_path):
     allowed, reason = _check_speech_gate(wav_path)
     assert allowed is False
     assert reason == "not_speech"
+
+
+def test_precheck_audio_artifact_rejects_sub_half_second_wav(tmp_path):
+    from src.core.audio_processing import _precheck_audio_artifact
+
+    wav_path = tmp_path / "short.wav"
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(b"\x00\x00" * 3200)  # 0.2 sec
+
+    ok, reason = _precheck_audio_artifact(wav_path)
+    assert ok is False
+    assert reason == "too_short"
+
+
+def test_transcribe_with_allowed_language_fallback_retries_configured_language(tmp_path):
+    from src.core.audio_processing import _transcribe_with_allowed_language_fallback
+
+    calls: list[str | None] = []
+    audio_path = tmp_path / "sample.wav"
+    audio_path.write_bytes(b"RIFF")
+
+    def fake_transcribe(_audio_path, language=None):
+        calls.append(language)
+        if len(calls) == 1:
+            return {"text": "я устал уже", "language": "unknown", "language_probability": 0.15}
+        return {"text": "я устал уже", "language": "unknown", "language_probability": 0.2}
+
+    result = _transcribe_with_allowed_language_fallback(
+        audio_path,
+        transcribe_fn=fake_transcribe,
+        language="ru",
+        ingest_id="ing-1",
+    )
+
+    assert calls == ["ru", "ru"]
+    assert result["language"] == "ru"
+    assert result["language_probability"] >= 0.4

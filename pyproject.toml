@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.110.0",
     "starlette>=0.37.2",
     "uvicorn[standard]>=0.29.0",
+    "PyYAML>=6.0",
     "python-dotenv>=1.0.0",
     "structlog>=23.2.0",
     "webrtcvad>=2.0.10",
@@ -21,6 +22,7 @@ dependencies = [
     "redis>=5.0.0",
     "hvac>=2.0.0",
     "apscheduler>=3.10.0",
+    "mcp>=1.24.0",
 ]
 
 [project.optional-dependencies]

@@ -203,6 +203,7 @@ fun PipelineStatusStrip(
             }
         } else {
             UserStripContent(
+                baseHttpUrl = baseHttpUrl,
                 pendingCount = pendingCount,
                 lastProcessedAt = lastProcessedAt,
                 serverOk = serverOk,
@@ -214,6 +215,7 @@ fun PipelineStatusStrip(
 
 @Composable
 private fun UserStripContent(
+    baseHttpUrl: String,
     pendingCount: Int,
     lastProcessedAt: Long?,
     serverOk: Boolean?,
@@ -226,6 +228,8 @@ private fun UserStripContent(
             val timeStr = if (minAgo < 1) "только что" else "$minAgo мин назад"
             "Синхронизация в порядке · Последняя обработка $timeStr"
         }
+        serverOk == false && ServerEndpointResolver.isLocalUrl(baseHttpUrl) ->
+            "Локальный сервер недоступен. Данные сохранены локально, отправка повторится автоматически."
         serverOk == false -> "Сервер перегружен. Данные сохранены локально. Отправка повторится автоматически."
         else -> "Синхронизация в порядке"
     }

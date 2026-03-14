@@ -36,7 +36,7 @@ class VaultClient:
     """
     
     def __init__(self):
-        self.client = None
+        self.client: Any = None
         self._cache: Dict[str, Any] = {}
         self._connected = False
         
@@ -45,7 +45,7 @@ class VaultClient:
             return
         
         try:
-            import hvac
+            import hvac  # type: ignore[import-not-found]
             self.client = hvac.Client(
                 url=VaultConfig.ADDR,
                 token=VaultConfig.TOKEN,
@@ -89,7 +89,7 @@ class VaultClient:
                 value = response["data"]["data"].get("value")
                 if value:
                     logger.debug("vault_secret_read", key=key)
-                    return value
+                    return str(value)
             except Exception as e:
                 logger.warning("vault_read_error", key=key, error=str(e))
         
@@ -140,7 +140,7 @@ class VaultClient:
                 path=VaultConfig.SECRET_PATH,
                 mount_point="secret",
             )
-            return response["data"]["keys"]
+            return list(response["data"]["keys"])
         except Exception as e:
             logger.warning("vault_list_error", error=str(e))
             return []

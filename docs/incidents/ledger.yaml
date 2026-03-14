@@ -1,0 +1,105 @@
+# Incident Memory System — реестр инцидентов Reflexio 24/7
+# Правило: баг не закрыт, пока нет хотя бы одного из:
+#   - автоматический тест, - runtime guard, - запись в ledger с проверяемым signpost.
+# Обновлено: 2026-03-14
+
+incidents:
+  - incident_id: INC-001
+    signature: android_debug_falls_back_to_remote_when_local_alive
+    title: "Debug-среда уходит на удалённый endpoint при живом локальном"
+    symptoms:
+      - "В debug-сборке Android трафик идёт на remote, хотя локальный сервер поднят"
+      - "Достоверность эксперимента теряется; непонятно, что именно проверяем"
+    root_cause: "(уточнить) Логика shouldFallback / isReachable или таймаут даёт false positive; shouldPinLocalDebugRoute не срабатывает в части путей"
+    evidence:
+      - "Логи: resolveUiHttpBaseUrl primary=... fallback=..."
+      - "ServerEndpointResolver.kt: shouldFallback, shouldPinLocalDebugRoute, isReachable"
+    what_worked: "Явный pin локального маршрута в debug (shouldPinLocalDebugRoute)"
+    what_failed: "Молчаливый fallback без явного сигнала в логах/UI"
+    guardrail: "В debug-сборке никогда не использовать fallback URL; логировать BIG WARNING при попытке fallback в debug"
+    regression_test: "(добавить) E2E или instrumented test: при localhost доступен — запросы только на localhost"
+    signpost: "Лог-строка 'fallback=disabled_for_debug_local' при debug; отсутствие запросов к SERVER_WS_URL_FALLBACK в debug"
+    owner: ""
+    status: open
+    first_seen: "2026-03"
+    updated_at: "2026-03-14"
+
+  - incident_id: INC-002
+    signature: ingest_stuck_received_without_transcription
+    title: "Ingest застревает в статусе received без транскрипции"
+    symptoms:
+      - "Запись в ingest_queue в статусе received, транскрипции нет"
+      - "Пайплайн не доводит до ASR или ASR не пишет результат"
+    root_cause: "(уточнить) Разрыв между сохранением WAV/статусом received и вызовом ASR; таймаут, очередь, или ошибка без обновления status"
+    evidence:
+      - "ingest_queue.status = received, transcriptions пусто для ingest_id"
+      - "Логи ingest worker / api/routers/ingest"
+    what_worked: ""
+    what_failed: "Отсутствие явного перехода received → processing → completed/failed с причиной"
+    guardrail: "Таймаут received→processing; алерт или лог-уровень ERROR если received > N минут без транскрипции"
+    regression_test: "(добавить) Тест: после POST /ingest/audio в течение T — запись в transcriptions или status=failed с error_message"
+    signpost: "Метрика или лог: ingest_received_age_seconds; алерт при age > 300"
+    owner: ""
+    status: open
+    first_seen: "2026-03"
+    updated_at: "2026-03-14"
+
+  - incident_id: INC-003
+    signature: enrichment_404_after_segment_complete
+    title: "Enrichment возвращает 404 после успешного завершения сегмента"
+    symptoms:
+      - "После завершения сегмента запрос на enrichment даёт 404"
+      - "Ресурс (transcription/segment) не найден на момент вызова enrichment"
+    root_cause: "(уточнить) Race или неверный ID/путь: enrichment вызывается по ID/URL, который ещё не закоммичен или уже переименован/удалён"
+    evidence:
+      - "Логи enrichment router; ID сегмента/транскрипции в запросе"
+      - "api/routers/enrichment.py, порядок операций в pipeline"
+    what_worked: ""
+    what_failed: "Вызов enrichment до гарантированной персистенции или по устаревшему идентификатору"
+    guardrail: "Enrichment только после подтверждённой записи в storage; idempotency по (ingest_id, segment_id); 404 логировать с полным контекстом (id, timestamp)"
+    regression_test: "(добавить) Тест: segment complete → persist → enrichment request с тем же id возвращает не 404"
+    signpost: "Лог enrichment_404 с id и timestamp; метрика enrichment_404_count"
+    owner: ""
+    status: open
+    first_seen: "2026-03"
+    updated_at: "2026-03-14"
+
+  - incident_id: INC-004
+    signature: micro_wav_segments_under_min_size
+    title: "Микро-сегменты WAV ниже минимального размера"
+    symptoms:
+      - "На ingest попадают очень короткие WAV-файлы"
+      - "ASR или последующие этапы не рассчитаны на столь малые сегменты; шум или лишняя нагрузка"
+    root_cause: "(уточнить) VAD/буфер на edge режет сегменты слишком мелко; или порог min_duration не применяется до отправки"
+    evidence:
+      - "Размеры файлов в ingest_queue; длительность в transcriptions"
+      - "edge/listener.py, reflexio.audio (VAD, buffer), минимальная длительность"
+    what_worked: ""
+    what_failed: "Отправка сегментов без проверки min_duration/min_size на edge или на ingest"
+    guardrail: "Жёсткий min_duration (например 1–2 с) до отправки; отклонять на ingest сегменты короче порога с статусом rejected и причиной"
+    regression_test: "(добавить) Тест: сегмент короче min_duration не попадает в ingest_queue или помечен rejected"
+    signpost: "Лог/метрика segments_rejected_too_short; в ingest_queue статус rejected с reason"
+    owner: ""
+    status: open
+    first_seen: "2026-03"
+    updated_at: "2026-03-14"
+
+  - incident_id: INC-005
+    signature: unsupported_language_unknown_filters_valid_ru_audio
+    title: "ASR помечает валидную русскую речь как unsupported_language:unknown"
+    symptoms:
+      - "Нормальный голосовой сегмент доходит до ingest, но уходит в filtered с reason=unsupported_language"
+      - "На клиенте создаётся впечатление, что запись дошла, но содержимое пропало"
+    root_cause: "(уточнить) Auto language detection даёт unknown/low-probability до принудительного fallback на ru или при некоторых коротких сегментах"
+    evidence:
+      - "ingest_queue.error_code = unsupported_language"
+      - "Логи audio_processing.py с detected_lang=unknown"
+    what_worked: "Retry транскрипции с forced ru для unknown language"
+    what_failed: "Слепая фильтрация unknown языка без явного signpost и без повторной попытки"
+    guardrail: "При unknown сначала делать fallback на ru, а только потом ставить filtered/unsupported_language"
+    regression_test: "(добавить) Тест: русский сегмент с unknown detect не должен уходить в filtered без forced-ru retry"
+    signpost: "Метрика unsupported_language_count и доля unknown среди сегментов > минимального размера"
+    owner: ""
+    status: open
+    first_seen: "2026-03"
+    updated_at: "2026-03-14"

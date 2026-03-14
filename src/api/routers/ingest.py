@@ -1,16 +1,20 @@
 """Роутер для загрузки и обработки аудио."""
 import json
 import os
-from datetime import date, datetime, timedelta
+import uuid
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile
+from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from src.api.middleware.safe_middleware import get_safe_checker
 from src.core.audio_processing import process_audio_bytes, validate_safe_file_size
 from src.ingest.worker import IngestTask, get_ingest_worker
+from src.storage.ingest_persist import ensure_ingest_tables
+from src.utils.incidents import build_incident_summary, load_incident_ledger, validate_incident_ledger
 from src.utils.config import settings  # noqa: F401
 from src.utils.logging import get_logger
 from src.utils.rate_limiter import RateLimitConfig
@@ -19,6 +23,16 @@ logger = get_logger("api.ingest")
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 _REPROCESS_STALE_MINUTES = 30
+
+
+class ClientSignpostRequest(BaseModel):
+    source: str
+    route_kind: str
+    primary_url: str
+    resolved_url: str
+    decision: str
+    is_local_primary: bool = False
+    debug_build: bool = False
 
 
 def _round_maybe(value: float | None, digits: int = 1) -> float | None:
@@ -66,6 +80,60 @@ def _build_llm_circuit_breaker_state() -> dict[str, object]:
         "open_providers": open_providers,
         "half_open_providers": half_open_providers,
         "providers": providers,
+    }
+
+
+def _runtime_storage_is_golden_path() -> bool:
+    storage_parts = tuple(Path(settings.STORAGE_PATH).parts)
+    return storage_parts[-2:] == ("runtime", "storage")
+
+
+def _build_golden_path_contract(
+    *,
+    server_ok: bool,
+    transcriptions_total: int,
+    ingest_health: dict[str, object],
+    incident_status: dict[str, object],
+) -> dict[str, object]:
+    signal_by_signature = {
+        item.get("signature"): item.get("signal", {})
+        for item in incident_status.get("incidents", [])
+        if isinstance(item, dict)
+    }
+    stale_counts = ingest_health.get("stale_counts", {})
+    micro_signal = signal_by_signature.get("micro_wav_segments_under_min_size", {})
+    unsupported_signal = signal_by_signature.get(
+        "unsupported_language_unknown_filters_valid_ru_audio",
+        {},
+    )
+    routing_signal = signal_by_signature.get(
+        "android_debug_falls_back_to_remote_when_local_alive",
+        {},
+    )
+    checks = {
+        "server_ok": bool(server_ok),
+        "runtime_storage": _runtime_storage_is_golden_path(),
+        "transcription_available": transcriptions_total > 0,
+        "stale_received_ok": int(stale_counts.get("received", 0) or 0) == 0,
+        "stale_asr_pending_ok": int(stale_counts.get("asr_pending", 0) or 0) == 0,
+        "micro_wav_ok": micro_signal.get("state") != "alert",
+        "unsupported_language_ok": unsupported_signal.get("state") != "alert",
+        "android_route_signpost_observed": routing_signal.get("state") != "unknown",
+    }
+    blocking_checks = (
+        "server_ok",
+        "runtime_storage",
+        "transcription_available",
+        "stale_received_ok",
+        "stale_asr_pending_ok",
+        "micro_wav_ok",
+        "unsupported_language_ok",
+    )
+    return {
+        "storage_path": str(settings.STORAGE_PATH),
+        "checks": checks,
+        "non_blocking_checks": ["android_route_signpost_observed"],
+        "ready": all(bool(checks[name]) for name in blocking_checks),
     }
 
 
@@ -296,9 +364,178 @@ def _build_recent_day_trends(db, *, days_back: int) -> list[dict[str, object]]:
     return recent_days
 
 
+def _build_incident_signal_state(
+    *,
+    state: str,
+    value: int | None,
+    source: str,
+    details: str,
+) -> dict[str, object]:
+    return {
+        "state": state,
+        "value": value,
+        "source": source,
+        "details": details,
+    }
+
+
+def _build_incident_status_report(db, *, start_iso: str, end_iso: str) -> dict[str, object]:
+    payload = load_incident_ledger()
+    validation_errors = validate_incident_ledger(payload)
+    incidents = payload.get("incidents", [])
+
+    stale_received = db.fetchone(
+        """
+        SELECT COUNT(*) FROM ingest_queue
+        WHERE status = 'received'
+          AND created_at < datetime('now', '-30 minutes')
+        """
+    )[0]
+    missing_enrichment = db.fetchone(
+        """
+        SELECT COUNT(*)
+        FROM ingest_queue iq
+        LEFT JOIN structured_events se
+          ON se.is_current = 1
+         AND se.transcription_id IN (
+             SELECT id FROM transcriptions WHERE ingest_id = iq.id
+         )
+        WHERE iq.status = 'event_ready'
+          AND iq.created_at BETWEEN ? AND ?
+          AND se.id IS NULL
+        """,
+        (start_iso, end_iso),
+    )[0]
+    micro_segments = db.fetchone(
+        """
+        SELECT COUNT(*) FROM ingest_queue
+        WHERE created_at BETWEEN ? AND ?
+          AND file_size <= 512
+        """,
+        (start_iso, end_iso),
+    )[0]
+    unsupported_language = db.fetchone(
+        """
+        SELECT COUNT(*) FROM ingest_queue
+        WHERE created_at BETWEEN ? AND ?
+          AND error_code = 'unsupported_language'
+        """,
+        (start_iso, end_iso),
+    )[0]
+    android_routing_alerts = db.fetchone(
+        """
+        SELECT COUNT(*) FROM client_signposts
+        WHERE created_at BETWEEN ? AND ?
+          AND route_kind = 'background_ws'
+          AND debug_build = 1
+          AND is_local_primary = 1
+          AND decision = 'fallback_remote'
+        """,
+        (start_iso, end_iso),
+    )[0]
+    android_routing_ok = db.fetchone(
+        """
+        SELECT COUNT(*) FROM client_signposts
+        WHERE created_at BETWEEN ? AND ?
+          AND route_kind = 'background_ws'
+          AND debug_build = 1
+          AND is_local_primary = 1
+          AND decision IN ('local_debug_pinned', 'primary_reachable', 'primary_direct')
+        """,
+        (start_iso, end_iso),
+    )[0]
+
+    signal_map = {
+        "android_debug_falls_back_to_remote_when_local_alive": _build_incident_signal_state(
+            state="alert" if android_routing_alerts > 0 else ("ok" if android_routing_ok > 0 else "unknown"),
+            value=int(android_routing_alerts if android_routing_alerts > 0 else android_routing_ok),
+            source="client_signposts background_ws decision",
+            details="Последние debug signpost-события Android по выбору background WebSocket route.",
+        ),
+        "ingest_stuck_received_without_transcription": _build_incident_signal_state(
+            state="alert" if stale_received > 0 else "ok",
+            value=int(stale_received),
+            source="ingest_queue.status=received older than 30m",
+            details="Сколько ingest зависло в received без транскрипции дольше 30 минут.",
+        ),
+        "enrichment_404_after_segment_complete": _build_incident_signal_state(
+            state="alert" if missing_enrichment > 0 else "ok",
+            value=int(missing_enrichment),
+            source="event_ready without current structured_event",
+            details="Сколько event_ready записей сегодня не имеют текущего structured_event.",
+        ),
+        "micro_wav_segments_under_min_size": _build_incident_signal_state(
+            state="alert" if micro_segments > 0 else "ok",
+            value=int(micro_segments),
+            source="ingest_queue.file_size <= 512 bytes",
+            details="Сколько сегментов за сегодня дошло до ingest с подозрительно маленьким WAV.",
+        ),
+        "unsupported_language_unknown_filters_valid_ru_audio": _build_incident_signal_state(
+            state="alert" if unsupported_language > 0 else "ok",
+            value=int(unsupported_language),
+            source="ingest_queue.error_code = unsupported_language",
+            details="Сколько сегментов за сегодня были отфильтрованы как unsupported_language.",
+        ),
+    }
+
+    report_rows: list[dict[str, object]] = []
+    alerting = 0
+    healthy = 0
+    unknown = 0
+    for incident in incidents:
+        if not isinstance(incident, dict):
+            continue
+        signature = str(incident.get("signature", "")).strip()
+        signal = signal_map.get(
+            signature,
+            _build_incident_signal_state(
+                state="unknown",
+                value=None,
+                source="no_runtime_mapping",
+                details="Для этой сигнатуры ещё нет автоматического runtime signpost.",
+            ),
+        )
+        if signal["state"] == "alert":
+            alerting += 1
+        elif signal["state"] == "ok":
+            healthy += 1
+        else:
+            unknown += 1
+        report_rows.append(
+            {
+                "incident_id": incident.get("incident_id"),
+                "signature": signature,
+                "title": incident.get("title"),
+                "status": incident.get("status"),
+                "signpost": incident.get("signpost"),
+                "signal": signal,
+            }
+        )
+
+    summary = build_incident_summary(payload)
+    summary.update(
+        {
+            "alerting": alerting,
+            "healthy": healthy,
+            "unknown": unknown,
+            "validation_errors": len(validation_errors),
+        }
+    )
+    return {
+        "summary": summary,
+        "validation_errors": validation_errors,
+        "incidents": report_rows,
+    }
+
+
 @router.post("/audio")
 @limiter.limit(RateLimitConfig.INGEST_AUDIO_LIMIT)
-async def ingest_audio(request: Request, response: Response, file: UploadFile = File(...)):
+async def ingest_audio(
+    request: Request,
+    response: Response,
+    file: UploadFile = File(...),
+    sync: bool = Query(default=False),
+):
     """Принимает аудиофайл от edge-устройства и проводит полный unified pipeline."""
     safe_checker = get_safe_checker()
 
@@ -320,7 +557,8 @@ async def ingest_audio(request: Request, response: Response, file: UploadFile = 
                 safe_mode=os.getenv("SAFE_MODE", "audit"),
             )
 
-        sync_process = os.getenv("INGEST_SYNC_PROCESS", "0") == "1"
+        sync_process = sync or os.getenv("INGEST_SYNC_PROCESS", "0") == "1"
+        run_enrichment = os.getenv("INGEST_SYNC_PROCESS", "0") == "1" and not sync
 
         unified = await process_audio_bytes(
             content=content,
@@ -330,7 +568,7 @@ async def ingest_audio(request: Request, response: Response, file: UploadFile = 
             captured_at=request.headers.get("X-Captured-At"),
             ingest_stage="ingest_audio_received",
             transcription_stage="ingest_transcription_saved",
-            run_enrichment=sync_process,
+            run_enrichment=run_enrichment,
             fail_open=True,
             transcribe_now=sync_process,
         )
@@ -391,6 +629,16 @@ async def get_pipeline_status():
     db_path = settings.STORAGE_PATH / "reflexio.db"
     llm_circuit_breakers = _build_llm_circuit_breaker_state()
     if not db_path.exists():
+        incident_status = {
+            "summary": {"total": 0, "open": 0, "in_progress": 0, "closed": 0, "alerting": 0, "healthy": 0, "unknown": 0, "validation_errors": 0},
+            "validation_errors": [],
+            "incidents": [],
+        }
+        ingest_health = {
+            "stale_counts": {"received": 0, "asr_pending": 0},
+            "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
+            "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
+        }
         return {
             "server_ok": True,
             "transcriptions_today": 0,
@@ -402,11 +650,7 @@ async def get_pipeline_status():
             "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
             "long_thread_counts": {"total": 0, "active": 0, "resolved": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
-            "ingest_health": {
-                "stale_counts": {"received": 0, "asr_pending": 0},
-                "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
-                "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
-            },
+            "ingest_health": ingest_health,
             "llm_circuit_breakers": llm_circuit_breakers,
             "memory_health": {
                 "trusted_fraction": 0.0,
@@ -435,6 +679,13 @@ async def get_pipeline_status():
                     "stale_asr_pending": 0,
                 },
             },
+            "incident_status": incident_status,
+            "golden_path": _build_golden_path_contract(
+                server_ok=True,
+                transcriptions_total=0,
+                ingest_health=ingest_health,
+                incident_status=incident_status,
+            ),
         }
 
     db = get_reflexio_db(db_path)
@@ -590,8 +841,25 @@ async def get_pipeline_status():
             memory_health=memory_health,
             ingest_health=ingest_health,
         )
+        incident_status = _build_incident_status_report(db, start_iso=start_iso, end_iso=end_iso)
+        golden_path = _build_golden_path_contract(
+            server_ok=True,
+            transcriptions_total=total,
+            ingest_health=ingest_health,
+            incident_status=incident_status,
+        )
     except Exception as e:
         logger.warning("pipeline_status_failed", error=str(e))
+        incident_status = {
+            "summary": {"total": 0, "open": 0, "in_progress": 0, "closed": 0, "alerting": 0, "healthy": 0, "unknown": 0, "validation_errors": 0},
+            "validation_errors": [],
+            "incidents": [],
+        }
+        ingest_health = {
+            "stale_counts": {"received": 0, "asr_pending": 0},
+            "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
+            "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
+        }
         return {
             "server_ok": True,
             "transcriptions_today": 0,
@@ -603,11 +871,7 @@ async def get_pipeline_status():
             "day_thread_counts": {"total": 0, "trusted": 0, "low_confidence": 0},
             "long_thread_counts": {"total": 0, "active": 0, "resolved": 0},
             "quality_counts": {"trusted": 0, "uncertain": 0, "garbage": 0, "quarantined": 0},
-            "ingest_health": {
-                "stale_counts": {"received": 0, "asr_pending": 0},
-                "recovery_counts": {"watchdog_retryable": 0, "asr_runtime_retryable": 0},
-                "latency_ms": {"received_to_terminal_avg": None, "received_to_event_ready_avg": None},
-            },
+            "ingest_health": ingest_health,
             "llm_circuit_breakers": llm_circuit_breakers,
             "memory_health": {
                 "trusted_fraction": 0.0,
@@ -636,6 +900,13 @@ async def get_pipeline_status():
                     "stale_asr_pending": 0,
                 },
             },
+            "incident_status": incident_status,
+            "golden_path": _build_golden_path_contract(
+                server_ok=True,
+                transcriptions_total=0,
+                ingest_health=ingest_health,
+                incident_status=incident_status,
+            ),
             "_error": str(e),
         }
 
@@ -654,7 +925,101 @@ async def get_pipeline_status():
         "llm_circuit_breakers": llm_circuit_breakers,
         "memory_health": memory_health,
         "slo_state": slo_state,
+        "incident_status": incident_status,
+        "golden_path": golden_path,
     }
+
+
+@router.get("/incident-status")
+async def get_incident_status():
+    """Возвращает incident ledger с runtime signpost-сигналами."""
+    from src.utils.date_utils import resolve_date_range
+    from src.storage.db import get_reflexio_db
+
+    payload = load_incident_ledger()
+    validation_errors = validate_incident_ledger(payload)
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    if not db_path.exists():
+        return {
+            "summary": {
+                **build_incident_summary(payload),
+                "alerting": 0,
+                "healthy": 0,
+                "unknown": len(payload.get("incidents", [])),
+                "validation_errors": len(validation_errors),
+            },
+            "validation_errors": validation_errors,
+            "incidents": [
+                {
+                    "incident_id": incident.get("incident_id"),
+                    "signature": incident.get("signature"),
+                    "title": incident.get("title"),
+                    "status": incident.get("status"),
+                    "signpost": incident.get("signpost"),
+                    "signal": {
+                        "state": "unknown",
+                        "value": None,
+                        "source": "storage_missing",
+                        "details": "Локальная БД не найдена, runtime signpost недоступен.",
+                    },
+                }
+                for incident in payload.get("incidents", [])
+                if isinstance(incident, dict)
+            ],
+        }
+
+    db = get_reflexio_db(db_path)
+    dr = resolve_date_range()
+    start_iso, end_iso = dr.sql_range()
+    try:
+        return _build_incident_status_report(db, start_iso=start_iso, end_iso=end_iso)
+    except Exception as e:
+        logger.warning("incident_status_failed", error=str(e))
+        return {
+            "summary": {
+                **build_incident_summary(payload),
+                "alerting": 0,
+                "healthy": 0,
+                "unknown": len(payload.get("incidents", [])),
+                "validation_errors": len(validation_errors),
+            },
+            "validation_errors": validation_errors,
+            "incidents": [],
+            "_error": str(e),
+        }
+
+
+@router.post("/client-signpost")
+async def ingest_client_signpost(payload: ClientSignpostRequest):
+    """Сохраняет runtime signpost от мобильного клиента."""
+    from src.storage.db import get_reflexio_db
+
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    ensure_ingest_tables(db_path)
+    db = get_reflexio_db(db_path)
+    event_id = f"client-signpost-{uuid.uuid4()}"
+    created_at = datetime.now(timezone.utc).isoformat()
+    with db.transaction():
+        db.execute(
+            """
+            INSERT INTO client_signposts (
+                id, source, route_kind, primary_url, resolved_url, decision,
+                is_local_primary, debug_build, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                payload.source,
+                payload.route_kind,
+                payload.primary_url,
+                payload.resolved_url,
+                payload.decision,
+                1 if payload.is_local_primary else 0,
+                1 if payload.debug_build else 0,
+                created_at,
+            ),
+        )
+    return {"status": "ok", "id": event_id}
 
 
 @router.get("/pipeline-trends")

@@ -80,6 +80,24 @@ class TestASRProviderBase:
         assert isinstance(result, dict)
         assert "text" in result
 
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"})
+    def test_openai_provider_normalizes_verbose_language_names(self, mock_audio_file):
+        """OpenAI verbose_json может вернуть 'english'/'russian'; pipeline ждёт ISO-коды."""
+        from src.asr.providers import OpenAIWhisperProvider
+
+        with patch("openai.OpenAI") as mock_openai:
+            mock_client = MagicMock()
+            mock_client.audio.transcriptions.create.return_value = Mock(
+                text="Hello world",
+                language="english",
+                words=[],
+            )
+            mock_openai.return_value = mock_client
+            provider = OpenAIWhisperProvider()
+            result = provider.transcribe(mock_audio_file)
+
+        assert result["language"] == "en"
+
 
 class TestASRTranscription:
     """Тесты транскрибации."""

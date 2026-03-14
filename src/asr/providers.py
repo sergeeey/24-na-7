@@ -12,6 +12,24 @@ from src.utils.logging import get_logger
 logger = get_logger("asr.providers")
 
 
+_LANGUAGE_NAME_TO_CODE = {
+    "english": "en",
+    "en": "en",
+    "russian": "ru",
+    "ru": "ru",
+    "kazakh": "kk",
+    "kazakhstani": "kk",
+    "kk": "kk",
+}
+
+
+def _normalize_language_code(language: Optional[str]) -> Optional[str]:
+    if language is None:
+        return None
+    normalized = language.strip().lower()
+    return _LANGUAGE_NAME_TO_CODE.get(normalized, normalized or None)
+
+
 class ASRProvider(ABC):
     """Абстрактный базовый класс для ASR провайдеров."""
     
@@ -140,7 +158,7 @@ class OpenAIWhisperProvider(ASRProvider):
                 
                 result = {
                     "text": response.text,
-                    "language": response.language,
+                    "language": _normalize_language_code(response.language),
                     "segments": [],
                     "cluster_mode": self.cluster_mode,
                 }

@@ -7,16 +7,16 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Any, Union, Generator
+from typing import Optional, List, Dict, Any, Union, Generator, cast
 
 # ПОЧЕМУ graceful import: sqlcipher3 требует нативной libsqlcipher-dev.
 # На dev-машинах без неё — fallback на plain sqlite3 с предупреждением.
 # В production (VPS) — sqlcipher3 установлен → шифрование активно.
 try:
-    import sqlcipher3 as _sqlcipher_module
+    import sqlcipher3 as _sqlcipher_module  # type: ignore[import-not-found]
     _SQLCIPHER_AVAILABLE = True
 except ImportError:
-    _sqlcipher_module = None  # type: ignore[assignment]
+    _sqlcipher_module = None
     _SQLCIPHER_AVAILABLE = False
 from pathlib import Path
 
@@ -63,7 +63,14 @@ def get_connection(db_path: Union[str, Path], *, check_same_thread: bool = False
         # ПОЧЕМУ sqlcipher3 вместо sqlite3: AES-256-CBC шифрование всего файла БД.
         # Без ключа — бинарный мусор. Блокер для App Store.
         # key задаётся PRAGMA key СРАЗУ после connect — до любого другого запроса.
-        conn = _sqlcipher_module.connect(str(db_path), check_same_thread=check_same_thread, isolation_level=None)
+        conn = cast(
+            sqlite3.Connection,
+            _sqlcipher_module.connect(
+                str(db_path),
+                check_same_thread=check_same_thread,
+                isolation_level=None,
+            ),
+        )
         conn.row_factory = _sqlcipher_module.Row
         conn.execute(f"PRAGMA key = \"{sqlcipher_key}\"")  # nosec B608 — key from env, not user input
     else:
@@ -103,7 +110,7 @@ def get_connection(db_path: Union[str, Path], *, check_same_thread: bool = False
         logger.warning("wal_mode_not_set", expected="wal", actual=actual_mode, db_path=str(db_path))
 
     cursor.close()
-    return conn
+    return cast(sqlite3.Connection, conn)
 
 
 # ──────────────────────────────────────────────
@@ -165,7 +172,8 @@ class ReflexioDB:
 
     def fetchone(self, sql: str, params: tuple = ()) -> Optional[sqlite3.Row]:
         """Выполняет SELECT и возвращает одну строку."""
-        return self.conn.execute(sql, params).fetchone()
+        row = self.conn.execute(sql, params).fetchone()
+        return cast(Optional[sqlite3.Row], row)
 
     def fetchall(self, sql: str, params: tuple = ()) -> List[sqlite3.Row]:
         """Выполняет SELECT и возвращает все строки."""
@@ -510,7 +518,8 @@ class SupabaseBackend(DatabaseBackend):
         validate_table_name(table)
         
         response = self.client.table(table).insert(data).execute()
-        return response.data[0] if response.data else data
+        row = response.data[0] if response.data else data
+        return cast(Dict[str, Any], row)
     
     def select(self, table: str, filters: Optional[Dict[str, Any]] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Выбирает записи из Supabase."""
@@ -535,7 +544,8 @@ class SupabaseBackend(DatabaseBackend):
             query = query.limit(limit)
         
         response = query.execute()
-        return response.data if response.data else []
+        rows = response.data if response.data else []
+        return cast(List[Dict[str, Any]], rows)
     
     def update(self, table: str, id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Обновляет запись в Supabase."""
@@ -548,7 +558,8 @@ class SupabaseBackend(DatabaseBackend):
                 raise ValueError(f"Invalid column name: {key}")
         
         response = self.client.table(table).update(data).eq("id", id).execute()
-        return response.data[0] if response.data else data
+        row = response.data[0] if response.data else data
+        return cast(Dict[str, Any], row)
     
     def delete(self, table: str, id: str) -> bool:
         """Удаляет запись из Supabase."""
@@ -600,7 +611,7 @@ def get_db_backend() -> DatabaseBackend:
 # Async версии (для будущего использования)
 try:
     import asyncio  # noqa: F401
-    import asyncpg  # noqa: F401
+    import asyncpg  # type: ignore[import-untyped]  # noqa: F401
     HAS_ASYNC = True
 except ImportError:
     HAS_ASYNC = False

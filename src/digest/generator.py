@@ -1,8 +1,8 @@
 """Генератор дайджестов из транскриптов с улучшенным summarization."""
+import json
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional, Dict, List
-import json
+from typing import Any, Optional, Dict, List
 
 from src.storage.db import get_reflexio_db
 from src.utils.config import settings
@@ -200,7 +200,7 @@ class DigestGenerator:
         # resolve_date_range конвертирует "день Алматы" → UTC-диапазон.
         dr = resolve_date_range(target_date.isoformat())
         start_utc, end_utc = dr.sql_range()
-        rows = db.fetchall(f"""
+        rows = db.fetchall("""
             SELECT
                 t.id,
                 t.ingest_id,
@@ -394,7 +394,7 @@ class DigestGenerator:
             transcriptions: Список транскрипций
             use_llm: Использовать LLM для улучшенного извлечения
         """
-        facts = []
+        facts: List[Dict[str, Any]] = []
         
         # Объединяем осмысленный текст (фильтрация шума Whisper)
         full_text = self._get_meaningful_text(transcriptions)
@@ -652,7 +652,7 @@ class DigestGenerator:
         # === WOW Digest: verdict, day_map, micro_step, novelty/repetitions ===
         # ПОЧЕМУ backward compatible: все новые поля nullable, старые клиенты их игнорируют.
         wow_block = None
-        novelty_data = {"novel_topics": [], "repeated_topics": []}
+        novelty_data: dict[str, Any] = {"novel_topics": [], "repeated_topics": []}
         if transcriptions:
             try:
                 wow_block = self._generate_wow_block(transcriptions, target_date)
@@ -805,7 +805,7 @@ class DigestGenerator:
 
             # Повторы = подсчёт streak (сколько дней подряд тема встречалась)
             from datetime import timedelta
-            repeated = []
+            repeated: list[dict[str, Any]] = []
             history_by_day: dict[str, set[str]] = {}
             for days_ago in range(1, 8):
                 d = target_date - timedelta(days=days_ago)
@@ -841,7 +841,7 @@ class DigestGenerator:
                 if streak >= 3:
                     repeated.append({"topic": topic, "streak_days": streak})
 
-            repeated.sort(key=lambda x: x["streak_days"], reverse=True)
+            repeated.sort(key=lambda item: int(item.get("streak_days", 0)), reverse=True)
             return {"novel_topics": sorted(novel), "repeated_topics": repeated}
         except Exception as e:
             logger.warning("detect_novelty_repetition_failed", error=str(e))
@@ -866,6 +866,8 @@ class DigestGenerator:
 
             prompt = get_wow_digest_prompt(full_text, unique_history or None)
             client = get_llm_client()
+            if client is None:
+                return None
             result = client.call(prompt, max_tokens=1500)
 
             if result.get("error") or not result.get("text"):
@@ -880,9 +882,13 @@ class DigestGenerator:
                 raw_text = raw_text.rsplit("```", 1)[0]
             raw_text = raw_text.strip()
 
-            parsed = json.loads(raw_text)
+            parsed_raw = json.loads(raw_text)
+            if not isinstance(parsed_raw, dict):
+                logger.warning("wow_json_invalid_shape", payload_type=type(parsed_raw).__name__)
+                return None
+            parsed: dict[str, Any] = parsed_raw
             # Валидация структуры
-            wow = {}
+            wow: dict[str, Any] = {}
             if "verdict" in parsed and isinstance(parsed["verdict"], dict):
                 wow["verdict"] = {
                     "text": parsed["verdict"].get("text", ""),
@@ -1170,7 +1176,7 @@ class DigestGenerator:
         extended_enabled = getattr(settings, "EXTENDED_METRICS", False)
         if extended_enabled:
             # Получаем распределение по часам для расширенных метрик
-            hourly_dist = {}
+            hourly_dist: Dict[str, int] = {}
             for trans in transcriptions:
                 if trans.get("created_at"):
                     try:
@@ -1255,7 +1261,7 @@ class DigestGenerator:
             # Обновляем core memory с паттернами
             if facts:
                 # Анализируем паттерны (например, частота типов фактов)
-                fact_types = {}
+                fact_types: Dict[str, int] = {}
                 for fact in facts:
                     fact_type = fact.get("type", "fact")
                     fact_types[fact_type] = fact_types.get(fact_type, 0) + 1

@@ -1,20 +1,24 @@
 """Клиент для работы с Supabase."""
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING, cast
 
 from src.utils.logging import get_logger
 
 logger = get_logger("storage.supabase_client")
 
 try:
-    from supabase import create_client, Client
+    from supabase import create_client
     HAS_SUPABASE = True
 except ImportError:
     HAS_SUPABASE = False
-    Client = None
+
+if TYPE_CHECKING:
+    from supabase import Client as ClientType
+else:
+    ClientType = Any
 
 
-def get_supabase_client() -> Optional[Client]:
+def get_supabase_client() -> Optional["ClientType"]:
     """
     Создаёт и возвращает клиент Supabase.
     
@@ -31,7 +35,7 @@ def get_supabase_client() -> Optional[Client]:
         return None
     
     try:
-        return create_client(supabase_url, supabase_key)
+        return cast("ClientType", create_client(supabase_url, supabase_key))
     except Exception as e:
         logger.warning("supabase_client_create_failed", error=str(e))
         return None

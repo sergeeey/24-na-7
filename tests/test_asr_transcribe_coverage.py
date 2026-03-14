@@ -74,6 +74,27 @@ def test_get_asr_provider_creation_raises_returns_none():
         tmod._asr_provider = None
 
 
+def test_get_asr_provider_openai_uses_settings_key(monkeypatch):
+    """get_asr_provider (transcribe) должен брать OpenAI ключ из settings, не только из os.environ."""
+    import src.asr.transcribe as tmod
+
+    tmod._asr_provider = None
+    tmod._asr_provider_initialized = False
+    monkeypatch.setattr(tmod.settings, "OPENAI_API_KEY", "sk-from-settings")
+
+    try:
+        with patch("src.asr.providers.get_asr_provider", return_value=MagicMock()) as create_provider:
+            with patch("src.asr.transcribe.Path") as MockPath:
+                MockPath.return_value.exists.return_value = False
+                with patch.dict("os.environ", {"ASR_PROVIDER": "openai", "ASR_MODEL": "whisper-1"}, clear=False):
+                    provider = tmod.get_asr_provider()
+        assert provider is not None
+        assert create_provider.call_args.kwargs["api_key"] == "sk-from-settings"
+    finally:
+        tmod._asr_provider = None
+        tmod._asr_provider_initialized = False
+
+
 def test_transcribe_audio_file_not_found():
     """transcribe_audio при несуществующем файле бросает FileNotFoundError."""
     from src.asr.transcribe import transcribe_audio

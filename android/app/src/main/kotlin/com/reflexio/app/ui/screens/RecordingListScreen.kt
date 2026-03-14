@@ -78,7 +78,7 @@ private fun statusColor(status: String): Color = when (status) {
 // пользователь не должен запоминать что значит каждый цвет
 private fun statusLabel(status: String): String = when (status) {
     RecordingStatus.PROCESSED -> "Готово"
-    RecordingStatus.UPLOADED -> "Анализ"
+    RecordingStatus.UPLOADED -> "Ждём транскрипт"
     RecordingStatus.PENDING_UPLOAD -> "Отправка"
     RecordingStatus.FAILED -> "Ошибка"
     else -> "Загружено"
@@ -129,7 +129,7 @@ private fun RecordingItem(
     // он точнее. Если нет — fallback на первые 6 слов транскрипции.
     val title = when {
         hasEnrichment -> recording.summary
-        recording.status == RecordingStatus.UPLOADED -> "Идёт анализ записи"
+        recording.status == RecordingStatus.UPLOADED -> "Сегмент отправлен, ждём транскрипцию"
         else -> extractTitle(recording.transcription)
     }
     val statusText = statusLabel(recording.status)

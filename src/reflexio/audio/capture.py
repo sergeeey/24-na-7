@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Optional, Callable, List
 
 import numpy as np
-import sounddevice as sd
+import sounddevice as sd  # type: ignore[import-untyped]
 
-from reflexio.audio.vad import VADetector
-from reflexio.audio.buffer import AudioBuffer
+from .buffer import AudioBuffer
+from .vad import VADetector
 
 
 class AudioRecorder:

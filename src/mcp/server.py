@@ -101,6 +101,31 @@ def query_memory(query: str, limit: int = 5) -> str:
     results = retrieve_memory(db_path, query, top_k=limit)
 
     if not results:
+        # Fallback: fulltext поиск в structured_events
+        import sqlite3 as _sqlite3
+
+        try:
+            con = _sqlite3.connect(_db_path())
+            con.row_factory = _sqlite3.Row
+            words = [w for w in query.split() if len(w) > 2]
+            like_clause = " OR ".join(["text LIKE ?" for _ in words])
+            params = [f"%{w}%" for w in words]
+            rows = con.execute(
+                f"SELECT timestamp, text, emotions, topics, summary FROM structured_events "
+                f"WHERE is_current = 1 AND ({like_clause}) ORDER BY timestamp DESC LIMIT ?",
+                params + [limit],
+            ).fetchall()
+            con.close()
+            if rows:
+                lines = []
+                for i, r in enumerate(rows, 1):
+                    t = dict(r)
+                    lines.append(
+                        f"{i}. [{t['timestamp'][:10]}]\n   {(t.get('summary') or t.get('text',''))[:200]}"
+                    )
+                return "\n\n".join(lines)
+        except Exception:
+            pass
         return "Ничего не найдено в памяти по этому запросу."
 
     # Trace для аудируемости
@@ -150,7 +175,19 @@ def get_digest(target_date: Optional[str] = None) -> str:
     )
 
     if not row:
-        return f"Дайджест за {target_date} не найден. Возможно, за этот день не было записей."
+        # Fallback: вернуть последний доступный дайджест
+        row = db.fetchone(
+            """
+            SELECT digest_json, generated_at, status, date
+            FROM digest_cache
+            WHERE status = 'ready'
+            ORDER BY date DESC
+            LIMIT 1
+            """,
+        )
+        if not row:
+            return f"Дайджест за {target_date} не найден. Возможно, за этот день не было записей."
+        target_date = row["date"]
 
     payload = {}
     try:
@@ -189,7 +226,7 @@ def get_digest(target_date: Optional[str] = None) -> str:
             else:
                 action_lines.append(f"- {a}")
         if action_lines:
-            parts.append(f"## Намерения\n" + "\n".join(action_lines))
+            parts.append("## Намерения\n" + "\n".join(action_lines))
 
     verdict = payload.get("verdict") or {}
     if isinstance(verdict, dict) and verdict.get("text"):

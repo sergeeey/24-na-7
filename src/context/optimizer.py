@@ -10,8 +10,10 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 try:
-    from ccbm import CriticalityAnalyzer, OptimizationEngine
+    from ccbm import CriticalityAnalyzer, OptimizationEngine  # type: ignore[import-untyped]
 
     CCBM_AVAILABLE = True
 except ImportError:
@@ -22,8 +24,8 @@ try:
 except Exception:
     import logging
 
-    def get_logger(x):  # noqa: A001
-        return logging.getLogger(x)
+    def get_logger(name: str = "") -> Any:  # noqa: A001
+        return logging.getLogger(name)
 
 
 logger = get_logger("context.optimizer")
@@ -78,7 +80,7 @@ def compress_for_llm(text: str, budget: int = 4000, language: str = "ru") -> str
             spans_preserved=result.spans_preserved,
             spans_removed=result.spans_removed,
         )
-        return optimized
+        return cast(str, optimized)
 
     except Exception as e:
         # ПОЧЕМУ fallback, а не raise: сжатие — не критический путь.

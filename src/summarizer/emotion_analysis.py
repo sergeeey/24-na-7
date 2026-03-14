@@ -2,7 +2,7 @@
 Эмоциональный анализ речи.
 Reflexio v2.1 — Surpass Smart Noter Sprint
 """
-from typing import Dict
+from typing import Any, Dict
 
 from src.utils.logging import get_logger
 
@@ -22,14 +22,14 @@ class EmotionAnalyzer:
         
         if method == "audio":
             try:
-                from pyAudioAnalysis import audioSegmentation
+                from pyAudioAnalysis import audioSegmentation  # type: ignore[import-not-found]
                 self._audio_analyzer = audioSegmentation
                 logger.info("audio_emotion_analyzer_loaded")
             except ImportError:
                 logger.warning("pyAudioAnalysis not available, using text-only analysis")
                 self.method = "text"
     
-    def analyze_text(self, text: str) -> Dict[str, any]:
+    def analyze_text(self, text: str) -> Dict[str, Any]:
         """
         Анализирует эмоции в тексте через LLM.
         
@@ -86,7 +86,7 @@ class EmotionAnalyzer:
             logger.error("emotion_analysis_failed", error=str(e), fallback="rule_based")
             return self._fallback_text_analysis(text)
     
-    def _fallback_text_analysis(self, text: str) -> Dict[str, any]:
+    def _fallback_text_analysis(self, text: str) -> Dict[str, Any]:
         """Простой анализ на основе ключевых слов."""
         text_lower = text.lower()
         
@@ -129,7 +129,7 @@ class EmotionAnalyzer:
             "confidence": 0.5,
         }
     
-    def analyze_audio(self, audio_path: str) -> Dict[str, any]:
+    def analyze_audio(self, audio_path: str) -> Dict[str, Any]:
         """
         Анализирует эмоции в аудио через pyAudioAnalysis.
         
@@ -164,7 +164,7 @@ class EmotionAnalyzer:
             return {"emotions": [], "method": "error"}
 
 
-def analyze_emotions(text: str, method: str = "text") -> Dict[str, any]:
+def analyze_emotions(text: str, method: str = "text") -> Dict[str, Any]:
     """
     Удобная функция для анализа эмоций.
     

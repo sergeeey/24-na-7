@@ -40,6 +40,8 @@ import com.reflexio.app.domain.network.MirrorPortrait
 import com.reflexio.app.domain.network.ServerEndpointResolver
 import com.reflexio.app.ui.permissions.HealthPermissionGate
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
@@ -76,22 +78,32 @@ fun MirrorScreen(
     var healthGranted by remember { mutableStateOf(false) }
 
     LaunchedEffect(baseHttpUrl) {
-        portraitError = null
-        try {
-            portrait = withContext(Dispatchers.IO) { MemoryApi.fetchMirrorPortrait(baseHttpUrl) }
-        } catch (e: Exception) {
-            portraitError = ServerEndpointResolver.userFacingError(e.message, baseHttpUrl)
-        }
+        do {
+            portraitError = null
+            try {
+                portrait = withContext(Dispatchers.IO) { MemoryApi.fetchMirrorPortrait(baseHttpUrl) }
+                break
+            } catch (e: Exception) {
+                portraitError = ServerEndpointResolver.userFacingError(e.message, baseHttpUrl)
+                if (!ServerEndpointResolver.isLocalUrl(baseHttpUrl) || !isActive) break
+                delay(5_000)
+            }
+        } while (true)
     }
 
     LaunchedEffect(baseHttpUrl) {
-        insightsError = null
-        try {
-            val today = LocalDate.now().toString()
-            insights = withContext(Dispatchers.IO) { MemoryApi.fetchBalanceInsights(baseHttpUrl, today) }
-        } catch (e: Exception) {
-            insightsError = ServerEndpointResolver.userFacingError(e.message, baseHttpUrl)
-        }
+        do {
+            insightsError = null
+            try {
+                val today = LocalDate.now().toString()
+                insights = withContext(Dispatchers.IO) { MemoryApi.fetchBalanceInsights(baseHttpUrl, today) }
+                break
+            } catch (e: Exception) {
+                insightsError = ServerEndpointResolver.userFacingError(e.message, baseHttpUrl)
+                if (!ServerEndpointResolver.isLocalUrl(baseHttpUrl) || !isActive) break
+                delay(5_000)
+            }
+        } while (true)
     }
 
     // Health Connect → Room → UI

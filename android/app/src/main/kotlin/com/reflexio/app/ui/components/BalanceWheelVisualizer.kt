@@ -29,7 +29,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +57,8 @@ import okhttp3.Request
 import org.json.JSONObject
 import java.time.LocalDate
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.min
@@ -103,7 +104,6 @@ fun BalanceWheelVisualizer(
     showCenterControl: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
-    val scope = rememberCoroutineScope()
     var wheelModel by remember {
         mutableStateOf(
             WheelUiModel(
@@ -154,12 +154,20 @@ fun BalanceWheelVisualizer(
         label = "wheelAlpha",
     )
 
-    LaunchedEffect(isRecording) {
+    LaunchedEffect(baseHttpUrl, isRecording) {
         wheelModel = wheelModel.copy(state = WheelLoadState.LOADING, helperText = null)
-        scope.launch(Dispatchers.IO) {
-            val fetched = fetchWheelScores(baseHttpUrl)
-            withContext(Dispatchers.Main) { wheelModel = fetched }
-        }
+        do {
+            val fetched = withContext(Dispatchers.IO) { fetchWheelScores(baseHttpUrl) }
+            wheelModel = fetched
+            if (
+                fetched.state != WheelLoadState.ERROR ||
+                !ServerEndpointResolver.isLocalUrl(baseHttpUrl) ||
+                !isActive
+            ) {
+                break
+            }
+            delay(5_000)
+        } while (true)
     }
 
     Box(

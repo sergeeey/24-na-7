@@ -13,7 +13,7 @@ import wave
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException
 import numpy as np
@@ -114,6 +114,7 @@ TRANSCRIPT_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]{2,}")
 # ПОЧЕМУ 2 слова: одиночные слова ("угу", "ладно") — это шум, а не осмысленная речь.
 # 2 слова = минимальная единица смысла ("идём домой", "позвони маме").
 MIN_WORDS = 2
+MIN_AUDIO_DURATION_SECONDS = 0.5
 # ПОЧЕМУ 0.4: Whisper confidence < 0.4 = фоновый шум или чужая речь.
 # Тестировано: 0.3 пропускает мусор, 0.5 режет казахский (kk) с акцентом.
 MIN_LANG_PROBABILITY = 0.4
@@ -245,7 +246,7 @@ def _precheck_audio_artifact(wav_path: Path) -> tuple[bool, str | None]:
             frame_count = wf.getnframes()
             sample_rate = wf.getframerate() or settings.AUDIO_SAMPLE_RATE
             duration = frame_count / float(sample_rate or 1)
-        if duration < 0.2:
+        if duration < MIN_AUDIO_DURATION_SECONDS:
             return False, "too_short"
     except Exception:
         return False, "invalid_wav"
@@ -589,13 +590,20 @@ def is_meaningful_transcription(text: str, lang_prob: float = 1.0) -> bool:
     normalized = (text or "").strip()
     if not normalized:
         return False
-    words = normalized.split()
-    if len(words) < MIN_WORDS:
-        return False
-    if normalized.lower() in NOISE_PHRASES:
+    words = [word for word in normalized.split() if word.strip()]
+    normalized_lower = normalized.lower()
+    if normalized_lower in NOISE_PHRASES:
         return False
     if (lang_prob or 0.0) < MIN_LANG_PROBABILITY:
         return False
+    if len(words) >= MIN_WORDS:
+        return True
+    # Keep short but confident one-word utterances if they are specific enough.
+    if len(words) == 1:
+        token = words[0].strip(".,!?;:\"'()[]{}").lower()
+        if token in NOISE_PHRASES:
+            return False
+        return len(token) >= 4
     return True
 
 
@@ -604,6 +612,54 @@ def is_allowed_language(language: str | None) -> bool:
     if not language:
         return False
     return language.lower() in ALLOWED_TRANSCRIPTION_LANGUAGES
+
+
+def _preferred_forced_language() -> str:
+    if "ru" in ALLOWED_TRANSCRIPTION_LANGUAGES:
+        return "ru"
+    return sorted(ALLOWED_TRANSCRIPTION_LANGUAGES)[0]
+
+
+def _transcribe_with_allowed_language_fallback(
+    audio_path: Path,
+    *,
+    transcribe_fn: Callable[..., dict[str, Any]],
+    language: str | None,
+    ingest_id: str,
+) -> dict[str, Any]:
+    result = transcribe_fn(audio_path, language=language)
+    detected_lang = (result.get("language") or "").lower()
+    if is_allowed_language(detected_lang):
+        return result
+
+    forced_language = (language or _preferred_forced_language() or "").lower()
+    if not forced_language or forced_language == detected_lang:
+        return result
+    logger.info(
+        "transcription_retry_forced_language",
+        ingest_id=ingest_id,
+        detected_language=detected_lang or "unknown",
+        forced_language=forced_language,
+    )
+    try:
+        retried = transcribe_fn(audio_path, language=forced_language)
+    except Exception as e:
+        logger.warning(
+            "transcription_retry_forced_language_failed",
+            ingest_id=ingest_id,
+            forced_language=forced_language,
+            error=str(e),
+        )
+        return result
+
+    retry_text = (retried.get("text") or "").strip()
+    if retry_text:
+        retried["language"] = forced_language
+        retried["language_probability"] = max(
+            float(retried.get("language_probability") or 0.0),
+            MIN_LANG_PROBABILITY,
+        )
+    return retried
 
 
 def create_ingest_artifact(
@@ -837,7 +893,12 @@ def process_audio_from_artifact_sync(
 
         _asr_t0 = _time.monotonic()
         with _transcription_sync_semaphore:
-            result = transcribe_audio(file_path, language=settings.ASR_LANGUAGE)
+            result = _transcribe_with_allowed_language_fallback(
+                file_path,
+                transcribe_fn=transcribe_audio,
+                language=settings.ASR_LANGUAGE,
+                ingest_id=ingest_id,
+            )
 
         text = (result.get("text") or "").strip()
         lang_prob = result.get("language_probability", 1.0) or 1.0
@@ -1308,7 +1369,12 @@ async def process_audio_bytes(
         async with _transcription_semaphore:
             result = await loop.run_in_executor(
                 None,
-                lambda: transcriber(dest_path, language=settings.ASR_LANGUAGE),
+                lambda: _transcribe_with_allowed_language_fallback(
+                    dest_path,
+                    transcribe_fn=transcriber,
+                    language=settings.ASR_LANGUAGE,
+                    ingest_id=ingest_id,
+                ),
             )
         _asr_latency_ms = int((_time.monotonic() - _asr_t0) * 1000)
         text = (result.get("text") or "").strip()

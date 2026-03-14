@@ -19,8 +19,8 @@ try:
 except Exception:
     import logging
 
-    def get_logger(x):  # noqa: A001
-        return logging.getLogger(x)
+    def get_logger(name: str = "") -> Any:  # noqa: A001
+        return logging.getLogger(name)
 
 
 logger = get_logger("storage.ingest_persist")
@@ -458,6 +458,39 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _ensure_client_signposts_table(conn: sqlite3.Connection) -> None:
+    """Создаёт таблицу client_signposts для runtime-сигналов мобильного клиента."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS client_signposts (
+            id TEXT PRIMARY KEY,
+            source TEXT NOT NULL,
+            route_kind TEXT NOT NULL,
+            primary_url TEXT NOT NULL DEFAULT '',
+            resolved_url TEXT NOT NULL DEFAULT '',
+            decision TEXT NOT NULL DEFAULT '',
+            is_local_primary INTEGER NOT NULL DEFAULT 0,
+            debug_build INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_client_signposts_recent
+        ON client_signposts(route_kind, created_at DESC)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_client_signposts_decision
+        ON client_signposts(decision, created_at DESC)
+        """
+    )
+    conn.commit()
+
+
 def persist_structured_event(db_path: Path, event) -> Optional[str]:
     """Append-only сохранение StructuredEvent. Возвращает event.id или None.
 
@@ -586,7 +619,7 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                 index_event(db.conn, event.id, event.text)
             except Exception as _ve:
                 logger.warning("vec_index_skipped", event_id=event.id, error=str(_ve))
-        return event.id
+        return str(event.id)
     except Exception as e:
         logger.exception(
             "structured_event_persist_failed", event_id=getattr(event, "id", "?"), error=str(e)
@@ -603,6 +636,7 @@ def ensure_ingest_tables(db_path: Path) -> None:
     _ensure_recording_analyses_table(db.conn)
     _ensure_episodes_tables(db.conn)
     _ensure_structured_events_table(db.conn)
+    _ensure_client_signposts_table(db.conn)
 
 
 def write_digest_cache(
@@ -817,7 +851,7 @@ def persist_ws_transcription(
                 logger.debug(
                     "transcription_already_persisted", file_id=file_id, transcription_id=existing[0]
                 )
-                return existing[0]
+                return str(existing[0])
 
             transcription_id = str(uuid.uuid4())
             text = result.get("text") or ""

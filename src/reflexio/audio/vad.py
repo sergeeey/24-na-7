@@ -2,8 +2,10 @@
 VAD (Voice Activity Detection) на базе WebRTC VAD.
 Интеграция из Golos: детекция речи в PCM-кадрах.
 """
-import webrtcvad
-from typing import Optional
+
+from typing import Optional, cast
+
+import webrtcvad  # type: ignore[import-untyped]
 
 
 class VADetector:
@@ -30,7 +32,7 @@ class VADetector:
             True если детектирована речь.
         """
         sr = sample_rate or self.sample_rate
-        return self._vad.is_speech(pcm_frame, sr)
+        return cast(bool, self._vad.is_speech(pcm_frame, sr))
 
     def set_aggressiveness(self, aggressiveness: int) -> None:
         """Устанавливает уровень агрессивности (0-3)."""

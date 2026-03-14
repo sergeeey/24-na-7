@@ -32,7 +32,7 @@ def _is_available() -> bool:
     if _VEC_AVAILABLE is not None:
         return _VEC_AVAILABLE
     try:
-        import sqlite_vec  # noqa: F401
+        import sqlite_vec  # type: ignore[import-not-found]  # noqa: F401
         _VEC_AVAILABLE = True
     except ImportError:
         _VEC_AVAILABLE = False

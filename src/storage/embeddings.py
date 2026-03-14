@@ -133,7 +133,7 @@ def generate_embeddings(text: str, model: str = "text-embedding-3-small", use_ca
     # Optional heavy local model only by explicit flag.
     if embedding is None and os.getenv("ENABLE_LOCAL_EMBEDDINGS", "false").lower() == "true":
         try:
-            from sentence_transformers import SentenceTransformer
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
 
             model_st = SentenceTransformer("all-MiniLM-L6-v2")
             embedding = model_st.encode(text).tolist()

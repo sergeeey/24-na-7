@@ -4,6 +4,16 @@
 
 ---
 
+## Incident Memory и правило закрытия
+
+Повторяемые инциденты ведутся в **Incident Memory System**: [docs/incidents/](incidents/README.md), реестр — [ledger.yaml](incidents/ledger.yaml).
+
+**Правило:** баг не считается закрытым, пока нет хотя бы одного из: автоматический тест, runtime guard, запись в incident ledger с проверяемым signpost. После каждого инцидента — [операционный ритуал ≤10 мин](incidents/README.md#операционный-ритуал-после-инцидента-10-мин).
+
+Текущие открытые сигнатуры: `android_debug_falls_back_to_remote_when_local_alive`, `ingest_stuck_received_without_transcription`, `enrichment_404_after_segment_complete`, `micro_wav_segments_under_min_size`.
+
+---
+
 ## 📋 Быстрая диагностика
 
 ### 1. Проверка статуса системы

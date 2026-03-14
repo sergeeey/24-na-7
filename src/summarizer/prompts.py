@@ -3,7 +3,7 @@
 Reflexio 24/7 — November 2025 Integration Sprint
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from src.context.optimizer import compress_for_llm
 
@@ -54,7 +54,7 @@ def get_chain_of_density_prompt(text: str, iterations: int = 5) -> str:
     return base_prompt
 
 
-def get_few_shot_actions_prompt(text: str, examples: List[Dict[str, Any]] = None) -> str:
+def get_few_shot_actions_prompt(text: str, examples: Optional[List[Dict[str, Any]]] = None) -> str:
     """
     Few-Shot Actions промпт с примерами JSON-вывода.
 

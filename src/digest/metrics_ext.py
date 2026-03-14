@@ -282,7 +282,7 @@ def calculate_extended_metrics(
         hours = [int(h) for h in hourly_distribution.keys() if h.isdigit()]
         if hours:
             max_hour = max(hours) if hours else 23
-            density_array = [hourly_distribution.get(str(h), 0) for h in range(max_hour + 1)]
+            density_array = [float(hourly_distribution.get(str(h), 0)) for h in range(max_hour + 1)]
             hourly_var = hourly_density_variation(density_array)
     
     return {

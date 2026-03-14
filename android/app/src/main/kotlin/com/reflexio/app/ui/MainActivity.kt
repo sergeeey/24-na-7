@@ -20,12 +20,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,6 +42,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,18 +54,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.reflexio.app.data.model.Recording
+import com.reflexio.app.data.model.RecordingStatus
 import com.reflexio.app.data.db.RecordingDatabase
 import com.reflexio.app.domain.network.ServerEndpointResolver
 import com.reflexio.app.domain.services.AudioRecordingService
 import com.reflexio.app.ui.components.AmbientBackdrop
 import com.reflexio.app.ui.components.BalanceWheelVisualizer
+import com.reflexio.app.ui.components.PipelineStatusStrip
 import com.reflexio.app.ui.screens.AskScreen
 import com.reflexio.app.ui.screens.DailySummaryScreen
 import com.reflexio.app.ui.screens.MirrorScreen
 import com.reflexio.app.ui.screens.PeopleScreen
 import com.reflexio.app.ui.screens.PersonScreen
+import com.reflexio.app.ui.screens.formatRelativeTime
 import com.reflexio.app.ui.screens.SplashScreen
 import com.reflexio.app.ui.screens.ThreadsScreen
 import com.reflexio.app.ui.screens.VoiceEnrollmentScreen
@@ -189,9 +198,9 @@ fun RecordingApp(
 
     val hasPermission by hasRecordingPermission
     var recordingActive by remember(hasPermission) { mutableStateOf(hasPermission) }
-    var selectedTab by remember { mutableIntStateOf(Screen.ASK.ordinal) }
-    var showVoiceEnrollment by remember { mutableStateOf(false) }
-    var showThreads by remember { mutableStateOf(false) }
+    var selectedTab by rememberSaveable { mutableIntStateOf(Screen.ASK.ordinal) }
+    var showVoiceEnrollment by rememberSaveable { mutableStateOf(false) }
+    var showThreads by rememberSaveable { mutableStateOf(false) }
     var personDraft by rememberSaveable { mutableStateOf("") }
     var askDraft by rememberSaveable { mutableStateOf("") }
 
@@ -413,9 +422,21 @@ private fun RecordScreen(
     onToggleRecording: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Box(
+    Column(
         modifier = modifier.fillMaxSize(),
     ) {
+        PipelineStatusStrip(
+            baseHttpUrl = baseHttpUrl,
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(top = 8.dp),
+        )
+        GoldenPathStatusCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        )
         BalanceWheelVisualizer(
             baseHttpUrl = baseHttpUrl,
             isRecording = recordingActive,
@@ -425,8 +446,85 @@ private fun RecordScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.965f)
-                .align(Alignment.Center)
                 .padding(horizontal = 2.dp, vertical = 2.dp),
         )
+    }
+}
+
+@Composable
+private fun GoldenPathStatusCard(
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current.applicationContext
+    val recordingsFlow = remember(context) {
+        RecordingDatabase.getInstance(context).recordingDao().getAllRecordings()
+    }
+    val recordings by recordingsFlow.collectAsState(initial = emptyList())
+    val latest = recordings.firstOrNull()
+    val headline = latestHeadline(latest)
+    val detail = latestDetail(latest)
+    val relativeTime = latest?.createdAt?.let(::formatRelativeTime)
+
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = headline,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            relativeTime?.let {
+                Text(
+                    text = "Последний сегмент: $it",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private fun latestHeadline(recording: Recording?): String {
+    if (recording == null) {
+        return "Скажите короткую фразу, чтобы запустить golden path"
+    }
+    return when (recording.status) {
+        RecordingStatus.PROCESSED -> "Транскрипт получен"
+        RecordingStatus.UPLOADED -> "Сегмент принят сервером"
+        RecordingStatus.PENDING_UPLOAD -> "Сегмент ждёт отправки"
+        RecordingStatus.FAILED -> "Сегмент не обработан"
+        else -> "Последний сегмент"
+    }
+}
+
+private fun latestDetail(recording: Recording?): String {
+    if (recording == null) {
+        return "Нужен один новый речевой сегмент: запись, отправка и транскрипт появятся здесь без enrichment."
+    }
+    val transcript = recording.transcription?.trim().orEmpty()
+    if (transcript.isNotBlank()) {
+        return transcript
+    }
+    return when (recording.status) {
+        RecordingStatus.UPLOADED ->
+            "Сегмент отправлен на локальный сервер, ждём транскрипцию."
+        RecordingStatus.PENDING_UPLOAD ->
+            "Запись сохранена локально и будет отправлена автоматически."
+        RecordingStatus.FAILED ->
+            "Сегмент не дошёл до транскрипции. Проверьте локальный сервер и повторите запись."
+        else ->
+            "Ждём первый транскрипт."
     }
 }

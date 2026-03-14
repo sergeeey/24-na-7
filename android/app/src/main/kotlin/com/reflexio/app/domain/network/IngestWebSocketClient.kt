@@ -27,6 +27,7 @@ data class IngestResult(
     val transcription: String?,
     val fileId: String?,
     val ackStatus: String?,
+    val terminalStatus: String? = null,
 )
 
 /**
@@ -205,7 +206,47 @@ class IngestWebSocketClient(
                     )
                 }
             }
-            Result.success(IngestResult(transcription = null, fileId = fileId, ackStatus = ackStatus))
+            val followUpResult = withTimeoutOrNull(25_000L) { ch.receiveCatching() }
+            val followUp = followUpResult?.getOrNull()
+            when (followUp?.optString("type")) {
+                "transcription" -> {
+                    onStage?.invoke("transcribed")
+                    Result.success(
+                        IngestResult(
+                            transcription = followUp.optString("text", "").ifEmpty { null },
+                            fileId = followUp.optString("file_id", "").ifEmpty { fileId },
+                            ackStatus = ackStatus,
+                            terminalStatus = "transcribed",
+                        )
+                    )
+                }
+                "filtered" -> {
+                    onStage?.invoke("filtered")
+                    Result.success(
+                        IngestResult(
+                            transcription = null,
+                            fileId = followUp.optString("file_id", "").ifEmpty { fileId },
+                            ackStatus = ackStatus,
+                            terminalStatus = "filtered",
+                        )
+                    )
+                }
+                "error" -> {
+                    Result.failure(
+                        RuntimeException(followUp.optString("message", "Audio processing error"))
+                    )
+                }
+                else -> {
+                    Result.success(
+                        IngestResult(
+                            transcription = null,
+                            fileId = fileId,
+                            ackStatus = ackStatus,
+                            terminalStatus = null,
+                        )
+                    )
+                }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "sendSegment failed", e)
             Result.failure(e)

@@ -10,6 +10,14 @@ object ServerEndpointResolver {
     private const val TAG = "ServerEndpointResolver"
     private val localHosts = setOf("localhost", "127.0.0.1", "10.0.2.2")
 
+    data class RouteResolution(
+        val primaryUrl: String,
+        val resolvedUrl: String,
+        val decision: String,
+        val isLocalPrimary: Boolean,
+        val debugBuild: Boolean,
+    )
+
     fun isEmulator(): Boolean =
         Build.FINGERPRINT.contains("generic")
                 || Build.MODEL.contains("sdk", ignoreCase = true)
@@ -32,29 +40,70 @@ object ServerEndpointResolver {
         url.replace("ws://", "http://").replace("wss://", "https://")
 
     fun resolveUiHttpBaseUrl(): String {
-        val primary = primaryHttpUrl()
-        if (!shouldFallback(primary)) {
-            Log.d(TAG, "resolveUiHttpBaseUrl primary=$primary fallback=skip")
-            return primary
-        }
-        if (isReachable(primary)) {
-            Log.d(TAG, "resolveUiHttpBaseUrl primary=$primary fallback=not_needed")
-            return primary
-        }
-        val resolved = fallbackHttpUrl() ?: primary
-        Log.d(TAG, "resolveUiHttpBaseUrl primary=$primary fallback=$resolved")
-        return resolved
+        return resolveUiHttpRoute().resolvedUrl
     }
 
     fun resolveBackgroundWsUrl(): String {
-        val primary = primaryWsUrl()
-        if (!shouldFallback(wsToHttp(primary))) {
-            Log.d(TAG, "resolveBackgroundWsUrl primary=$primary fallback=skip")
-            return primary
+        return resolveBackgroundWsRoute().resolvedUrl
+    }
+
+    fun resolveUiHttpRoute(): RouteResolution {
+        return resolveRoute(
+            primary = primaryHttpUrl(),
+            fallback = fallbackHttpUrl(),
+            logLabel = "resolveUiHttpBaseUrl",
+        )
+    }
+
+    fun resolveBackgroundWsRoute(): RouteResolution {
+        return resolveRoute(
+            primary = primaryWsUrl(),
+            fallback = fallbackWsUrl(),
+            logLabel = "resolveBackgroundWsUrl",
+        )
+    }
+
+    private fun resolveRoute(primary: String, fallback: String?, logLabel: String): RouteResolution {
+        val localPrimary = shouldFallback(wsToHttp(primary))
+        if (!localPrimary) {
+            Log.d(TAG, "$logLabel primary=$primary fallback=skip")
+            return RouteResolution(
+                primaryUrl = primary,
+                resolvedUrl = primary,
+                decision = "primary_direct",
+                isLocalPrimary = false,
+                debugBuild = BuildConfig.DEBUG,
+            )
         }
-        val resolved = fallbackWsUrl() ?: primary
-        Log.d(TAG, "resolveBackgroundWsUrl primary=$primary fallback=$resolved")
-        return resolved
+        if (shouldPinLocalDebugRoute()) {
+            Log.w(TAG, "$logLabel primary=$primary fallback=disabled_for_debug_local")
+            return RouteResolution(
+                primaryUrl = primary,
+                resolvedUrl = primary,
+                decision = "local_debug_pinned",
+                isLocalPrimary = true,
+                debugBuild = BuildConfig.DEBUG,
+            )
+        }
+        if (isReachable(wsToHttp(primary))) {
+            Log.d(TAG, "$logLabel primary=$primary fallback=not_needed")
+            return RouteResolution(
+                primaryUrl = primary,
+                resolvedUrl = primary,
+                decision = "primary_reachable",
+                isLocalPrimary = true,
+                debugBuild = BuildConfig.DEBUG,
+            )
+        }
+        val resolved = fallback ?: primary
+        Log.d(TAG, "$logLabel primary=$primary fallback=$resolved")
+        return RouteResolution(
+            primaryUrl = primary,
+            resolvedUrl = resolved,
+            decision = if (resolved == primary) "primary_unreachable_no_fallback" else "fallback_remote",
+            isLocalPrimary = true,
+            debugBuild = BuildConfig.DEBUG,
+        )
     }
 
     fun resolveBackgroundHttpUrl(): String = wsToHttp(resolveBackgroundWsUrl())
@@ -77,6 +126,9 @@ object ServerEndpointResolver {
         }
     }
 
+    fun isLocalUrl(url: String): Boolean =
+        url.toHttpUrlOrNull()?.host in localHosts
+
     fun userFacingError(message: String?, baseHttpUrl: String): String {
         val raw = message?.trim().orEmpty()
         if (raw.isBlank()) return "Не удалось связаться с сервером."
@@ -88,7 +140,7 @@ object ServerEndpointResolver {
                     || raw.contains("connection refused", ignoreCase = true)
                     || raw.contains("timeout", ignoreCase = true) -> {
                 if (host != null && host in localHosts) {
-                    "Локальный сервер недоступен. Проверь USB/adb reverse или переключись на боевой сервер."
+                    "Локальный сервер недоступен. Проверь USB/adb reverse и что локальный backend запущен."
                 } else {
                     "Нет соединения с сервером. Проверь сеть и попробуй ещё раз."
                 }
@@ -99,6 +151,9 @@ object ServerEndpointResolver {
 
     private fun shouldFallback(httpUrl: String): Boolean =
         httpUrl.toHttpUrlOrNull()?.host in localHosts
+
+    private fun shouldPinLocalDebugRoute(): Boolean =
+        BuildConfig.DEBUG && !isEmulator() && shouldFallback(primaryHttpUrl())
 
     private fun isReachable(httpUrl: String): Boolean {
         return try {

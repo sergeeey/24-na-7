@@ -29,7 +29,7 @@ def get_encoder():
         with _lock:
             if _encoder is None:
                 try:
-                    from resemblyzer import VoiceEncoder  # type: ignore[import]
+                    from resemblyzer import VoiceEncoder  # type: ignore[import-not-found]
 
                     _encoder = VoiceEncoder()
                     logger.info("voice_encoder_loaded", model="resemblyzer_GE2E")
@@ -59,7 +59,7 @@ def embed_audio(audio_float32: np.ndarray, sample_rate: int = 16000) -> np.ndarr
     encoder = get_encoder()
 
     try:
-        from resemblyzer import preprocess_wav  # type: ignore[import]
+        from resemblyzer import preprocess_wav
 
         wav = preprocess_wav(audio_float32, source_sr=sample_rate)
         embedding: np.ndarray = encoder.embed_utterance(wav)

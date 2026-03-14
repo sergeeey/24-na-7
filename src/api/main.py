@@ -230,6 +230,8 @@ async def root():
             "transcribe": "/asr/transcribe",
             "status": "/ingest/status/{file_id}",
             "pipeline_status": "/ingest/pipeline-status",
+            "incident_status": "/ingest/incident-status",
+            "client_signpost": "POST /ingest/client-signpost",
             "digest_today": "/digest/today",
             "digest_date": "/digest/{date}",
             "density_analysis": "/digest/{date}/density",

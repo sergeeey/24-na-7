@@ -29,6 +29,7 @@ import com.reflexio.app.data.model.RecordingStatus
 import com.reflexio.app.data.model.TransportStatus
 import com.reflexio.app.data.model.UploadRetryPolicy
 import com.reflexio.app.debug.DebugLog
+import com.reflexio.app.domain.network.ClientSignpostApi
 import com.reflexio.app.domain.network.EnrichmentApiClient
 import com.reflexio.app.domain.network.IngestWebSocketClient
 import com.reflexio.app.domain.network.ServerEndpointResolver
@@ -72,11 +73,14 @@ class AudioRecordingService : Service() {
     // вместо нового на каждый 3-секундный сегмент. Sequential sending через Mutex внутри.
     @Volatile
     private var wsClient: IngestWebSocketClient? = null
+    @Volatile
+    private var wsClientBaseUrl: String? = null
 
     companion object {
         private const val SAMPLE_RATE = 16000
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        private const val MIN_SEGMENT_SAMPLES = SAMPLE_RATE / 2
         private const val TAG = "AudioRecordingService"
         private const val CHANNEL_ID = "reflexio_recording"
         private const val NOTIFICATION_ID = 1001
@@ -115,12 +119,21 @@ class AudioRecordingService : Service() {
         }
         startForeground(NOTIFICATION_ID, createForegroundNotification())
         acquireWakeLock()
-        val baseUrl = ServerEndpointResolver.resolveBackgroundWsUrl()
+        val backgroundRoute = ServerEndpointResolver.resolveBackgroundWsRoute()
+        val baseUrl = backgroundRoute.resolvedUrl
         Log.d(TAG, "Creating wsClient with baseUrl=$baseUrl")
         wsClient = IngestWebSocketClient(
             baseUrl = baseUrl,
             apiKey = ServerEndpointResolver.apiKeyForUrl(ServerEndpointResolver.wsToHttp(baseUrl)),
         )
+        wsClientBaseUrl = baseUrl
+        scope.launch(Dispatchers.IO) {
+            ClientSignpostApi.postRouteResolution(
+                source = "AudioRecordingService.onStartCommand",
+                routeKind = "background_ws",
+                route = backgroundRoute,
+            )
+        }
         startRecording()
         scope.launch {
             cleanupOrphanSegments()
@@ -241,6 +254,12 @@ class AudioRecordingService : Service() {
     }
 
     private suspend fun persistSegment(file: File, samples: ShortArray) {
+        if (samples.size < MIN_SEGMENT_SAMPLES) {
+            Log.d(TAG, "Dropping short segment: samples=${samples.size}")
+            PipelineDiagnostics.setStage(this, "filtered")
+            PipelineDiagnostics.setError(this, "segment_too_short")
+            return
+        }
         val recordingId = insertSegmentRecording(file, samples.size) ?: return
         try {
             writeSegmentToWav(samples, file)
@@ -348,7 +367,7 @@ class AudioRecordingService : Service() {
     }
 
     private suspend fun sendAudioToServer(file: File, recordingId: Long) {
-        val client = wsClient ?: return
+        val client = getOrCreateWsClient()
         PipelineDiagnostics.setStage(this, "uploaded")
         val currentRecording = withContext(Dispatchers.IO) { recordingDao?.getById(recordingId) }
         val result = client.sendSegment(
@@ -363,10 +382,11 @@ class AudioRecordingService : Service() {
             val rec = dao.getById(recordingId) ?: return@withContext
             if (result.isSuccess) {
                 val ingestResult = result.getOrNull()
-                val nextStatus = if (ingestResult?.fileId != null) {
-                    RecordingStatus.UPLOADED
-                } else {
-                    RecordingStatus.PROCESSED
+                val nextStatus = when {
+                    !ingestResult?.transcription.isNullOrBlank() -> RecordingStatus.PROCESSED
+                    ingestResult?.terminalStatus == "filtered" -> RecordingStatus.PROCESSED
+                    ingestResult?.fileId != null -> RecordingStatus.UPLOADED
+                    else -> RecordingStatus.PROCESSED
                 }
                 dao.update(
                     rec.copy(
@@ -380,11 +400,16 @@ class AudioRecordingService : Service() {
                 if (!ingestResult?.transcription.isNullOrBlank()) {
                     PipelineDiagnostics.setStage(this@AudioRecordingService, "transcribed")
                 }
+                if (ingestResult?.terminalStatus == "filtered") {
+                    PipelineDiagnostics.setStage(this@AudioRecordingService, "filtered")
+                }
                 PipelineDiagnostics.clearError(this@AudioRecordingService)
                 runCatching { if (file.exists()) file.delete() }
                 PipelineDiagnostics.setStage(this@AudioRecordingService, "deleted")
-                ingestResult?.fileId?.let { fileId ->
-                    scope.launch { fetchEnrichment(recordingId, fileId) }
+                if (ingestResult?.terminalStatus != "filtered") {
+                    ingestResult?.fileId?.let { fileId ->
+                        scope.launch { fetchEnrichment(recordingId, fileId) }
+                    }
                 }
             } else {
                 PipelineDiagnostics.setStage(this@AudioRecordingService, "error")
@@ -434,6 +459,34 @@ class AudioRecordingService : Service() {
                 }
                 UploadWorker.enqueue(this@AudioRecordingService)
             }
+        }
+    }
+
+    private fun getOrCreateWsClient(): IngestWebSocketClient {
+        val backgroundRoute = ServerEndpointResolver.resolveBackgroundWsRoute()
+        val resolvedBaseUrl = backgroundRoute.resolvedUrl
+        val current = wsClient
+        if (current != null && wsClientBaseUrl == resolvedBaseUrl) {
+            return current
+        }
+
+        current?.disconnect()
+        Log.d(TAG, "Refreshing wsClient with baseUrl=$resolvedBaseUrl")
+        scope.launch(Dispatchers.IO) {
+            ClientSignpostApi.postRouteResolution(
+                source = "AudioRecordingService.getOrCreateWsClient",
+                routeKind = "background_ws",
+                route = backgroundRoute,
+            )
+        }
+        return IngestWebSocketClient(
+            baseUrl = resolvedBaseUrl,
+            apiKey = ServerEndpointResolver.apiKeyForUrl(
+                ServerEndpointResolver.wsToHttp(resolvedBaseUrl),
+            ),
+        ).also {
+            wsClient = it
+            wsClientBaseUrl = resolvedBaseUrl
         }
     }
 
@@ -530,6 +583,7 @@ class AudioRecordingService : Service() {
         // OkHttp thread pool не завершается, утекает TCP соединение.
         wsClient?.disconnect()
         wsClient = null
+        wsClientBaseUrl = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         runBlocking {

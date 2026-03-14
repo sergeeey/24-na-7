@@ -67,10 +67,11 @@ class UploadWorker(
             }
             if (result.isSuccess) {
                 val ingest = result.getOrNull()
-                val nextStatus = if (ingest?.fileId != null) {
-                    RecordingStatus.UPLOADED
-                } else {
-                    RecordingStatus.PROCESSED
+                val nextStatus = when {
+                    !ingest?.transcription.isNullOrBlank() -> RecordingStatus.PROCESSED
+                    ingest?.terminalStatus == "filtered" -> RecordingStatus.PROCESSED
+                    ingest?.fileId != null -> RecordingStatus.UPLOADED
+                    else -> RecordingStatus.PROCESSED
                 }
                 recordingDao.update(
                     rec.copy(
@@ -84,11 +85,16 @@ class UploadWorker(
                 if (!ingest?.transcription.isNullOrBlank()) {
                     PipelineDiagnostics.setStage(applicationContext, "transcribed")
                 }
+                if (ingest?.terminalStatus == "filtered") {
+                    PipelineDiagnostics.setStage(applicationContext, "filtered")
+                }
                 PipelineDiagnostics.clearError(applicationContext)
                 runCatching { if (file.exists()) file.delete() }
                 PipelineDiagnostics.setStage(applicationContext, "deleted")
-                ingest?.fileId?.let { fileId ->
-                    fetchEnrichment(recordingDao, item.recordingId, fileId)
+                if (ingest?.terminalStatus != "filtered") {
+                    ingest?.fileId?.let { fileId ->
+                        fetchEnrichment(recordingDao, item.recordingId, fileId)
+                    }
                 }
             } else {
                 val nextRetries = item.retryCount + 1
