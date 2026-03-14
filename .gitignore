@@ -116,7 +116,12 @@ android/nul
 # Runtime database (not source control)
 src/storage/reflexio.db
 reflexio.db
+*.db-shm
+*.db-wal
 *.db.bak.*
+runtime/
+tmp-*.png
+tmp-*.xml
 bandit-report.json
 tmp_phone_check/
 tmp_phone_check_live/
