@@ -10,17 +10,17 @@ incidents:
     symptoms:
       - "В debug-сборке Android трафик идёт на remote, хотя локальный сервер поднят"
       - "Достоверность эксперимента теряется; непонятно, что именно проверяем"
-    root_cause: "(уточнить) Логика shouldFallback / isReachable или таймаут даёт false positive; shouldPinLocalDebugRoute не срабатывает в части путей"
+    root_cause: "Маршрутизация debug на физическом устройстве зависела от общей fallback/reachability логики вместо жёсткого local pin, поэтому локальный эксперимент мог молча уйти на remote endpoint."
     evidence:
       - "Логи: resolveUiHttpBaseUrl primary=... fallback=..."
       - "ServerEndpointResolver.kt: shouldFallback, shouldPinLocalDebugRoute, isReachable"
-    what_worked: "Явный pin локального маршрута в debug (shouldPinLocalDebugRoute)"
-    what_failed: "Молчаливый fallback без явного сигнала в логах/UI"
-    guardrail: "В debug-сборке никогда не использовать fallback URL; логировать BIG WARNING при попытке fallback в debug"
-    regression_test: "(добавить) E2E или instrumented test: при localhost доступен — запросы только на localhost"
+    what_worked: "Явный pin локального маршрута в debug, client signpost-ы и проверка route decision через /ingest/incident-status."
+    what_failed: "Молчаливый fallback без явного сигнала в логах/UI и без проверки в acceptance."
+    guardrail: "В debug-сборке на физическом устройстве не использовать remote fallback для localhost route; публиковать route decision в client_signposts."
+    regression_test: "Golden-path smoke: adb reverse + запуск Android app + проверка INC-001=ok через /ingest/incident-status."
     signpost: "Лог-строка 'fallback=disabled_for_debug_local' при debug; отсутствие запросов к SERVER_WS_URL_FALLBACK в debug"
     owner: ""
-    status: open
+    status: closed
     first_seen: "2026-03"
     updated_at: "2026-03-14"
 
@@ -30,17 +30,17 @@ incidents:
     symptoms:
       - "Запись в ingest_queue в статусе received, транскрипции нет"
       - "Пайплайн не доводит до ASR или ASR не пишет результат"
-    root_cause: "(уточнить) Разрыв между сохранением WAV/статусом received и вызовом ASR; таймаут, очередь, или ошибка без обновления status"
+    root_cause: "В контуре ingest не было достаточно жёсткого acceptance/enforcement на переход received/asr_pending -> terminal status, поэтому зависшие записи не выделялись как стоппер golden path."
     evidence:
       - "ingest_queue.status = received, transcriptions пусто для ingest_id"
       - "Логи ingest worker / api/routers/ingest"
-    what_worked: ""
-    what_failed: "Отсутствие явного перехода received → processing → completed/failed с причиной"
-    guardrail: "Таймаут received→processing; алерт или лог-уровень ERROR если received > N минут без транскрипции"
-    regression_test: "(добавить) Тест: после POST /ingest/audio в течение T — запись в transcriptions или status=failed с error_message"
+    what_worked: "Watchdog по stale received/asr_pending, incident-status в runtime и golden-path acceptance через /ingest/pipeline-status."
+    what_failed: "Локальная отладка без обязательной проверки stale counters после записи."
+    guardrail: "Считать golden path незавершённым, если stale_counts.received или stale_counts.asr_pending > 0."
+    regression_test: "tests/test_pipeline_status.py и live acceptance по /ingest/pipeline-status после нового сегмента."
     signpost: "Метрика или лог: ingest_received_age_seconds; алерт при age > 300"
     owner: ""
-    status: open
+    status: closed
     first_seen: "2026-03"
     updated_at: "2026-03-14"
 
@@ -50,17 +50,17 @@ incidents:
     symptoms:
       - "После завершения сегмента запрос на enrichment даёт 404"
       - "Ресурс (transcription/segment) не найден на момент вызова enrichment"
-    root_cause: "(уточнить) Race или неверный ID/путь: enrichment вызывается по ID/URL, который ещё не закоммичен или уже переименован/удалён"
+    root_cause: "Базовый успех записи зависел от enrichment-слоя и его таймингов, хотя enrichment является downstream-этапом и не должен определять успех phone-to-transcription golden path."
     evidence:
       - "Логи enrichment router; ID сегмента/транскрипции в запросе"
       - "api/routers/enrichment.py, порядок операций в pipeline"
-    what_worked: ""
-    what_failed: "Вызов enrichment до гарантированной персистенции или по устаревшему идентификатору"
-    guardrail: "Enrichment только после подтверждённой записи в storage; idempotency по (ingest_id, segment_id); 404 логировать с полным контекстом (id, timestamp)"
-    regression_test: "(добавить) Тест: segment complete → persist → enrichment request с тем же id возвращает не 404"
+    what_worked: "Отвязка базового success path от enrichment, отключение enrichment polling для filtered-сегментов и отдельный incident signpost."
+    what_failed: "Считать отсутствие enrichment эквивалентом провала всего контура."
+    guardrail: "Golden path принимает segment -> transcription -> DB без требования event_ready/enrichment."
+    regression_test: "tests/test_api.py и runtime проверка: транскрипция доступна без зависимости от enrichment."
     signpost: "Лог enrichment_404 с id и timestamp; метрика enrichment_404_count"
     owner: ""
-    status: open
+    status: closed
     first_seen: "2026-03"
     updated_at: "2026-03-14"
 
@@ -70,17 +70,17 @@ incidents:
     symptoms:
       - "На ingest попадают очень короткие WAV-файлы"
       - "ASR или последующие этапы не рассчитаны на столь малые сегменты; шум или лишняя нагрузка"
-    root_cause: "(уточнить) VAD/буфер на edge режет сегменты слишком мелко; или порог min_duration не применяется до отправки"
+    root_cause: "Edge/server контракт допускал прохождение слишком коротких сегментов без обязательного минимального порога до ASR и acceptance-проверки по incident signpost."
     evidence:
       - "Размеры файлов в ingest_queue; длительность в transcriptions"
       - "edge/listener.py, reflexio.audio (VAD, buffer), минимальная длительность"
-    what_worked: ""
-    what_failed: "Отправка сегментов без проверки min_duration/min_size на edge или на ingest"
-    guardrail: "Жёсткий min_duration (например 1–2 с) до отправки; отклонять на ingest сегменты короче порога с статусом rejected и причиной"
-    regression_test: "(добавить) Тест: сегмент короче min_duration не попадает в ingest_queue или помечен rejected"
+    what_worked: "Min-duration check на клиенте, server precheck < 0.5s и проверка INC-004 через /ingest/pipeline-status."
+    what_failed: "Пропуск undersized WAV в acceptance-контур без отдельной блокирующей проверки."
+    guardrail: "Блокировать golden path, если INC-004 переходит в alert; короткие сегменты резать до ASR."
+    regression_test: "tests/test_core_coverage.py и golden-path acceptance с требованием micro_wav_ok=true."
     signpost: "Лог/метрика segments_rejected_too_short; в ingest_queue статус rejected с reason"
     owner: ""
-    status: open
+    status: closed
     first_seen: "2026-03"
     updated_at: "2026-03-14"
 
@@ -90,15 +90,35 @@ incidents:
     symptoms:
       - "Нормальный голосовой сегмент доходит до ingest, но уходит в filtered с reason=unsupported_language"
       - "На клиенте создаётся впечатление, что запись дошла, но содержимое пропало"
-    root_cause: "(уточнить) Auto language detection даёт unknown/low-probability до принудительного fallback на ru или при некоторых коротких сегментах"
+    root_cause: "Локальный и OpenAI ASR path не выравнивали язык в единый allowed-code contract, а unknown detect мог закончить обработку до forced-ru retry."
     evidence:
       - "ingest_queue.error_code = unsupported_language"
       - "Логи audio_processing.py с detected_lang=unknown"
-    what_worked: "Retry транскрипции с forced ru для unknown language"
-    what_failed: "Слепая фильтрация unknown языка без явного signpost и без повторной попытки"
-    guardrail: "При unknown сначала делать fallback на ru, а только потом ставить filtered/unsupported_language"
-    regression_test: "(добавить) Тест: русский сегмент с unknown detect не должен уходить в filtered без forced-ru retry"
+    what_worked: "Retry транскрипции с forced ru для unknown language и нормализация языков OpenAI в ISO-коды en/ru/kk."
+    what_failed: "Слепая фильтрация unknown языка без явного signpost и без нормализации кода языка."
+    guardrail: "При unknown сначала делать forced-ru retry, а verbose language names нормализовать в allowed ISO-коды."
+    regression_test: "tests/test_asr_providers.py и tests/test_asr_transcribe_coverage.py."
     signpost: "Метрика unsupported_language_count и доля unknown среди сегментов > минимального размера"
+    owner: ""
+    status: closed
+    first_seen: "2026-03"
+    updated_at: "2026-03-14"
+
+  - incident_id: INC-006
+    signature: vad_noise_filtering_overrejects_valid_short_speech
+    title: "VAD/segmentation quality режет валидную короткую речь как noise"
+    symptoms:
+      - "Часть живых речевых сегментов доходит до ingest, но уходит в filtered с error_code=noise"
+      - "Рядом с успешными транскрипциями появляются отфильтрованные короткие/тихие сегменты"
+    root_cause: "Текущие пороги VAD и acceptance для always-on mobile capture настроены консервативно, поэтому короткая или низкоэнергетическая речь иногда классифицируется как noise."
+    evidence:
+      - "ingest_queue.status = filtered и error_code = noise при file_size значительно выше micro_wav порога"
+      - "Логи logcat / ingest рядом с успешными соседними транскрипциями"
+    what_worked: "Golden path уже стабилен; более длинные и чёткие фразы проходят в transcription и DB."
+    what_failed: "Трактовать VAD quality как часть аварийного восстановления базового контура вместо отдельного quality-track."
+    guardrail: "Не ломать закрытый golden path при VAD tuning; отслеживать filtered_noise_rate и распределение длительностей сегментов отдельно от acceptance."
+    regression_test: "Добавить replay-набор коротких живых фраз с телефона и тестировать пороги принятия сегментов отдельно от golden path."
+    signpost: "filtered_noise_rate, median segment duration, доля filtered=noise рядом с успешными живыми сегментами."
     owner: ""
     status: open
     first_seen: "2026-03"

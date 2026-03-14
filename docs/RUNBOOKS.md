@@ -10,7 +10,18 @@
 
 **Правило:** баг не считается закрытым, пока нет хотя бы одного из: автоматический тест, runtime guard, запись в incident ledger с проверяемым signpost. После каждого инцидента — [операционный ритуал ≤10 мин](incidents/README.md#операционный-ритуал-после-инцидента-10-мин).
 
-Текущие открытые сигнатуры: `android_debug_falls_back_to_remote_when_local_alive`, `ingest_stuck_received_without_transcription`, `enrichment_404_after_segment_complete`, `micro_wav_segments_under_min_size`.
+**Golden path closed (2026-03-14):**
+
+> Android device successfully sends live speech segments to local backend, segments are transcribed and persisted, and the app/backend confirm successful end-to-end flow in debug-local mode.
+
+Definition of done для текущего этапа считается закрытым:
+
+- `phone -> localhost backend -> transcription -> DB` проходит живым E2E
+- `received` и `asr_pending` не висят
+- debug-local routing подтверждён signpost-ами и `adb reverse`
+- `golden_path.ready = true` подтверждён через `/ingest/pipeline-status`
+
+Текущий активный improvement-track: `vad_noise_filtering_overrejects_valid_short_speech`.
 
 ---
 

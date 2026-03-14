@@ -50,6 +50,22 @@
 
 ---
 
+## Текущий статус этапа
+
+На `2026-03-14` базовый golden path текущей фазы считается закрытым:
+
+> Android device successfully sends live speech segments to local backend, segments are transcribed and persisted, and the app/backend confirm successful end-to-end flow in debug-local mode.
+
+Это означает:
+
+- основной маршрут `phone -> localhost backend -> transcription -> DB` подтверждён живым E2E;
+- повторяющиеся системные блокеры маршрута (`fallback`, `stuck received`, `unsupported_language`, `micro_wav`) больше не считаются текущим stop-the-line;
+- дальнейшая работа переносится в отдельные tracks качества, а не в аварийное восстановление основного контура.
+
+Активный следующий track: `vad_noise_filtering_overrejects_valid_short_speech`.
+
+---
+
 ## Зачем это нужно
 
 - **Observability есть, debugging есть, institutional learning не было.**  
