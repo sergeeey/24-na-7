@@ -53,6 +53,7 @@ services:
       #   Экономит 10-15 мин и место на диске при каждом деплое.
       - ./src:/app/src
       - ./config:/app/config
+      - ./docs:/app/docs
     restart: unless-stopped
     deploy:
       resources:

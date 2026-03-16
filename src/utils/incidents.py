@@ -13,8 +13,10 @@ _PLACEHOLDER_PREFIXES = ("(уточнить)", "(добавить)", "todo", "tb
 
 
 def load_incident_ledger(path: Path | None = None) -> dict[str, Any]:
-    """Загружает incident ledger из YAML."""
+    """Загружает incident ledger из YAML. Возвращает пустой dict если файл не найден."""
     ledger_path = path or LEDGER_PATH
+    if not ledger_path.exists():
+        return {}
     with ledger_path.open("r", encoding="utf-8") as handle:
         payload = yaml.safe_load(handle) or {}
     if not isinstance(payload, dict):
@@ -77,9 +79,7 @@ def validate_incident_ledger(payload: dict[str, Any]) -> list[str]:
             seen_signatures.add(signature)
 
         if status not in ALLOWED_INCIDENT_STATUSES:
-            errors.append(
-                f"{label}.status must be one of {sorted(ALLOWED_INCIDENT_STATUSES)}"
-            )
+            errors.append(f"{label}.status must be one of {sorted(ALLOWED_INCIDENT_STATUSES)}")
 
         for list_key in ("symptoms", "evidence"):
             value = incident.get(list_key)
@@ -88,19 +88,13 @@ def validate_incident_ledger(payload: dict[str, Any]) -> list[str]:
 
         if status == "closed":
             if not _has_meaningful_text(incident.get("root_cause")):
-                errors.append(
-                    f"{label}.root_cause must be filled before status=closed"
-                )
+                errors.append(f"{label}.root_cause must be filled before status=closed")
             if not _has_meaningful_text(incident.get("signpost")):
-                errors.append(
-                    f"{label}.signpost must be filled before status=closed"
-                )
+                errors.append(f"{label}.signpost must be filled before status=closed")
             has_guard = _has_meaningful_text(incident.get("guardrail"))
             has_test = _has_meaningful_text(incident.get("regression_test"))
             if not (has_guard or has_test):
-                errors.append(
-                    f"{label} requires guardrail or regression_test before status=closed"
-                )
+                errors.append(f"{label} requires guardrail or regression_test before status=closed")
 
     return errors
 
