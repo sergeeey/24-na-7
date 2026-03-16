@@ -152,8 +152,10 @@ object ServerEndpointResolver {
     private fun shouldFallback(httpUrl: String): Boolean =
         httpUrl.toHttpUrlOrNull()?.host in localHosts
 
-    private fun shouldPinLocalDebugRoute(): Boolean =
-        BuildConfig.DEBUG && !isEmulator() && shouldFallback(primaryHttpUrl())
+    // WHY: ранее debug-сборка на реальном устройстве ВСЕГДА пыталась ws://localhost:8000
+    // и никогда не переходила на prod fallback. Это ломало приложение без adb reverse.
+    // Теперь: если primary (localhost) недоступен → fallback на prod сервер.
+    private fun shouldPinLocalDebugRoute(): Boolean = false
 
     private fun isReachable(httpUrl: String): Boolean {
         return try {

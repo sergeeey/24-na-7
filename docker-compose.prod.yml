@@ -38,6 +38,12 @@ services:
       - FILTER_MUSIC=true
       - ASR_MODEL_SIZE=medium
       - ASR_LANGUAGE=ru
+      # WHY: без INGEST_SYNC_PROCESS=1 REST /ingest/audio принимает файл,
+      # но НЕ транскрибирует — висит в ingest_queue как "pending" навечно.
+      - INGEST_SYNC_PROCESS=1
+      # Cascade LLM: Gemini (free) → Claude Haiku → GPT-4o-mini
+      - LLM_PROVIDER=cascade
+      - LLM_CASCADE_ORDER=google,anthropic,openai
     depends_on:
       redis:
         condition: service_healthy
