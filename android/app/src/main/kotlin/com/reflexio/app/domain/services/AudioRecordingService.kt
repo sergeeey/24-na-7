@@ -65,6 +65,12 @@ class AudioRecordingService : Service() {
     private val scope = CoroutineScope(Dispatchers.Default + serviceJob)
     private var recordingDao: RecordingDao? = null
     private var pendingUploadDao: PendingUploadDao? = null
+    private var locationCacheDao: com.reflexio.app.data.db.LocationCacheDao? = null
+    private var locationTracker: com.reflexio.app.data.location.PassiveLocationTracker? = null
+    // WHY: track location every 5 min, not every segment (3 sec).
+    // GPS on every segment = battery drain. 5 min = enough for "office" vs "home" context.
+    private var lastLocationSyncMs: Long = 0L
+    private val LOCATION_SYNC_INTERVAL_MS = 5 * 60 * 1000L // 5 minutes
     // ПОЧЕМУ WakeLock: без него CPU засыпает при выключенном экране,
     // AudioRecord.read() перестаёт получать данные. PARTIAL_WAKE_LOCK держит CPU,
     // но позволяет экрану выключиться — минимальный расход батареи.
@@ -99,6 +105,8 @@ class AudioRecordingService : Service() {
             val db = RecordingDatabase.getInstance(this)
             recordingDao = db.recordingDao()
             pendingUploadDao = db.pendingUploadDao()
+            locationCacheDao = db.locationCacheDao()
+            locationTracker = com.reflexio.app.data.location.PassiveLocationTracker(this)
             DebugLog.log("C", "AudioRecordingService.kt:onCreate:dao_ok", "recordingDao assigned", emptyMap())
         } catch (e: Exception) {
             DebugLog.log("C", "AudioRecordingService.kt:onCreate:catch", "Database init failed", mapOf("message" to (e.message ?: ""), "type" to (e.javaClass.simpleName)))
@@ -260,6 +268,9 @@ class AudioRecordingService : Service() {
             PipelineDiagnostics.setError(this, "segment_too_short")
             return
         }
+        // WHY: passive location sync every 5 min — tag recordings with place context.
+        // "ул. Абая 150" or "офис" in the digest instead of bare coordinates.
+        maybeSyncLocation()
         val recordingId = insertSegmentRecording(file, samples.size) ?: return
         try {
             writeSegmentToWav(samples, file)
@@ -588,6 +599,23 @@ class AudioRecordingService : Service() {
         wakeLock = null
         runBlocking {
             serviceJob.cancelAndJoin()
+        }
+    }
+
+    // WHY: Passive location every 5 min — enough to distinguish "office" vs "home" vs "commute".
+    // Does NOT drain battery (single GPS read, not continuous tracking).
+    private suspend fun maybeSyncLocation() {
+        val now = System.currentTimeMillis()
+        if (now - lastLocationSyncMs < LOCATION_SYNC_INTERVAL_MS) return
+        lastLocationSyncMs = now
+        try {
+            val location = locationTracker?.getCurrentLocation() ?: return
+            withContext(Dispatchers.IO) {
+                locationCacheDao?.insertAll(listOf(location))
+            }
+            Log.d(TAG, "Location synced: ${location.resolvedPlace ?: "${location.latitude},${location.longitude}"}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Location sync failed (non-fatal)", e)
         }
     }
 
