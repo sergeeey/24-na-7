@@ -6,13 +6,18 @@ import kotlin.math.max
 
 private const val SAMPLE_RATE = 16000
 private const val VAD_FRAME_SIZE = 320
-// WHY 50 not 15: 300ms silence was too aggressive — normal speech has 0.5-2sec pauses
-// between phrases. 1sec silence keeps conversation context intact.
-// Before: "Да, любимая" + "А куда идти?" = 2 separate segments
-// After:  "Да, любимая. А куда идти?" = 1 coherent segment
-private const val SILENCE_FRAMES_TO_END = 50 // 1000ms / 20ms
-private const val MIN_SEGMENT_SAMPLES = (SAMPLE_RATE * 0.5).toInt() // 0.5 sec
-private const val MAX_SEGMENT_SAMPLES = SAMPLE_RATE * 30 // 30 sec hard cap
+// WHY 75 (1.5s): Evidence-based from multiple sources:
+// - Google/Azure ASR: 1000ms for conversation mode
+// - Russian psycholinguistics: 700-1500ms inter-sentence pauses
+// - Whisper optimal input: 5-15 sec segments (needs context)
+// - Always-on + office noise: higher threshold avoids TV false triggers
+// 1.5s balances context for Whisper vs not merging unrelated speech.
+private const val SILENCE_FRAMES_TO_END = 75 // 1500ms / 20ms
+// WHY 1.0 not 0.5: segments < 1s are almost always noise or fragments
+// that Whisper hallucinates text for. Raising to 1s reduces garbage.
+private const val MIN_SEGMENT_SAMPLES = SAMPLE_RATE * 1 // 1.0 sec
+// WHY 25 not 30: gives margin before Whisper medium hallucination zone (>20s).
+private const val MAX_SEGMENT_SAMPLES = SAMPLE_RATE * 25 // 25 sec hard cap
 private const val INITIAL_SEGMENT_CAPACITY = SAMPLE_RATE * 2 // 2 sec
 private const val SOFT_RESET_CAPACITY = SAMPLE_RATE * 8 // 8 sec
 
