@@ -4,6 +4,7 @@
 что весь pipeline работает вместе — от байтов аудио до structured event в БД.
 Mock только ASR и LLM (детерминистичный результат без GPU/API).
 """
+
 from __future__ import annotations
 
 import math
@@ -20,8 +21,12 @@ from src.enrichment.schema import StructuredEvent
 from src.utils.config import settings
 
 
-def _build_test_wav(duration_sec: float = 0.25, sample_rate: int = 16000) -> bytes:
-    """Строит короткий PCM WAV с не-нулевыми данными для precheck/E2E."""
+def _build_test_wav(duration_sec: float = 0.6, sample_rate: int = 16000) -> bytes:
+    """Строит PCM WAV с не-нулевыми данными для precheck/E2E.
+
+    WHY 0.6: MIN_AUDIO_DURATION_SECONDS=0.3 (INC-006 fix), so test WAV must be
+    above that threshold. 0.6 gives comfortable margin for any future tuning.
+    """
     frame_count = int(duration_sec * sample_rate)
     samples = bytearray()
     for idx in range(frame_count):
@@ -108,6 +113,7 @@ def test_full_ingest_pipeline(pipeline_db):
         patch("src.summarizer.few_shot.analyze_recording_text", _mock_enrich),
     ):
         import asyncio
+
         result = asyncio.get_event_loop().run_until_complete(
             process_audio_bytes(
                 content=MINIMAL_WAV,

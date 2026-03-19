@@ -114,9 +114,14 @@ TRANSCRIPT_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]{2,}")
 # ПОЧЕМУ 2 слова: одиночные слова ("угу", "ладно") — это шум, а не осмысленная речь.
 # 2 слова = минимальная единица смысла ("идём домой", "позвони маме").
 MIN_WORDS = 2
-MIN_AUDIO_DURATION_SECONDS = 0.5
-MIN_SHORT_UTTERANCE_DURATION_SECONDS = 0.45
-MIN_SHORT_UTTERANCE_LANG_PROBABILITY = 0.75
+# WHY 0.3: INC-006 showed 0.5 overrejects valid short speech on mobile.
+# Phone mic segments of 0.3-0.5 sec are common for greetings and commands.
+# Tested: 0.3 catches "привет", "да точно", "понял тебя" without adding noise.
+MIN_AUDIO_DURATION_SECONDS = 0.3
+MIN_SHORT_UTTERANCE_DURATION_SECONDS = 0.35
+# WHY 0.6: INC-006 — Whisper gives 0.6-0.7 lang_prob for short mobile speech.
+# 0.75 was too strict, rejecting valid 1-word utterances captured by phone mic.
+MIN_SHORT_UTTERANCE_LANG_PROBABILITY = 0.6
 # ПОЧЕМУ 0.4: Whisper confidence < 0.4 = фоновый шум или чужая речь.
 # Тестировано: 0.3 пропускает мусор, 0.5 режет казахский (kk) с акцентом.
 MIN_LANG_PROBABILITY = 0.4
@@ -353,10 +358,7 @@ def _assess_contextual_transcription_risk(
     repeated_phrase = len(words) >= 6 and (dominant_share >= 0.45 or repeated_bigram_count >= 2)
     extreme_repetition = len(words) >= 8 and (dominant_share >= 0.7 or repeated_bigram_count >= 3)
     low_information_duplicate = (
-        dominant_share >= 0.5
-        or unique_ratio <= 0.55
-        or len(counts) <= 3
-        or len(words) <= 5
+        dominant_share >= 0.5 or unique_ratio <= 0.55 or len(counts) <= 3 or len(words) <= 5
     )
     if repeated_phrase and (duplicate_neighbors >= 1 or extreme_repetition):
         return True, "repeated_phrase_pattern", 0.45
@@ -367,9 +369,7 @@ def _assess_contextual_transcription_risk(
     if episode_context:
         topics = json.loads(episode_context.get("topics_json") or "[]")
         topic_tokens = {
-            token.lower()
-            for topic in topics
-            for token in TRANSCRIPT_TOKEN_RE.findall(str(topic))
+            token.lower() for topic in topics for token in TRANSCRIPT_TOKEN_RE.findall(str(topic))
         }
         if (
             len(words) >= 6
@@ -602,15 +602,33 @@ def is_meaningful_transcription(
     lang_prob: float = 1.0,
     duration_seconds: float | None = None,
 ) -> bool:
-    """Check if transcription text likely contains meaningful speech."""
+    """Check if transcription text likely contains meaningful speech.
+
+    INC-006: Added structured logging for every rejection reason to enable
+    diagnostics of overrejection without guessing.
+    """
     normalized = (text or "").strip()
     if not normalized:
         return False
     words = [word for word in normalized.split() if word.strip()]
     normalized_lower = normalized.lower()
     if normalized_lower in NOISE_PHRASES:
+        logger.debug(
+            "meaningful_check_rejected",
+            reason="noise_phrase",
+            text=normalized[:50],
+            duration=duration_seconds,
+        )
         return False
     if (lang_prob or 0.0) < MIN_LANG_PROBABILITY:
+        logger.debug(
+            "meaningful_check_rejected",
+            reason="low_lang_prob",
+            lang_prob=lang_prob,
+            threshold=MIN_LANG_PROBABILITY,
+            text=normalized[:50],
+            duration=duration_seconds,
+        )
         return False
     if len(words) >= MIN_WORDS:
         return True
@@ -618,13 +636,37 @@ def is_meaningful_transcription(
     if len(words) == 1:
         token = words[0].strip(".,!?;:\"'()[]{}").lower()
         if token in NOISE_PHRASES:
+            logger.debug(
+                "meaningful_check_rejected",
+                reason="single_word_noise",
+                token=token,
+                duration=duration_seconds,
+            )
             return False
         if (lang_prob or 0.0) < MIN_SHORT_UTTERANCE_LANG_PROBABILITY:
+            logger.debug(
+                "meaningful_check_rejected",
+                reason="single_word_low_confidence",
+                token=token,
+                lang_prob=lang_prob,
+                threshold=MIN_SHORT_UTTERANCE_LANG_PROBABILITY,
+                duration=duration_seconds,
+            )
             return False
         duration = float(duration_seconds or 0.0)
         if duration >= MIN_SHORT_UTTERANCE_DURATION_SECONDS:
             return len(token) >= 2
-        return len(token) >= 4
+        # WHY len>=4: very short segments (<0.35s) with tiny words are likely noise.
+        if len(token) < 4:
+            logger.debug(
+                "meaningful_check_rejected",
+                reason="short_token_short_duration",
+                token=token,
+                duration=duration,
+                min_duration=MIN_SHORT_UTTERANCE_DURATION_SECONDS,
+            )
+            return False
+        return True
     return True
 
 
@@ -1015,7 +1057,9 @@ def process_audio_from_artifact_sync(
             file_size=file_size,
             result=result,
         )
-        episode_id = attach_transcription_to_episode(db_path, transcription_id) if transcription_id else None
+        episode_id = (
+            attach_transcription_to_episode(db_path, transcription_id) if transcription_id else None
+        )
         if episode_id:
             result["episode_id"] = episode_id
 
@@ -1024,7 +1068,9 @@ def process_audio_from_artifact_sync(
                 db_path, transcription_id, episode_id, result
             )
             if flagged:
-                quality_score = max(0.0, min(result["quality_score"], result["quality_score"] - penalty))
+                quality_score = max(
+                    0.0, min(result["quality_score"], result["quality_score"] - penalty)
+                )
                 result["quality_score"] = quality_score
                 result["needs_recheck"] = True
                 result["garbage_flag"] = True
@@ -1495,7 +1541,9 @@ async def process_audio_bytes(
             file_size=len(content),
             result=result,
         )
-        episode_id = attach_transcription_to_episode(db_path, transcription_id) if transcription_id else None
+        episode_id = (
+            attach_transcription_to_episode(db_path, transcription_id) if transcription_id else None
+        )
         if episode_id:
             result["episode_id"] = episode_id
 
@@ -1504,7 +1552,9 @@ async def process_audio_bytes(
                 db_path, transcription_id, episode_id, result
             )
             if flagged:
-                quality_score = max(0.0, min(result["quality_score"], result["quality_score"] - penalty))
+                quality_score = max(
+                    0.0, min(result["quality_score"], result["quality_score"] - penalty)
+                )
                 result["quality_score"] = quality_score
                 result["needs_recheck"] = True
                 result["garbage_flag"] = True
