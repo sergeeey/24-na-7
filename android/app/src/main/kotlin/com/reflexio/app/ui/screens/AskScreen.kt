@@ -1,6 +1,8 @@
 package com.reflexio.app.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -10,23 +12,26 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.People
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -34,17 +39,39 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.reflexio.app.domain.network.AskResponseData
 import com.reflexio.app.domain.network.MemoryApi
 import com.reflexio.app.domain.network.ServerEndpointResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+// ── Same palette as DailySummaryScreen ──
+private val PageBg = Color(0xFFF7F5F2)
+private val CardWhite = Color(0xFFFFFFFF)
+private val TextPrimary = Color(0xFF1A1A2E)
+private val TextSecondary = Color(0xFF6B7280)
+private val TextMuted = Color(0xFF9CA3AF)
+private val Coral = Color(0xFFFF6B6B)
+private val CoralSoft = Color(0xFFFFF0F0)
+private val Indigo = Color(0xFF6366F1)
+private val IndigoSoft = Color(0xFFF0F0FF)
+private val Mint = Color(0xFF34D399)
+private val MintSoft = Color(0xFFECFDF5)
+private val Amber = Color(0xFFF59E0B)
+private val AmberSoft = Color(0xFFFFFBEB)
 
 private sealed class AskUiState {
     object Idle : AskUiState()
@@ -66,11 +93,12 @@ fun AskScreen(
     val scope = rememberCoroutineScope()
     var question by remember(initialQuestion) { mutableStateOf(initialQuestion) }
     var state by remember { mutableStateOf<AskUiState>(AskUiState.Idle) }
+
     val samples = listOf(
-        "Что было сегодня?",
-        "Что я обещал?",
-        "Какие паттерны?",
-        "Что важно по деньгам?",
+        SampleQuery("Что было сегодня?", Icons.Rounded.Lightbulb, Indigo),
+        SampleQuery("Что я обещал?", Icons.Rounded.Verified, Coral),
+        SampleQuery("Какие паттерны?", Icons.Rounded.AutoAwesome, Amber),
+        SampleQuery("Кто рядом?", Icons.Rounded.People, Mint),
     )
 
     fun submit(input: String) {
@@ -79,9 +107,7 @@ fun AskScreen(
         scope.launch {
             state = AskUiState.Loading
             state = try {
-                val result = withContext(Dispatchers.IO) {
-                    MemoryApi.ask(baseHttpUrl, trimmed)
-                }
+                val result = withContext(Dispatchers.IO) { MemoryApi.ask(baseHttpUrl, trimmed) }
                 AskUiState.Success(result)
             } catch (e: Exception) {
                 AskUiState.Error(ServerEndpointResolver.userFacingError(e.message, baseHttpUrl))
@@ -100,179 +126,158 @@ fun AskScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .background(PageBg)
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
-            ),
-        ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    text = "Главный вход в память",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-                Text(
-                    text = "Спроси обычным языком про людей, обещания, темы дня или повторяющиеся линии.",
-                    style = MaterialTheme.typography.bodyLarge,
-                )
-            }
-        }
-
-        OutlinedTextField(
-            value = question,
-            onValueChange = { question = it },
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-            label = { Text("Спросите что угодно о своём дне") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { submit(question) }),
+        // ── Header ──
+        Text("Спросить", fontSize = 32.sp, fontWeight = FontWeight.Black, color = TextPrimary)
+        Text(
+            "Спроси о людях, обещаниях, паттернах или событиях дня",
+            fontSize = 14.sp, color = TextMuted, lineHeight = 18.sp,
         )
 
+        // ── Search bar ──
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = CardWhite,
+            shadowElevation = 2.dp,
+        ) {
+            TextField(
+                value = question,
+                onValueChange = { question = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("О чём спросить память?", color = TextMuted) },
+                leadingIcon = {
+                    Icon(Icons.Rounded.Search, contentDescription = null, tint = Indigo)
+                },
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    cursorColor = Indigo,
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { submit(question) }),
+                singleLine = true,
+            )
+        }
+
+        // ── Quick queries ──
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             samples.forEach { sample ->
-                AssistChip(
-                    onClick = {
-                        question = sample
-                        submit(sample)
-                    },
-                    label = { Text(sample) },
-                    leadingIcon = { Icon(Icons.Default.AutoAwesome, contentDescription = null) },
-                    colors = AssistChipDefaults.assistChipColors(),
-                )
+                Surface(
+                    onClick = { question = sample.text; submit(sample.text) },
+                    shape = RoundedCornerShape(14.dp),
+                    color = CardWhite,
+                    shadowElevation = 1.dp,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(sample.icon, contentDescription = null, tint = sample.color, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(sample.text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+                    }
+                }
             }
-            AssistChip(
-                onClick = onOpenPeople,
-                label = { Text("Кто рядом?") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                colors = AssistChipDefaults.assistChipColors(),
-            )
         }
 
+        // ── Result area ──
         when (val current = state) {
             AskUiState.Idle -> {
-                Text(
-                    text = "Лучше всего работают вопросы про людей, обещания, деньги, повторяющиеся темы и выводы по дню.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Spacer(Modifier.height(24.dp))
+                Column(
+                    Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("💭", fontSize = 48.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Задайте вопрос — память ответит",
+                        fontSize = 15.sp, color = TextMuted, textAlign = TextAlign.Center,
+                    )
+                }
             }
             AskUiState.Loading -> {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    CircularProgressIndicator()
+                Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = Indigo, strokeWidth = 3.dp)
                 }
             }
             is AskUiState.Error -> {
-                Text(
-                    text = current.message,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                Surface(shape = RoundedCornerShape(16.dp), color = CoralSoft) {
+                    Text(current.message, modifier = Modifier.padding(16.dp), color = Coral, fontSize = 14.sp)
+                }
             }
             is AskUiState.Success -> {
-                AskAnswerView(
-                    result = current.result,
-                    onOpenSearch = onOpenSearch,
-                )
+                AnswerView(current.result, onOpenSearch)
             }
         }
     }
 }
 
+// ── Answer View ──
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun AskAnswerView(
-    result: AskResponseData,
-    onOpenSearch: (String) -> Unit,
-) {
-    LazyColumn(
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
+private fun AnswerView(result: AskResponseData, onOpenSearch: (String) -> Unit) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+
+        // Main answer
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-                ),
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Text(
-                        text = result.answer,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = "Уверенность: ${result.confidenceLabel} · улик: ${result.evidenceCount}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    result.warning?.let {
-                        Text(
-                            text = humanizeWarning(it),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
+            Surface(shape = RoundedCornerShape(20.dp), color = CardWhite, shadowElevation = 2.dp) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(result.answer, fontSize = 16.sp, fontWeight = FontWeight.Medium, color = TextPrimary, lineHeight = 22.sp)
+
+                    // Confidence bar
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val confColor = when (result.confidenceLabel) {
+                            "high" -> Mint
+                            "medium" -> Indigo
+                            "low" -> Amber
+                            else -> Coral
+                        }
+                        val confLabel = when (result.confidenceLabel) {
+                            "high" -> "Высокая"
+                            "medium" -> "Средняя"
+                            "low" -> "Низкая"
+                            else -> "Неясно"
+                        }
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(confColor))
+                        Spacer(Modifier.width(8.dp))
+                        Text("$confLabel · ${result.evidenceCount} улик", fontSize = 12.sp, color = confColor, fontWeight = FontWeight.SemiBold)
+                    }
+
+                    result.warning?.let { warning ->
+                        Surface(shape = RoundedCornerShape(10.dp), color = AmberSoft) {
+                            Text(
+                                humanizeWarning(warning),
+                                modifier = Modifier.padding(10.dp),
+                                fontSize = 12.sp, color = Amber,
+                            )
+                        }
                     }
                 }
             }
         }
 
+        // Digest layer
         result.digest?.let { digest ->
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Text("Слой дайджеста", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                        digest.summaryText?.let {
-                            Text(it, style = MaterialTheme.typography.bodyMedium)
-                        }
-                        if (digest.keyThemes.isNotEmpty() || digest.emotions.isNotEmpty()) {
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
+                Surface(shape = RoundedCornerShape(18.dp), color = CardWhite, shadowElevation = 1.dp) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SectionHeader("Дайджест", Indigo)
+                        digest.summaryText?.let { Text(it, fontSize = 14.sp, color = TextSecondary) }
+                        if (digest.keyThemes.isNotEmpty()) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 digest.keyThemes.take(4).forEach { theme ->
-                                    AssistChip(onClick = { onOpenSearch(theme) }, label = { Text(theme) })
+                                    PillClickable(theme, Indigo, IndigoSoft) { onOpenSearch(theme) }
                                 }
-                                digest.emotions.take(2).forEach { emotion ->
-                                    AssistChip(onClick = {}, label = { Text(emotion) })
-                                }
-                            }
-                        }
-                        digest.balance?.let { balance ->
-                            Text(
-                                text = "Баланс: ${"%.2f".format(balance.balanceScore)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                            )
-                            balance.domains.take(3).forEach { domain ->
-                                Text(
-                                    text = "${domain.domain}: ${"%.1f".format(domain.score)}/10",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
                             }
                         }
                     }
@@ -280,30 +285,17 @@ private fun AskAnswerView(
             }
         }
 
+        // Events layer
         result.events?.let { events ->
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Text("Слой событий", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                        Text(
-                            text = "Найдено событий: ${events.total}",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            events.topTopics.forEach { topic ->
-                                AssistChip(
-                                    onClick = { onOpenSearch(topic) },
-                                    label = { Text(topic) },
-                                )
+            if (events.total > 0) {
+                item {
+                    Surface(shape = RoundedCornerShape(18.dp), color = CardWhite, shadowElevation = 1.dp) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SectionHeader("События · ${events.total}", Amber)
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                events.topTopics.forEach { topic ->
+                                    PillClickable(topic, Amber, AmberSoft) { onOpenSearch(topic) }
+                                }
                             }
                         }
                     }
@@ -311,46 +303,59 @@ private fun AskAnswerView(
             }
         }
 
+        // Evidence
         if (result.evidenceMetadata.isNotEmpty()) {
             item {
-                Text("Улики", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                SectionHeader("Улики", Mint)
             }
             items(result.evidenceMetadata, key = { it.id }) { evidence ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            text = evidence.timestamp,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        Text(
-                            text = evidence.topTopic.ifBlank { "Событие" },
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        AssistChip(
-                            onClick = { onOpenSearch(evidence.topTopic.ifBlank { evidence.timestamp }) },
-                            label = { Text("Открыть похожее") },
-                        )
+                Surface(shape = RoundedCornerShape(14.dp), color = CardWhite, shadowElevation = 1.dp) {
+                    Row(Modifier.padding(14.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(MintSoft),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(evidence.timestamp.take(5), fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Mint)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                evidence.topTopic.ifBlank { "Событие" },
+                                fontSize = 14.sp, fontWeight = FontWeight.Medium, color = TextPrimary,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(evidence.timestamp, fontSize = 11.sp, color = TextMuted)
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+// ── Components ──
+
+private data class SampleQuery(val text: String, val icon: ImageVector, val color: Color)
+
+@Composable
+private fun SectionHeader(title: String, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(4.dp, 16.dp).clip(RoundedCornerShape(2.dp)).background(color))
+        Spacer(Modifier.width(8.dp))
+        Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TextPrimary)
+    }
+}
+
+@Composable
+private fun PillClickable(text: String, accent: Color, bg: Color, onClick: () -> Unit) {
+    Surface(onClick = onClick, shape = RoundedCornerShape(12.dp), color = bg) {
+        Text(text, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp), fontSize = 13.sp, fontWeight = FontWeight.Medium, color = accent)
     }
 }
 
 private fun humanizeWarning(warning: String): String {
     val normalized = warning.lowercase()
     return if ("мало данных" in normalized || "недостаточно данных" in normalized) {
-        "За выбранный период пока мало осмысленных записей. Попробуй спросить про вчера, про человека или про более длинный период."
-    } else {
-        warning
-    }
+        "За этот период мало записей. Попробуй спросить за другой день или про конкретного человека."
+    } else warning
 }

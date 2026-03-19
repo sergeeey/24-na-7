@@ -1,6 +1,8 @@
 package com.reflexio.app.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -10,15 +12,22 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FitnessCenter
+import androidx.compose.material.icons.rounded.Hotel
+import androidx.compose.material.icons.rounded.Psychology
+import androidx.compose.material.icons.rounded.SelfImprovement
+import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -28,9 +37,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.reflexio.app.data.db.RecordingDatabase
 import com.reflexio.app.data.health.HealthConnectReader
 import com.reflexio.app.data.model.CachedHealthMetric
@@ -39,21 +54,41 @@ import com.reflexio.app.domain.network.MemoryApi
 import com.reflexio.app.domain.network.MirrorPortrait
 import com.reflexio.app.domain.network.ServerEndpointResolver
 import com.reflexio.app.ui.permissions.HealthPermissionGate
-import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
-// ПОЧЕМУ: цвета ролей вынесены в константу — они семантически фиксированы
-// и не должны меняться вместе с темой
-private val roleColors = mapOf(
-    "psychologist" to Color(0xFFE040FB),
-    "coach" to Color(0xFF42E5C2),
-    "pattern_detector" to Color(0xFF7C6CFF),
-    "devil_advocate" to Color(0xFFFF6B6B),
-    "future_predictor" to Color(0xFF29B6F6),
+// ── Same palette ──
+private val PageBg = Color(0xFFF7F5F2)
+private val CardWhite = Color(0xFFFFFFFF)
+private val TextPrimary = Color(0xFF1A1A2E)
+private val TextSecondary = Color(0xFF6B7280)
+private val TextMuted = Color(0xFF9CA3AF)
+private val Coral = Color(0xFFFF6B6B)
+private val CoralSoft = Color(0xFFFFF0F0)
+private val Indigo = Color(0xFF6366F1)
+private val IndigoSoft = Color(0xFFF0F0FF)
+private val Mint = Color(0xFF34D399)
+private val MintSoft = Color(0xFFECFDF5)
+private val Amber = Color(0xFFF59E0B)
+private val AmberSoft = Color(0xFFFFFBEB)
+private val Purple = Color(0xFF8B5CF6)
+private val PurpleSoft = Color(0xFFF5F3FF)
+private val Rose = Color(0xFFF43F5E)
+private val RoseSoft = Color(0xFFFFF1F2)
+private val Sky = Color(0xFF0EA5E9)
+private val SkySoft = Color(0xFFF0F9FF)
+
+private data class RoleStyle(val title: String, val color: Color, val bg: Color, val icon: ImageVector)
+
+private val roleStyles = mapOf(
+    "psychologist" to RoleStyle("Психолог", Purple, PurpleSoft, Icons.Rounded.Psychology),
+    "coach" to RoleStyle("Коуч", Mint, MintSoft, Icons.Rounded.SelfImprovement),
+    "pattern_detector" to RoleStyle("Паттерны", Indigo, IndigoSoft, Icons.Rounded.TrendingUp),
+    "devil_advocate" to RoleStyle("Проверка", Coral, CoralSoft, Icons.Rounded.Psychology),
+    "future_predictor" to RoleStyle("Прогноз", Sky, SkySoft, Icons.Rounded.TrendingUp),
 )
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -65,15 +100,10 @@ fun MirrorScreen(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-
-    // ПОЧЕМУ: независимые LaunchedEffect — секции грузятся параллельно
-    // и не блокируют друг друга при частичной недоступности API
     var portrait by remember { mutableStateOf<MirrorPortrait?>(null) }
     var portraitError by remember { mutableStateOf<String?>(null) }
-
     var insights by remember { mutableStateOf<List<InsightCard>>(emptyList()) }
     var insightsError by remember { mutableStateOf<String?>(null) }
-
     var healthMetrics by remember { mutableStateOf<List<CachedHealthMetric>>(emptyList()) }
     var healthGranted by remember { mutableStateOf(false) }
 
@@ -95,8 +125,7 @@ fun MirrorScreen(
         do {
             insightsError = null
             try {
-                val today = LocalDate.now().toString()
-                insights = withContext(Dispatchers.IO) { MemoryApi.fetchBalanceInsights(baseHttpUrl, today) }
+                insights = withContext(Dispatchers.IO) { MemoryApi.fetchBalanceInsights(baseHttpUrl, LocalDate.now().toString()) }
                 break
             } catch (e: Exception) {
                 insightsError = ServerEndpointResolver.userFacingError(e.message, baseHttpUrl)
@@ -106,7 +135,6 @@ fun MirrorScreen(
         } while (true)
     }
 
-    // Health Connect → Room → UI
     LaunchedEffect(healthGranted) {
         if (!healthGranted) return@LaunchedEffect
         healthMetrics = withContext(Dispatchers.IO) {
@@ -118,154 +146,153 @@ fun MirrorScreen(
                     val all = reader.readSleep() + reader.readSteps() + reader.readHeartRate()
                     if (all.isNotEmpty()) db.healthMetricDao().insertAll(all)
                 }
-                val today = LocalDate.now().toString()
-                db.healthMetricDao().metricsForDate(today)
-            } catch (_: Exception) {
-                emptyList()
-            }
+                db.healthMetricDao().metricsForDate(LocalDate.now().toString())
+            } catch (_: Exception) { emptyList() }
         }
     }
 
     Column(
         modifier = modifier
             .fillMaxSize()
+            .background(PageBg)
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        // ── Header ──
+        Text("Зеркало", fontSize = 32.sp, fontWeight = FontWeight.Black, color = TextPrimary)
         Text(
-            text = "Зеркало",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
+            "Кто ты сейчас, какие темы тянутся, что повторяется",
+            fontSize = 14.sp, color = TextMuted, lineHeight = 18.sp,
         )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = "Не хроника дня, а короткая интерпретация: кто ты сейчас, какие темы повторяются и что тянется фоном.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(12.dp))
 
+        // ── Portrait ──
         when {
-            portrait != null -> PortraitCard(
-                portrait = portrait!!,
-                onOpenPerson = onOpenPerson,
-            )
-            portraitError != null -> ErrorText(portraitError!!)
-            else -> LoadingRow()
+            portrait != null -> PortraitSection(portrait!!, onOpenPerson)
+            portraitError != null -> ErrorBubble(portraitError!!)
+            else -> LoadingCenter()
         }
 
+        // ── Health ──
         HealthPermissionGate(onGranted = { healthGranted = true })
-
         if (healthMetrics.isNotEmpty()) {
-            Spacer(Modifier.height(12.dp))
-            HealthMetricsRow(healthMetrics)
+            HealthCard(healthMetrics)
         }
 
-        Spacer(Modifier.height(16.dp))
-
-        Text(
-            text = "Что это говорит о тебе",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.height(8.dp))
+        // ── Insights ──
+        if (insights.isNotEmpty() || insightsError != null || portrait == null) {
+            Text("Что это говорит о тебе", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = TextPrimary)
+        }
 
         when {
-            insights.isNotEmpty() -> insights.forEach { card ->
-                InsightRow(card = card)
-                Spacer(Modifier.height(6.dp))
+            insights.isNotEmpty() -> {
+                insights.forEach { card -> InsightBubble(card) }
             }
-            insightsError != null -> ErrorText(insightsError!!)
-            portrait == null -> LoadingRow()
-            else -> CompactEmptyMirrorState()
+            insightsError != null -> ErrorBubble(insightsError!!)
+            portrait == null -> LoadingCenter()
+            else -> EmptyInsights()
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(80.dp))
+    }
+}
+
+// ── Portrait Section ──
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PortraitSection(portrait: MirrorPortrait, onOpenPerson: (String) -> Unit) {
+    // Stats row
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        PortraitStat("${portrait.episodesCount}", "Эпизодов", Indigo, IndigoSoft, Modifier.weight(1f))
+        PortraitStat(
+            portrait.avgSentiment?.let { "${((it + 1f) / 2f * 100).toInt()}%" } ?: "—",
+            "Настроение", if ((portrait.avgSentiment ?: 0f) >= 0f) Mint else Coral,
+            if ((portrait.avgSentiment ?: 0f) >= 0f) MintSoft else CoralSoft,
+            Modifier.weight(1f),
+        )
+        PortraitStat("${portrait.openCommitments}", "Обещаний", Amber, AmberSoft, Modifier.weight(1f))
+    }
+
+    // Emotions
+    if (portrait.topEmotions.isNotEmpty()) {
+        TagSection("Эмоции", portrait.topEmotions.take(4)) { emotion ->
+            val (c, bg) = when {
+                emotion.contains("радость") || emotion.contains("энтузиазм") -> Mint to MintSoft
+                emotion.contains("тревога") || emotion.contains("раздражение") -> Coral to CoralSoft
+                else -> Indigo to IndigoSoft
+            }
+            Pill(emotion, c, bg)
+        }
+    }
+
+    // Topics
+    if (portrait.topTopics.isNotEmpty()) {
+        TagSection("Темы", portrait.topTopics.take(4)) { topic ->
+            Pill(topic, Indigo, IndigoSoft)
+        }
+    }
+
+    // People
+    if (portrait.topPeople.isNotEmpty()) {
+        TagSection("Люди", portrait.topPeople.take(4)) { person ->
+            Surface(
+                onClick = { onOpenPerson(person) },
+                shape = RoundedCornerShape(12.dp),
+                color = PurpleSoft,
+            ) {
+                Text(person, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                    fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Purple)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PortraitStat(value: String, label: String, accent: Color, bg: Color, modifier: Modifier) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(16.dp), color = bg) {
+        Column(Modifier.padding(vertical = 16.dp, horizontal = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(value, fontSize = 22.sp, fontWeight = FontWeight.Black, color = accent)
+            Text(label, fontSize = 11.sp, color = accent.copy(alpha = 0.6f), fontWeight = FontWeight.Medium)
+        }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PortraitCard(
-    portrait: MirrorPortrait,
-    onOpenPerson: (String) -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        // ПОЧЕМУ: alpha 0.88 даёт лёгкую прозрачность, сохраняя читаемость
-        // и визуально отделяя карточку от фона без жёсткой границы
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-    ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Text(
-                text = "Срез последних дней",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-            )
+private fun <T> TagSection(title: String, items: List<T>, content: @Composable (T) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TextPrimary)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items.forEach { item -> content(item) }
+        }
+    }
+}
+
+// ── Health Card ──
+
+@Composable
+private fun HealthCard(metrics: List<CachedHealthMetric>) {
+    Surface(shape = RoundedCornerShape(18.dp), color = CardWhite, shadowElevation = 1.dp) {
+        Column(Modifier.padding(16.dp)) {
+            Text("Здоровье сегодня", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TextPrimary)
             Spacer(Modifier.height(12.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                StatItem(label = "Эпизодов", value = portrait.episodesCount.toString())
-                StatItem(
-                    label = "Настроение",
-                    value = portrait.avgSentiment?.let { "${((it + 1f) / 2f * 100).toInt()}%" } ?: "—",
-                )
-                StatItem(label = "Обязательств", value = portrait.openCommitments.toString())
-            }
-
-            if (portrait.topEmotions.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = "Эмоции",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                )
-                Spacer(Modifier.height(4.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    portrait.topEmotions.take(3).forEach { emotion ->
-                        AssistChip(onClick = {}, label = { Text(emotion) })
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                metrics.forEach { m ->
+                    val (label, display, icon, color) = when (m.metricType) {
+                        "sleep_hours" -> HealthDisplay("Сон", "%.1f ч".format(m.value), Icons.Rounded.Hotel, Indigo)
+                        "steps" -> HealthDisplay("Шаги", "%,.0f".format(m.value), Icons.Rounded.FitnessCenter, Mint)
+                        "heart_rate_avg" -> HealthDisplay("Пульс", "%.0f".format(m.value), Icons.Rounded.Favorite, Coral)
+                        else -> HealthDisplay(m.metricType, "%.1f".format(m.value), Icons.Rounded.TrendingUp, Amber)
                     }
-                }
-            }
-
-            if (portrait.topTopics.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "Темы",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                )
-                Spacer(Modifier.height(4.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    portrait.topTopics.take(3).forEach { topic ->
-                        AssistChip(onClick = {}, label = { Text(topic) })
-                    }
-                }
-            }
-
-            if (portrait.topPeople.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "Люди",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-                )
-                Spacer(Modifier.height(4.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    portrait.topPeople.take(3).forEach { person ->
-                        // ПОЧЕМУ: кликабельность вынесена на chips людей,
-                        // а не на всю карточку — точечное действие удобнее
-                        AssistChip(
-                            onClick = { onOpenPerson(person) },
-                            label = { Text(person) },
-                            colors = AssistChipDefaults.assistChipColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                            ),
-                        )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(color.copy(alpha = 0.1f)),
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(20.dp)) }
+                        Spacer(Modifier.height(6.dp))
+                        Text(display, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TextPrimary)
+                        Text(label, fontSize = 11.sp, color = TextMuted)
                     }
                 }
             }
@@ -273,131 +300,69 @@ private fun PortraitCard(
     }
 }
 
+private data class HealthDisplay(val label: String, val display: String, val icon: ImageVector, val color: Color)
+
+// ── Insight Bubble ──
+
 @Composable
-private fun StatItem(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = value,
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-        )
+private fun InsightBubble(card: InsightCard) {
+    val style = roleStyles[card.role] ?: RoleStyle(
+        card.role.replace("_", " ").replaceFirstChar { it.uppercase() },
+        Indigo, IndigoSoft, Icons.Rounded.Psychology,
+    )
+
+    Surface(shape = RoundedCornerShape(18.dp), color = CardWhite, shadowElevation = 1.dp) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
+            Box(
+                modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(style.bg),
+                contentAlignment = Alignment.Center,
+            ) { Icon(style.icon, contentDescription = null, tint = style.color, modifier = Modifier.size(20.dp)) }
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(style.title, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = style.color)
+                Spacer(Modifier.height(4.dp))
+                Text(card.text, fontSize = 14.sp, color = TextSecondary, lineHeight = 20.sp)
+            }
+        }
     }
 }
 
-@Composable
-private fun InsightRow(card: InsightCard) {
-    val accentColor = roleColors[card.role] ?: MaterialTheme.colorScheme.primary
-    val roleTitle = when (card.role) {
-        "psychologist" -> "Психолог"
-        "coach" -> "Коуч"
-        "pattern_detector" -> "Паттерны"
-        "devil_advocate" -> "Проверка на самообман"
-        "future_predictor" -> "Прогноз"
-        else -> card.role.replace("_", " ").replaceFirstChar { it.uppercase() }
-    }
+// ── Empty / Error / Loading ──
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(
-                text = roleTitle,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = accentColor,
-            )
+@Composable
+private fun EmptyInsights() {
+    Surface(shape = RoundedCornerShape(18.dp), color = CardWhite, shadowElevation = 1.dp) {
+        Column(Modifier.padding(24.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("🪞", fontSize = 40.sp)
+            Spacer(Modifier.height(8.dp))
+            Text("Пока мало интерпретаций", fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = TextPrimary)
             Spacer(Modifier.height(4.dp))
             Text(
-                text = card.text,
-                style = MaterialTheme.typography.bodyMedium,
+                "Когда накопится больше записей, здесь появятся выводы о тебе",
+                fontSize = 13.sp, color = TextMuted, textAlign = TextAlign.Center,
             )
         }
     }
 }
 
 @Composable
-private fun CompactEmptyMirrorState() {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-        ),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text("Пока мало интерпретаций", fontWeight = FontWeight.SemiBold)
-            Text(
-                "Когда накопится больше осмысленных записей, здесь появятся повторяющиеся линии и короткие выводы о тебе.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+private fun ErrorBubble(message: String) {
+    Surface(shape = RoundedCornerShape(14.dp), color = CoralSoft) {
+        Text(message, modifier = Modifier.padding(14.dp), color = Coral, fontSize = 13.sp)
     }
 }
 
 @Composable
-private fun LoadingRow() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 12.dp),
-        horizontalArrangement = Arrangement.Center,
-    ) {
-        CircularProgressIndicator()
+private fun LoadingCenter() {
+    Box(Modifier.fillMaxWidth().height(80.dp), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator(color = Indigo, strokeWidth = 3.dp)
     }
 }
 
 @Composable
-private fun HealthMetricsRow(metrics: List<CachedHealthMetric>) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
-        ),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "Здоровье сегодня",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                metrics.forEach { m ->
-                    val (label, display) = when (m.metricType) {
-                        "sleep_hours" -> "Сон" to "%.1f ч".format(m.value)
-                        "steps" -> "Шаги" to "%,.0f".format(m.value)
-                        "heart_rate_avg" -> "Пульс" to "%.0f bpm".format(m.value)
-                        else -> m.metricType to "%.1f".format(m.value)
-                    }
-                    StatItem(label = label, value = display)
-                }
-            }
-        }
+private fun Pill(text: String, accent: Color, bg: Color) {
+    Surface(shape = RoundedCornerShape(12.dp), color = bg) {
+        Text(text, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+            fontSize = 13.sp, fontWeight = FontWeight.Medium, color = accent)
     }
 }
-
-@Composable
-private fun ErrorText(message: String) {
-    Text(
-        text = message,
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.error,
-        modifier = Modifier.padding(vertical = 4.dp),
-    )
-}
-
