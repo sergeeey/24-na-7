@@ -1,4 +1,5 @@
 """Генератор дайджестов из транскриптов с улучшенным summarization."""
+
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -10,7 +11,11 @@ from src.utils.date_utils import resolve_date_range
 from src.utils.logging import setup_logging, get_logger
 from src.digest.metrics_ext import calculate_extended_metrics
 from src.storage.ingest_persist import ensure_ingest_tables
-from src.memory.episodes import get_day_threads_for_day, get_episodes_for_day, get_long_threads as get_long_thread_rows
+from src.memory.episodes import (
+    get_day_threads_for_day,
+    get_episodes_for_day,
+    get_long_threads as get_long_thread_rows,
+)
 from src.memory.core_memory import get_core_memory
 from src.memory.session_memory import get_session_memory
 
@@ -19,6 +24,7 @@ try:
     from src.summarizer.chain_of_density import generate_dense_summary
     from src.summarizer.critic import validate_summary
     from src.summarizer.few_shot import extract_tasks, analyze_emotions
+
     SUMMARIZER_AVAILABLE = True
 except ImportError:
     SUMMARIZER_AVAILABLE = False
@@ -28,6 +34,7 @@ except ImportError:
 # WOW digest prompt (один LLM-вызов для verdict + day_map + micro_step)
 try:
     from src.summarizer.prompts import get_wow_digest_prompt
+
     WOW_PROMPT_AVAILABLE = True
 except ImportError:
     WOW_PROMPT_AVAILABLE = False
@@ -42,12 +49,42 @@ class DigestGenerator:
     # ПОЧЕМУ фильтрация: Whisper транскрибирует фоновый шум как "you", "the", пустые строки.
     # 10 000+ мусорных записей → LLM галлюцинирует на корейском/грузинском.
     # Фильтруем до отправки в LLM: минимум 3 слова, не стоп-фразы, language_probability > 0.4.
-    NOISE_PHRASES = frozenset({
-        "you", "the", "a", "an", "i", "he", "she", "it", "we", "they",
-        "yes", "no", "oh", "ah", "um", "uh", "hmm", "huh",
-        "that's it", "thank you", "thanks", "okay", "ok",
-        "угу", "ага", "ну", "мм", "хм", "это", "ладно", "понял", "окей",
-    })
+    NOISE_PHRASES = frozenset(
+        {
+            "you",
+            "the",
+            "a",
+            "an",
+            "i",
+            "he",
+            "she",
+            "it",
+            "we",
+            "they",
+            "yes",
+            "no",
+            "oh",
+            "ah",
+            "um",
+            "uh",
+            "hmm",
+            "huh",
+            "that's it",
+            "thank you",
+            "thanks",
+            "okay",
+            "ok",
+            "угу",
+            "ага",
+            "ну",
+            "мм",
+            "хм",
+            "это",
+            "ладно",
+            "понял",
+            "окей",
+        }
+    )
     MIN_WORDS = 3
     MIN_LANG_PROBABILITY = 0.4
     MAX_TRANSCRIPTIONS_FOR_LLM = 100  # Лимит записей для LLM-задач (extract_facts)
@@ -80,7 +117,7 @@ class DigestGenerator:
     @staticmethod
     def _has_cyrillic(text: str) -> bool:
         """Проверяет, содержит ли текст кириллицу (русский)."""
-        return any('\u0400' <= c <= '\u04ff' for c in text)
+        return any("\u0400" <= c <= "\u04ff" for c in text)
 
     @staticmethod
     def _hour_bucket(iso_ts: str | None) -> str:
@@ -142,7 +179,7 @@ class DigestGenerator:
 
         # Fallback без summarizer: ограничиваемся хвостом дня.
         if not SUMMARIZER_AVAILABLE:
-            return full_text[-self.MAX_TEXT_LENGTH_FOR_LLM:]
+            return full_text[-self.MAX_TEXT_LENGTH_FOR_LLM :]
 
         grouped: Dict[str, List[Dict]] = {}
         for t in transcriptions:
@@ -170,20 +207,20 @@ class DigestGenerator:
             hourly_summaries.append(f"[{hour}] {summary}")
 
         if not hourly_summaries:
-            return full_text[-self.MAX_TEXT_LENGTH_FOR_LLM:]
+            return full_text[-self.MAX_TEXT_LENGTH_FOR_LLM :]
 
         tiered = "\n".join(hourly_summaries)
         if len(tiered) > self.MAX_TEXT_LENGTH_FOR_LLM:
-            tiered = tiered[-self.MAX_TEXT_LENGTH_FOR_LLM:]
+            tiered = tiered[-self.MAX_TEXT_LENGTH_FOR_LLM :]
         return tiered
 
     def get_transcriptions(self, target_date: date) -> List[Dict]:
         """
         Получает все транскрипции за день.
-        
+
         Args:
             target_date: Дата для выборки
-            
+
         Returns:
             Список транскрипций с метаданными
         """
@@ -200,7 +237,8 @@ class DigestGenerator:
         # resolve_date_range конвертирует "день Алматы" → UTC-диапазон.
         dr = resolve_date_range(target_date.isoformat())
         start_utc, end_utc = dr.sql_range()
-        rows = db.fetchall("""
+        rows = db.fetchall(
+            """
             SELECT
                 t.id,
                 t.ingest_id,
@@ -219,7 +257,9 @@ class DigestGenerator:
             LEFT JOIN ingest_queue i ON t.ingest_id = i.id
             WHERE t.created_at BETWEEN ? AND ?
             ORDER BY t.created_at ASC
-        """, (start_utc, end_utc))
+        """,
+            (start_utc, end_utc),
+        )
 
         transcriptions = [dict(row) for row in rows]
 
@@ -316,7 +356,9 @@ class DigestGenerator:
                     "segments": thread.get("episode_ids_json") or "[]",
                     "created_at": f"{target_date.isoformat()}T00:00:00",
                     "summary": thread.get("summary") or "",
-                    "topics_json": json.dumps([thread.get("topic_cluster")] if thread.get("topic_cluster") else []),
+                    "topics_json": json.dumps(
+                        [thread.get("topic_cluster")] if thread.get("topic_cluster") else []
+                    ),
                     "participants_json": "[]",
                     "commitments_json": thread.get("commitments_json") or "[]",
                     "needs_review": confidence < 0.7,
@@ -326,9 +368,15 @@ class DigestGenerator:
                     "source_count": len(episode_ids),
                     "thread_confidence": confidence,
                     "topic_overlap_score": float(thread.get("topic_overlap_score") or 0.0),
-                    "participant_overlap_score": float(thread.get("participant_overlap_score") or 0.0),
-                    "temporal_proximity_score": float(thread.get("temporal_proximity_score") or 0.0),
-                    "commitment_overlap_score": float(thread.get("commitment_overlap_score") or 0.0),
+                    "participant_overlap_score": float(
+                        thread.get("participant_overlap_score") or 0.0
+                    ),
+                    "temporal_proximity_score": float(
+                        thread.get("temporal_proximity_score") or 0.0
+                    ),
+                    "commitment_overlap_score": float(
+                        thread.get("commitment_overlap_score") or 0.0
+                    ),
                     "_source_unit": "day_thread",
                     "_episode_count": len(episode_ids),
                     "_commitment_count": len(commitments),
@@ -385,50 +433,58 @@ class DigestGenerator:
             for row in transcriptions
             if row.get("quality_state") not in {"garbage", "quarantined"}
         ]
-    
+
     def extract_facts(self, transcriptions: List[Dict], use_llm: bool = True) -> List[Dict]:
         """
         Извлекает факты из транскрипций с улучшенным LLM-анализом.
-        
+
         Args:
             transcriptions: Список транскрипций
             use_llm: Использовать LLM для улучшенного извлечения
         """
         facts: List[Dict[str, Any]] = []
-        
+
         # Объединяем осмысленный текст (фильтрация шума Whisper)
         full_text = self._get_meaningful_text(transcriptions)
-        
+
         if not full_text:
             return facts
-        
+
         # Если доступен summarizer, используем его
         if use_llm and SUMMARIZER_AVAILABLE:
             try:
                 # Извлекаем задачи через few-shot
                 tasks = extract_tasks(full_text)
                 for task in tasks:
-                    facts.append({
-                        "text": task.get("task", ""),
-                        "type": "task",
-                        "priority": task.get("priority", "medium"),
-                        "deadline": task.get("deadline"),
-                        "timestamp": transcriptions[0].get("created_at") if transcriptions else None,
-                    })
-                
+                    facts.append(
+                        {
+                            "text": task.get("task", ""),
+                            "type": "task",
+                            "priority": task.get("priority", "medium"),
+                            "deadline": task.get("deadline"),
+                            "timestamp": transcriptions[0].get("created_at")
+                            if transcriptions
+                            else None,
+                        }
+                    )
+
                 # Анализируем эмоции
                 emotions = analyze_emotions(full_text)
                 if emotions.get("emotions"):
-                    facts.append({
-                        "text": f"Эмоции: {', '.join(emotions.get('emotions', []))}",
-                        "type": "emotion",
-                        "intensity": emotions.get("intensity", 0.0),
-                        "timestamp": transcriptions[0].get("created_at") if transcriptions else None,
-                    })
-                
+                    facts.append(
+                        {
+                            "text": f"Эмоции: {', '.join(emotions.get('emotions', []))}",
+                            "type": "emotion",
+                            "intensity": emotions.get("intensity", 0.0),
+                            "timestamp": transcriptions[0].get("created_at")
+                            if transcriptions
+                            else None,
+                        }
+                    )
+
             except Exception as e:
                 logger.warning("llm_fact_extraction_failed", error=str(e), fallback="basic")
-        
+
         # Базовое извлечение (fallback или дополнение) — только осмысленные записи
         for trans in transcriptions:
             text = (trans.get("text") or "").strip()
@@ -441,50 +497,54 @@ class DigestGenerator:
 
             for i, sentence in enumerate(sentences):
                 if len(sentence) > 20 and self._has_cyrillic(sentence):
-                    facts.append({
-                        "text": sentence,
-                        "type": "fact",
-                        "timestamp": trans.get("created_at"),
-                        "source_id": trans.get("id"),
-                        "confidence": lang_prob,
-                    })
-        
+                    facts.append(
+                        {
+                            "text": sentence,
+                            "type": "fact",
+                            "timestamp": trans.get("created_at"),
+                            "source_id": trans.get("id"),
+                            "confidence": lang_prob,
+                        }
+                    )
+
         return facts
-    
+
     def calculate_metrics(self, transcriptions: List[Dict], facts: List[Dict]) -> Dict:
         """
         Вычисляет метрики дня.
-        
+
         Returns:
             Словарь с метриками
         """
         total_duration = sum(t.get("duration", 0) or 0 for t in transcriptions)
         total_chars = sum(len(t.get("text", "")) for t in transcriptions)
         total_words = sum(len(t.get("text", "").split()) for t in transcriptions)
-        
+
         # Информационная плотность (упрощённо)
         # Высокая плотность = много фактов на единицу времени
         density_score = 0.0
         if total_duration > 0:
             facts_per_minute = (len(facts) / (total_duration / 60)) if total_duration > 0 else 0
             words_per_minute = (total_words / (total_duration / 60)) if total_duration > 0 else 0
-            
+
             # Нормализуем (предполагаем нормальный темп ~150 слов/мин, ~5 фактов/мин)
             density_score = min(100, (facts_per_minute / 5) * 50 + (words_per_minute / 150) * 50)
-        
+
         metrics = {
             "transcriptions_count": len(transcriptions),
             "facts_count": len(facts),
             "total_duration_minutes": round(total_duration / 60, 2) if total_duration else 0,
             "total_characters": total_chars,
             "total_words": total_words,
-            "average_words_per_transcription": round(total_words / len(transcriptions), 1) if transcriptions else 0,
+            "average_words_per_transcription": round(total_words / len(transcriptions), 1)
+            if transcriptions
+            else 0,
             "information_density_score": round(density_score, 1),
             "density_level": self._get_density_level(density_score),
         }
-        
+
         return metrics
-    
+
     def _get_recording_analyses_for_date(self, target_date: date) -> List[Dict]:
         """Возвращает анализы записей за день только для trusted транскрипций."""
         if not self.db_path.exists():
@@ -493,14 +553,17 @@ class DigestGenerator:
         try:
             dr = resolve_date_range(target_date.isoformat())
             start_utc, end_utc = dr.sql_range()
-            rows = db.fetchall("""
+            rows = db.fetchall(
+                """
                 SELECT ra.id, ra.transcription_id, ra.summary, ra.emotions, ra.actions, ra.topics, ra.urgency
                 FROM recording_analyses ra
                 INNER JOIN transcriptions t ON ra.transcription_id = t.id
                 WHERE t.created_at BETWEEN ? AND ?
                   AND COALESCE(t.quality_state, 'trusted') = 'trusted'
                 ORDER BY t.created_at ASC
-            """, (start_utc, end_utc))
+            """,
+                (start_utc, end_utc),
+            )
             out = []
             for row in rows:
                 d = dict(row)
@@ -526,7 +589,11 @@ class DigestGenerator:
         analyses = self._get_recording_analyses_for_date(target_date) if transcriptions else []
         total_duration_sec = sum(t.get("duration", 0) or 0 for t in transcriptions)
         total_recordings = len(transcriptions)
-        total_duration_str = f"{int(total_duration_sec // 60)}m {int(total_duration_sec % 60)}s" if total_duration_sec else "0m 0s"
+        total_duration_str = (
+            f"{int(total_duration_sec // 60)}m {int(total_duration_sec % 60)}s"
+            if total_duration_sec
+            else "0m 0s"
+        )
         thread_units = [item for item in transcriptions if item.get("_source_unit") == "day_thread"]
         thread_count = len(thread_units)
         long_threads = self.get_long_threads(target_date) if thread_units else []
@@ -543,22 +610,26 @@ class DigestGenerator:
                 # на корейском/грузинском из-за мусорных транскрипций.
                 if part and self._has_cyrillic(part):
                     summary_parts.append(part)
-                for t in (a.get("topics") or []):
+                for t in a.get("topics") or []:
                     if t and t not in key_themes and self._has_cyrillic(t):
                         key_themes.append(t)
-                for e in (a.get("emotions") or []):
+                for e in a.get("emotions") or []:
                     if e and e not in emotions:
                         emotions.append(e)
                 # ПОЧЕМУ urgency: recording_analyses хранит urgency per-analysis,
                 # пробрасываем в actions чтобы Android мог показать приоритет
                 analysis_urgency = a.get("urgency")
-                for act in (a.get("actions") or []):
+                for act in a.get("actions") or []:
                     if isinstance(act, str) and act and self._has_cyrillic(act):
                         action_item = {"text": act, "done": False}
                         if analysis_urgency:
                             action_item["urgency"] = analysis_urgency
                         actions.append(action_item)
-                    elif isinstance(act, dict) and act.get("text") and self._has_cyrillic(act["text"]):
+                    elif (
+                        isinstance(act, dict)
+                        and act.get("text")
+                        and self._has_cyrillic(act["text"])
+                    ):
                         action_item = {"text": act["text"], "done": act.get("done", False)}
                         if analysis_urgency:
                             action_item["urgency"] = analysis_urgency
@@ -576,12 +647,15 @@ class DigestGenerator:
                         if e and e not in emotions:
                             emotions.append(e)
             # ПОЧЕМУ _has_cyrillic: без этого key_themes содержит галлюцинации Whisper на всех языках
-            key_themes = list(dict.fromkeys(
-                f.get("text", "").split(":")[-1].strip()
-                for f in facts
-                if f.get("type") == "fact" and len((f.get("text") or "")) > 15
-                and self._has_cyrillic(f.get("text", ""))
-            ))[:15]
+            key_themes = list(
+                dict.fromkeys(
+                    f.get("text", "").split(":")[-1].strip()
+                    for f in facts
+                    if f.get("type") == "fact"
+                    and len((f.get("text") or "")) > 15
+                    and self._has_cyrillic(f.get("text", ""))
+                )
+            )[:15]
             full_text = self._build_tiered_digest_input(transcriptions)
             # ПОЧЕМУ CoD здесь: без LLM-суммаризации summary_text = сырой текст
             # транскрипций ("Я поеду куплю..."), а не осмысленный итог дня.
@@ -603,21 +677,30 @@ class DigestGenerator:
                             if t and self._has_cyrillic(t):
                                 actions.append({"text": t, "done": False})
                         emo = analyze_emotions(full_text)
-                        for e in (emo.get("emotions") or []):
+                        for e in emo.get("emotions") or []:
                             if e and e not in emotions:
                                 emotions.append(e)
                     except Exception as e:
                         logger.debug("cod_emotions_tasks_failed", error=str(e))
                 except Exception as e:
                     logger.warning("cod_digest_failed", error=str(e))
-                    summary_text = full_text[:500] + "…" if len(full_text) > 500 else full_text or "Нет записей за день."
+                    summary_text = (
+                        full_text[:500] + "…"
+                        if len(full_text) > 500
+                        else full_text or "Нет записей за день."
+                    )
             else:
-                summary_text = full_text[:500] + "…" if len(full_text) > 500 else full_text or "Нет записей за день."
+                summary_text = (
+                    full_text[:500] + "…"
+                    if len(full_text) > 500
+                    else full_text or "Нет записей за день."
+                )
 
         balance_payload = {}
         insights = []
         try:
             from src.balance.storage import get_balance_wheel
+
             balance_payload = get_balance_wheel(self.db_path, target_date, target_date)
         except Exception as e:
             logger.warning("balance_wheel_failed", date=target_date.isoformat(), error=str(e))
@@ -625,6 +708,7 @@ class DigestGenerator:
 
         try:
             from src.persongraph.service import save_day_psychology_snapshot, get_day_insights
+
             day_text = self._build_tiered_digest_input(transcriptions)
             if day_text:
                 save_day_psychology_snapshot(self.db_path, target_date.isoformat(), day_text)
@@ -633,18 +717,49 @@ class DigestGenerator:
             logger.warning("day_insights_failed", date=target_date.isoformat(), error=str(e))
             insights = []
 
+        # Location context — top places visited during the day
+        # WHY: "офис → кафе → дом" adds spatial narrative to the digest.
+        # Uses LocationCache (filled by PassiveLocationTracker every 5 min).
+        locations_today: list[str] = []
+        try:
+            from src.storage.db import get_reflexio_db
+
+            loc_db = get_reflexio_db(self.db_path)
+            day_start = f"{target_date.isoformat()}T00:00:00"
+            day_end = f"{target_date.isoformat()}T23:59:59"
+            loc_rows = loc_db.fetchall(
+                """
+                SELECT resolved_place, count(*) as cnt
+                FROM location_cache
+                WHERE resolved_place IS NOT NULL
+                  AND resolved_place != ''
+                  AND synced_at >= ? AND synced_at <= ?
+                GROUP BY resolved_place
+                ORDER BY cnt DESC
+                LIMIT 5
+                """,
+                (day_start, day_end),
+            )
+            locations_today = [row["resolved_place"] for row in loc_rows]
+        except Exception as e:
+            logger.debug("locations_today_failed", date=target_date.isoformat(), error=str(e))
+
         # Acoustic session profile — агрегация per-segment фич в дневной тренд
         acoustic_profile = None
         try:
             from src.asr.acoustic import aggregate_session_acoustics
+
             acoustic_profile = aggregate_session_acoustics(self.db_path, target_date)
         except Exception as e:
-            logger.debug("aggregate_session_acoustics_failed", date=target_date.isoformat(), error=str(e))
+            logger.debug(
+                "aggregate_session_acoustics_failed", date=target_date.isoformat(), error=str(e)
+            )
 
         # Data lineage: записываем какие транскрипции вошли в этот дайджест.
         # Fire-and-forget — ошибка не ломает уже готовый результат.
         try:
             from src.storage.digest_lineage import save_digest_sources
+
             save_digest_sources(target_date.isoformat(), transcriptions)
         except Exception as e:
             logger.debug("save_digest_sources_failed", date=target_date.isoformat(), error=str(e))
@@ -666,18 +781,23 @@ class DigestGenerator:
         trusted_units = [
             item for item in transcriptions if (item.get("quality_state") or "trusted") == "trusted"
         ]
-        degraded = any(item.get("_source_unit") not in {"episode", "day_thread"} for item in transcriptions) or (
-            len(trusted_units) != len(transcriptions)
-        )
+        degraded = any(
+            item.get("_source_unit") not in {"episode", "day_thread"} for item in transcriptions
+        ) or (len(trusted_units) != len(transcriptions))
         evidence_strength = round(
             (
-                sum(float(item.get("quality_score") or 1.0) for item in trusted_units) / len(trusted_units)
-            ) if trusted_units else 0.0,
+                sum(float(item.get("quality_score") or 1.0) for item in trusted_units)
+                / len(trusted_units)
+            )
+            if trusted_units
+            else 0.0,
             3,
         )
         instability_markers = {
             "day_context_fragility": degraded,
-            "trusted_fraction": round((len(trusted_units) / len(transcriptions)) if transcriptions else 0.0, 3),
+            "trusted_fraction": round(
+                (len(trusted_units) / len(transcriptions)) if transcriptions else 0.0, 3
+            ),
             "long_threads_present": len(long_threads),
         }
 
@@ -694,15 +814,24 @@ class DigestGenerator:
             "insights": insights,
             "acoustic_profile": acoustic_profile,
             "sources_count": len(transcriptions),
-            "source_unit": transcriptions[0].get("_source_unit", "transcription") if transcriptions else "transcription",
-            "episodes_used": sum(1 for item in transcriptions if item.get("_source_unit") == "episode"),
+            "source_unit": transcriptions[0].get("_source_unit", "transcription")
+            if transcriptions
+            else "transcription",
+            "episodes_used": sum(
+                1 for item in transcriptions if item.get("_source_unit") == "episode"
+            ),
             "thread_count": thread_count,
             "long_thread_count": len(long_threads),
             "day_thread_confidence": round(
                 (
-                    sum(float(item.get("thread_confidence") or item.get("quality_score") or 0.0) for item in thread_units)
+                    sum(
+                        float(item.get("thread_confidence") or item.get("quality_score") or 0.0)
+                        for item in thread_units
+                    )
                     / len(thread_units)
-                ) if thread_units else 0.0,
+                )
+                if thread_units
+                else 0.0,
                 3,
             ),
             "incomplete_context": degraded,
@@ -719,6 +848,8 @@ class DigestGenerator:
             # ПОЧЕМУ [:15]: novelty может содержать 100+ тем (каждый segment генерит topics),
             # на экране телефона больше 15 чипов — нечитаемо.
             "novelty": novelty_data.get("novel_topics", [])[:15],
+            # Location context — places visited during the day
+            "locations": locations_today,
         }
 
     def _get_topics_last_7_days(self, target_date: date) -> list[str]:
@@ -731,16 +862,20 @@ class DigestGenerator:
         db = get_reflexio_db(self.db_path)
         try:
             from datetime import timedelta
+
             end_date = target_date - timedelta(days=1)
             start_date = target_date - timedelta(days=7)
             dr_start = resolve_date_range(start_date.isoformat())
             dr_end = resolve_date_range(end_date.isoformat())
             start_utc = dr_start.sql_range()[0]
             end_utc = dr_end.sql_range()[1]
-            rows = db.fetchall("""
+            rows = db.fetchall(
+                """
                 SELECT topics FROM structured_events
                 WHERE created_at BETWEEN ? AND ? AND is_current = 1
-            """, (start_utc, end_utc))
+            """,
+                (start_utc, end_utc),
+            )
             all_topics: list[str] = []
             for row in rows:
                 raw = row["topics"] if isinstance(row, dict) else row[0]
@@ -775,10 +910,13 @@ class DigestGenerator:
             # Темы сегодня
             dr = resolve_date_range(target_date.isoformat())
             start_utc, end_utc = dr.sql_range()
-            rows = db.fetchall("""
+            rows = db.fetchall(
+                """
                 SELECT topics FROM structured_events
                 WHERE created_at BETWEEN ? AND ? AND is_current = 1
-            """, (start_utc, end_utc))
+            """,
+                (start_utc, end_utc),
+            )
             today_topics: set[str] = set()
             for row in rows:
                 raw = row["topics"] if isinstance(row, dict) else row[0]
@@ -805,16 +943,20 @@ class DigestGenerator:
 
             # Повторы = подсчёт streak (сколько дней подряд тема встречалась)
             from datetime import timedelta
+
             repeated: list[dict[str, Any]] = []
             history_by_day: dict[str, set[str]] = {}
             for days_ago in range(1, 8):
                 d = target_date - timedelta(days=days_ago)
                 dr_d = resolve_date_range(d.isoformat())
                 s, e = dr_d.sql_range()
-                day_rows = db.fetchall("""
+                day_rows = db.fetchall(
+                    """
                     SELECT topics FROM structured_events
                     WHERE created_at BETWEEN ? AND ? AND is_current = 1
-                """, (s, e))
+                """,
+                    (s, e),
+                )
                 day_topics: set[str] = set()
                 for row in day_rows:
                     raw = row["topics"] if isinstance(row, dict) else row[0]
@@ -861,6 +1003,7 @@ class DigestGenerator:
 
         try:
             from src.llm.providers import get_llm_client
+
             history_topics = self._get_topics_last_7_days(target_date)
             unique_history = list(dict.fromkeys(history_topics))[:20]
 
@@ -930,30 +1073,38 @@ class DigestGenerator:
             return "🟢 Низкая"
         else:
             return "⚪ Очень низкая"
-    
-    def generate_markdown(self, target_date: date, transcriptions: List[Dict], 
-                         facts: List[Dict], metrics: Dict, include_metadata: bool = True) -> str:
+
+    def generate_markdown(
+        self,
+        target_date: date,
+        transcriptions: List[Dict],
+        facts: List[Dict],
+        metrics: Dict,
+        include_metadata: bool = True,
+    ) -> str:
         """
         Генерирует markdown-дайджест.
-        
+
         Args:
             target_date: Дата
             transcriptions: Список транскрипций
             facts: Список фактов
             metrics: Метрики
             include_metadata: Включать ли метаданные
-            
+
         Returns:
             Markdown текст
         """
         lines = []
-        
+
         # Заголовок
         lines.append(f"# Reflexio Digest — {target_date.strftime('%d %B %Y')}")
         lines.append("")
-        lines.append(f"*Сгенерировано автоматически {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+        lines.append(
+            f"*Сгенерировано автоматически {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
+        )
         lines.append("")
-        
+
         # Метрики дня
         lines.append("## 📊 Метрики дня")
         lines.append("")
@@ -961,36 +1112,43 @@ class DigestGenerator:
         lines.append(f"- **Фактов извлечено:** {metrics['facts_count']}")
         lines.append(f"- **Общая длительность:** {metrics['total_duration_minutes']} минут")
         lines.append(f"- **Слов обработано:** {metrics['total_words']}")
-        lines.append(f"- **Информационная плотность:** {metrics['information_density_score']}/100 ({metrics['density_level']})")
-        
+        lines.append(
+            f"- **Информационная плотность:** {metrics['information_density_score']}/100 ({metrics['density_level']})"
+        )
+
         # Расширенные метрики (если есть)
-        if 'extended_metrics' in metrics:
+        if "extended_metrics" in metrics:
             from src.digest.metrics_ext import interpret_semantic_density, interpret_wpm_rate
-            ext = metrics['extended_metrics']
+
+            ext = metrics["extended_metrics"]
             lines.append("")
             lines.append("### 🧠 Когнитивные метрики")
             lines.append("")
-            
-            semantic_density = ext.get('semantic_density', 0)
-            wpm = ext.get('wpm_rate', 0)
-            
+
+            semantic_density = ext.get("semantic_density", 0)
+            wpm = ext.get("wpm_rate", 0)
+
             lines.append(f"- **Семантическая плотность:** {semantic_density:.3f}")
             lines.append(f"  *{interpret_semantic_density(semantic_density)}*")
             lines.append(f"- **Лексическое разнообразие:** {ext.get('lexical_diversity', 0):.3f}")
             lines.append(f"- **Скорость речи:** {wpm:.1f} слов/мин")
             lines.append(f"  *{interpret_wpm_rate(wpm)}*")
-            lines.append(f"- **Средняя длина сегмента:** {ext.get('avg_words_per_segment', 0):.1f} слов")
+            lines.append(
+                f"- **Средняя длина сегмента:** {ext.get('avg_words_per_segment', 0):.1f} слов"
+            )
             lines.append(f"- **Вариация активности:** {ext.get('hourly_variation', 0):.3f}")
-            if 'segmentation' in ext:
-                seg = ext['segmentation']
-                lines.append(f"- **Средняя длительность сегмента:** {seg.get('avg_duration', 0):.1f} сек")
-        
+            if "segmentation" in ext:
+                seg = ext["segmentation"]
+                lines.append(
+                    f"- **Средняя длительность сегмента:** {seg.get('avg_duration', 0):.1f} сек"
+                )
+
         lines.append("")
-        
+
         # Информационная плотность
         lines.append("### 🎯 Анализ информационной плотности")
         lines.append("")
-        
+
         density_desc = {
             "🔴 Очень высокая": "Очень продуктивный день с высокой концентрацией информации",
             "🟠 Высокая": "Хороший день с активным обменом информацией",
@@ -998,8 +1156,8 @@ class DigestGenerator:
             "🟢 Низкая": "Спокойный день, меньше информационного потока",
             "⚪ Очень низкая": "Минимальная активность, возможно пауза или фокус на других задачах",
         }
-        
-        level = metrics['density_level']
+
+        level = metrics["density_level"]
         lines.append(f"**Уровень:** {level}")
         lines.append("")
         lines.append(density_desc.get(level, "Не определён"))
@@ -1009,7 +1167,9 @@ class DigestGenerator:
         try:
             daily_payload = self.get_daily_digest_json(target_date)
         except Exception as e:
-            logger.warning("daily_digest_for_density_failed", date=target_date.isoformat(), error=str(e))
+            logger.warning(
+                "daily_digest_for_density_failed", date=target_date.isoformat(), error=str(e)
+            )
             daily_payload = {}
 
         balance = daily_payload.get("balance", {}) if isinstance(daily_payload, dict) else {}
@@ -1047,7 +1207,7 @@ class DigestGenerator:
                 if full_text:
                     # Генерируем плотное саммари через Chain of Density
                     dense_summary = generate_dense_summary(full_text, iterations=3)
-                    
+
                     # Валидируем через Critic
                     # ПОЧЕМУ auto_refine=False: с 0.85 порогом и эвристиками
                     # confidence почти всегда < 0.85 → лишний LLM вызов каждый раз.
@@ -1058,20 +1218,22 @@ class DigestGenerator:
                         confidence_threshold=0.70,
                         auto_refine=False,
                     )
-                    
+
                     lines.append("## 📋 Дневное саммари")
                     lines.append("")
                     lines.append(validated["summary"])
                     lines.append("")
-                    
+
                     if validated.get("refined"):
-                        lines.append(f"*Саммари улучшено автоматически (confidence: {validated['confidence_score']:.2f})*")
+                        lines.append(
+                            f"*Саммари улучшено автоматически (confidence: {validated['confidence_score']:.2f})*"
+                        )
                     else:
                         lines.append(f"*Confidence: {validated['confidence_score']:.2f}*")
                     lines.append("")
             except Exception as e:
                 logger.warning("enhanced_summary_failed", error=str(e))
-        
+
         # Факты
         if facts:
             lines.append("## 📝 Извлечённые факты")
@@ -1090,7 +1252,7 @@ class DigestGenerator:
             lines.append("")
             lines.append("*Факты не найдены*")
             lines.append("")
-        
+
         # Транскрипции (если включены)
         if include_metadata and transcriptions:
             lines.append("## 🎤 Полные транскрипции")
@@ -1099,25 +1261,26 @@ class DigestGenerator:
                 timestamp = trans.get("created_at", "")[:16] if trans.get("created_at") else ""
                 language = trans.get("language", "unknown")
                 duration = trans.get("duration", 0) or 0
-                
+
                 lines.append(f"### Транскрипция #{i}")
                 lines.append(f"*{timestamp} | {language} | {duration:.1f}s*")
                 lines.append("")
                 lines.append(f"> {trans.get('text', '')}")
                 lines.append("")
-        
+
         # Подвал
         lines.append("---")
         lines.append("")
         lines.append("*Reflexio 24/7 — автоматический дневной дайджест*")
-        
+
         return "\n".join(lines)
-    
-    def generate_json(self, target_date: date, transcriptions: List[Dict],
-                     facts: List[Dict], metrics: Dict) -> Dict:
+
+    def generate_json(
+        self, target_date: date, transcriptions: List[Dict], facts: List[Dict], metrics: Dict
+    ) -> Dict:
         """
         Генерирует JSON-дайджест с CoVe валидацией.
-        
+
         Returns:
             Валидированный JSON-дайджест
         """
@@ -1128,29 +1291,34 @@ class DigestGenerator:
             "facts": facts,
             "transcriptions": transcriptions if transcriptions else [],
         }
-        
+
         # ПОЧЕМУ убрали CoVe importlib: аналогично H5 safe_middleware —
         # exec_module() произвольного .py файла из .cursor/ = RCE вектор.
         return digest_dict
-    
-    def generate(self, target_date: date, output_format: str = "markdown",
-                include_metadata: bool = True, generate_pdf: bool = False) -> Path:
+
+    def generate(
+        self,
+        target_date: date,
+        output_format: str = "markdown",
+        include_metadata: bool = True,
+        generate_pdf: bool = False,
+    ) -> Path:
         """
         Генерирует дайджест для указанной даты.
-        
+
         Args:
             target_date: Дата
             output_format: Формат ("markdown" или "json")
             include_metadata: Включать ли метаданные
-            
+
         Returns:
             Путь к созданному файлу
         """
         logger.info("generating_digest", date=target_date.isoformat(), format=output_format)
-        
+
         # Получаем транскрипции
         transcriptions = self._get_digest_units(target_date)
-        
+
         if not transcriptions:
             logger.warning("no_transcriptions", date=target_date.isoformat())
             # Создаём пустой дайджест
@@ -1168,10 +1336,10 @@ class DigestGenerator:
         else:
             # Извлекаем факты
             facts = self.extract_facts(transcriptions)
-            
+
         # Вычисляем базовые метрики
         metrics = self.calculate_metrics(transcriptions, facts)
-        
+
         # Добавляем расширенные метрики (если включено)
         extended_enabled = getattr(settings, "EXTENDED_METRICS", False)
         if extended_enabled:
@@ -1183,8 +1351,12 @@ class DigestGenerator:
                         hour = datetime.fromisoformat(trans["created_at"]).strftime("%H")
                         hourly_dist[hour] = hourly_dist.get(hour, 0) + 1
                     except Exception as e:
-                        logger.debug("hourly_dist_parse_failed", created_at=trans.get("created_at"), error=str(e))
-            
+                        logger.debug(
+                            "hourly_dist_parse_failed",
+                            created_at=trans.get("created_at"),
+                            error=str(e),
+                        )
+
             extended = calculate_extended_metrics(
                 transcriptions=transcriptions,
                 hourly_distribution=hourly_dist,
@@ -1192,11 +1364,12 @@ class DigestGenerator:
             )
             if extended:
                 metrics["extended_metrics"] = extended
-        
+
         # Генерируем дайджест
         if output_format == "pdf" or generate_pdf:
             try:
                 from src.digest.pdf_generator import PDFGenerator
+
                 pdf_gen = PDFGenerator()
                 output_file = pdf_gen.generate(
                     target_date=target_date,
@@ -1211,22 +1384,29 @@ class DigestGenerator:
                 )
                 return output_file
             except ImportError:
-                logger.warning("pdf_generation_failed", reason="reportlab_not_available", fallback="markdown")
+                logger.warning(
+                    "pdf_generation_failed", reason="reportlab_not_available", fallback="markdown"
+                )
                 # Fallback на markdown
                 output_format = "markdown"
-        
+
         if output_format == "json":
-            content = json.dumps(self.generate_json(target_date, transcriptions, facts, metrics), 
-                               indent=2, ensure_ascii=False)
+            content = json.dumps(
+                self.generate_json(target_date, transcriptions, facts, metrics),
+                indent=2,
+                ensure_ascii=False,
+            )
             ext = "json"
         else:
-            content = self.generate_markdown(target_date, transcriptions, facts, metrics, include_metadata)
+            content = self.generate_markdown(
+                target_date, transcriptions, facts, metrics, include_metadata
+            )
             ext = "md"
-        
+
         # Сохраняем
         output_file = self.digests_dir / f"digest_{target_date.isoformat()}.{ext}"
         output_file.write_text(content, encoding="utf-8")
-        
+
         logger.info(
             "digest_generated",
             date=target_date.isoformat(),
@@ -1235,29 +1415,35 @@ class DigestGenerator:
             transcriptions=len(transcriptions),
             density=metrics.get("information_density_score", 0),
         )
-        
+
         # Синхронизируем память с дайджестом (инсайты и паттерны)
         try:
             core_memory = get_core_memory()
             session_memory = get_session_memory()
-            
+
             # Создаём сессию для дня
             session_id = f"day_{target_date.isoformat()}"
-            session_memory.create_session(session_id, metadata={
-                "date": target_date.isoformat(),
-                "transcriptions_count": len(transcriptions),
-                "facts_count": len(facts),
-                "density_score": metrics.get("information_density_score", 0),
-            })
-            
+            session_memory.create_session(
+                session_id,
+                metadata={
+                    "date": target_date.isoformat(),
+                    "transcriptions_count": len(transcriptions),
+                    "facts_count": len(facts),
+                    "density_score": metrics.get("information_density_score", 0),
+                },
+            )
+
             # Добавляем контексты из фактов
             for fact in facts[:20]:  # Ограничиваем количество
-                session_memory.add_context(session_id, {
-                    "type": fact.get("type", "fact"),
-                    "text": fact.get("text", ""),
-                    "timestamp": fact.get("timestamp"),
-                })
-            
+                session_memory.add_context(
+                    session_id,
+                    {
+                        "type": fact.get("type", "fact"),
+                        "text": fact.get("text", ""),
+                        "timestamp": fact.get("timestamp"),
+                    },
+                )
+
             # Обновляем core memory с паттернами
             if facts:
                 # Анализируем паттерны (например, частота типов фактов)
@@ -1265,7 +1451,7 @@ class DigestGenerator:
                 for fact in facts:
                     fact_type = fact.get("type", "fact")
                     fact_types[fact_type] = fact_types.get(fact_type, 0) + 1
-                
+
                 # Сохраняем паттерны дня
                 daily_patterns = core_memory.get("daily_patterns", {})
                 daily_patterns[target_date.isoformat()] = {
@@ -1277,26 +1463,10 @@ class DigestGenerator:
                     oldest_date = min(daily_patterns.keys())
                     del daily_patterns[oldest_date]
                 core_memory.set("daily_patterns", daily_patterns)
-            
+
             logger.info("memory_synced_with_digest", date=target_date.isoformat())
-            
+
         except Exception as e:
             logger.warning("memory_sync_failed", error=str(e), continue_without_sync=True)
-        
+
         return output_file
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
