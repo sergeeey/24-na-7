@@ -48,4 +48,12 @@ data class CallAggregate(
     val callCount: Int,
     val totalSeconds: Int,
     val lastCallMs: Long,
-)
+) {
+    // WHY: not in constructor — Room can't handle extra fields in query result POJOs.
+    // Set post-query by CallRecordingLinker in PeopleScreen.
+    @Transient
+    var linkedRecordingsCount: Int = 0
+
+    fun withLinkedCount(count: Int): CallAggregate =
+        this.also { it.linkedRecordingsCount = count }
+}

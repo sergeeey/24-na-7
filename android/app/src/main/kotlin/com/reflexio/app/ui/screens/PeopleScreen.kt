@@ -125,7 +125,12 @@ private fun buildPersonSubtitle(
     person.lastSeen?.take(10)?.let { bits.add("контакт $it") }
     if (person.sampleCount > 0) bits.add("следов ${person.sampleCount}")
     val stats = callStats[person.name]
-    if (stats != null) bits.add("звонков ${stats.callCount}")
+    if (stats != null) {
+        bits.add("звонков ${stats.callCount}")
+        if (stats.linkedRecordingsCount > 0) {
+            bits.add("записей ${stats.linkedRecordingsCount}")
+        }
+    }
     return bits.joinToString(" · ").ifBlank { "Пока мало контекста, но карточка уже готова для накопления памяти." }
 }
 
@@ -621,9 +626,14 @@ private fun PersonListCard(
                     )
                 }
                 callStats[person.name]?.let { stats ->
+                    val chipText = if (stats.linkedRecordingsCount > 0) {
+                        "${stats.callCount} звонков · ${stats.linkedRecordingsCount} с записью"
+                    } else {
+                        "${stats.callCount} звонков"
+                    }
                     AssistChip(
                         onClick = {},
-                        label = { Text("${stats.callCount} звонков") },
+                        label = { Text(chipText) },
                         colors = AssistChipDefaults.assistChipColors(
                             containerColor = TealAccent.copy(alpha = 0.18f),
                             labelColor = TealAccent,
@@ -661,11 +671,23 @@ private suspend fun syncAndAggregateCallLog(
     val callLogNames = aggregates.map { it.contactName }.toSet()
     val result = mutableMapOf<String, CallAggregate>()
 
+    // WHY: link recordings to calls — "Марат позвонил → вот что обсуждали после"
+    val recordingDao = RecordingDatabase.getInstance(context).recordingDao()
+    val thirtyDaysAgo = System.currentTimeMillis() - 30 * 86_400_000L
+    val allRecordings = recordingDao.getRecordingsSince(thirtyDaysAgo)
+
     for (person in serverPersons) {
         val matchedName = ContactMatcher.matchCallLogName(person.name, callLogNames)
         if (matchedName != null) {
-            aggregates.firstOrNull { it.contactName == matchedName }?.let {
-                result[person.name] = it
+            aggregates.firstOrNull { it.contactName == matchedName }?.let { agg ->
+                // Link recordings to this person's calls
+                val personCalls = dao.callsForContact(matchedName, 20)
+                val linked = com.reflexio.app.domain.contacts.CallRecordingLinker.link(
+                    personCalls, allRecordings
+                )
+                val linkedCount = linked.count { it.linkedRecordings.isNotEmpty() }
+                // Store linked count in aggregate (extend CallAggregate if needed)
+                result[person.name] = agg.withLinkedCount(linkedCount)
             }
         }
     }

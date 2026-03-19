@@ -34,4 +34,8 @@ interface RecordingDao {
 
     @Query("SELECT createdAt FROM recordings WHERE status = 'processed' ORDER BY createdAt DESC LIMIT 1")
     suspend fun getLastProcessedCreatedAt(): Long?
+
+    // WHY: CallRecordingLinker needs a List, not Flow. Recent 30 days is enough for linking.
+    @Query("SELECT * FROM recordings WHERE createdAt >= :sinceMs ORDER BY createdAt DESC")
+    suspend fun getRecordingsSince(sinceMs: Long): List<Recording>
 }
