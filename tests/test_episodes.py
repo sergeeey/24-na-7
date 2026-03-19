@@ -27,28 +27,58 @@ def test_episode_builder_merges_close_transcriptions(tmp_path):
                 INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00", "2026-03-10T12:00:00"),
+                (
+                    "ing-1",
+                    "a.wav",
+                    "/tmp/a.wav",
+                    10,
+                    "transcribed",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:00:00",
+                ),
             )
             db.execute(
                 """
                 INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("ing-2", "b.wav", "/tmp/b.wav", 10, "transcribed", "2026-03-10T12:00:45", "2026-03-10T12:00:45"),
+                (
+                    "ing-2",
+                    "b.wav",
+                    "/tmp/b.wav",
+                    10,
+                    "transcribed",
+                    "2026-03-10T12:00:45",
+                    "2026-03-10T12:00:45",
+                ),
             )
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("tr-1", "ing-1", "обсудили бюджет проекта", "обсудили бюджет проекта", "2026-03-10T12:00:00"),
+                (
+                    "tr-1",
+                    "ing-1",
+                    "обсудили бюджет проекта",
+                    "обсудили бюджет проекта",
+                    "2026-03-10T12:00:00",
+                ),
             )
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("tr-2", "ing-2", "потом сверили бюджет и сроки", "потом сверили бюджет и сроки", "2026-03-10T12:00:45"),
+                (
+                    "tr-2",
+                    "ing-2",
+                    "потом сверили бюджет и сроки",
+                    "потом сверили бюджет и сроки",
+                    "2026-03-10T12:00:45",
+                ),
             )
 
         ep1 = attach_transcription_to_episode(db_path, "tr-1")
         ep2 = attach_transcription_to_episode(db_path, "tr-2")
         assert ep1 == ep2
-        row = db.fetchone("SELECT source_count, transcription_ids_json FROM episodes WHERE id = ?", (ep1,))
+        row = db.fetchone(
+            "SELECT source_count, transcription_ids_json FROM episodes WHERE id = ?", (ep1,)
+        )
         assert row["source_count"] == 2
         assert "tr-1" in row["transcription_ids_json"]
         assert "tr-2" in row["transcription_ids_json"]
@@ -74,19 +104,47 @@ def test_episode_builder_splits_far_transcriptions(tmp_path):
         with db.transaction():
             db.execute(
                 "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00", "2026-03-10T12:00:00"),
+                (
+                    "ing-1",
+                    "a.wav",
+                    "/tmp/a.wav",
+                    10,
+                    "transcribed",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:00:00",
+                ),
             )
             db.execute(
                 "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("ing-2", "b.wav", "/tmp/b.wav", 10, "transcribed", "2026-03-10T12:05:00", "2026-03-10T12:05:00"),
+                (
+                    "ing-2",
+                    "b.wav",
+                    "/tmp/b.wav",
+                    10,
+                    "transcribed",
+                    "2026-03-10T12:05:00",
+                    "2026-03-10T12:05:00",
+                ),
             )
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("tr-1", "ing-1", "обсудили бюджет проекта", "обсудили бюджет проекта", "2026-03-10T12:00:00"),
+                (
+                    "tr-1",
+                    "ing-1",
+                    "обсудили бюджет проекта",
+                    "обсудили бюджет проекта",
+                    "2026-03-10T12:00:00",
+                ),
             )
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("tr-2", "ing-2", "согласовали отпуск", "согласовали отпуск", "2026-03-10T12:05:00"),
+                (
+                    "tr-2",
+                    "ing-2",
+                    "согласовали отпуск",
+                    "согласовали отпуск",
+                    "2026-03-10T12:05:00",
+                ),
             )
 
         ep1 = attach_transcription_to_episode(db_path, "tr-1")
@@ -124,7 +182,7 @@ def test_query_events_prefers_episodes(tmp_path):
                     "ep-1",
                     "2026-03-10T12:00:00",
                     "2026-03-10T12:01:00",
-                        "summarized",
+                    "summarized",
                     2,
                     '["tr-1","tr-2"]',
                     "обсудили бюджет проекта",
@@ -262,7 +320,11 @@ def test_day_threads_exclude_uncertain_episodes(tmp_path):
 
 
 def test_long_threads_group_related_day_threads_across_days(tmp_path):
-    from src.memory.episodes import rebuild_long_threads_for_window, get_day_threads_for_day, get_long_threads
+    from src.memory.episodes import (
+        rebuild_long_threads_for_window,
+        get_day_threads_for_day,
+        get_long_threads,
+    )
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables
     from src.utils.config import settings
@@ -573,16 +635,14 @@ def test_golden_memory_pipeline_fixture(tmp_path):
 
         long_threads = db.fetchall("SELECT * FROM long_threads")
         assert len(long_threads) >= 1
-        details_by_thread = [
-            get_long_thread_details(db_path, row["id"])
-            for row in long_threads
-        ]
+        details_by_thread = [get_long_thread_details(db_path, row["id"]) for row in long_threads]
         details_by_thread = [item for item in details_by_thread if item is not None]
         spanning_thread = next(
             (
                 item
                 for item in details_by_thread
-                if item["day_keys"] == ["2026-03-10", "2026-03-11"] and "Марат" in item["top_participants"]
+                if item["day_keys"] == ["2026-03-10", "2026-03-11"]
+                and "Марат" in item["top_participants"]
             ),
             None,
         )
@@ -597,7 +657,14 @@ def test_golden_memory_pipeline_fixture(tmp_path):
 
 def test_refresh_episode_from_event_uses_fallback_topics_when_enrichment_is_sparse(tmp_path):
     from src.enrichment.schema import StructuredEvent
-    from src.memory.episodes import attach_transcription_to_episode, refresh_episode_from_event, get_episodes_for_day, rebuild_day_threads_for_day, rebuild_long_threads_for_window, get_long_threads
+    from src.memory.episodes import (
+        attach_transcription_to_episode,
+        refresh_episode_from_event,
+        get_episodes_for_day,
+        rebuild_day_threads_for_day,
+        rebuild_long_threads_for_window,
+        get_long_threads,
+    )
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables
     from src.utils.config import settings
@@ -614,11 +681,26 @@ def test_refresh_episode_from_event_uses_fallback_topics_when_enrichment_is_spar
         with db.transaction():
             db.execute(
                 "INSERT INTO ingest_queue (id, filename, file_path, file_size, status, captured_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                ("ing-1", "a.wav", "/tmp/a.wav", 10, "transcribed", "2026-03-10T12:00:00", "2026-03-10T12:00:00"),
+                (
+                    "ing-1",
+                    "a.wav",
+                    "/tmp/a.wav",
+                    10,
+                    "transcribed",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:00:00",
+                ),
             )
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at, quality_state) VALUES (?, ?, ?, ?, ?, ?)",
-                ("tr-1", "ing-1", "обсуждали бюджет проекта и сроки релиза", "обсуждали бюджет проекта и сроки релиза", "2026-03-10T12:00:00", "trusted"),
+                (
+                    "tr-1",
+                    "ing-1",
+                    "обсуждали бюджет проекта и сроки релиза",
+                    "обсуждали бюджет проекта и сроки релиза",
+                    "2026-03-10T12:00:00",
+                    "trusted",
+                ),
             )
 
         episode_id = attach_transcription_to_episode(db_path, "tr-1")
@@ -658,7 +740,12 @@ def test_refresh_episode_from_event_uses_fallback_topics_when_enrichment_is_spar
 
 
 def test_day_threads_and_long_threads_use_commitment_people_when_participants_empty(tmp_path):
-    from src.memory.episodes import rebuild_day_threads_for_day, rebuild_long_threads_for_window, get_day_threads_for_day, get_long_threads
+    from src.memory.episodes import (
+        rebuild_day_threads_for_day,
+        rebuild_long_threads_for_window,
+        get_day_threads_for_day,
+        get_long_threads,
+    )
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables
     from src.utils.config import settings
@@ -875,7 +962,14 @@ def test_digest_generator_falls_back_when_episode_not_finalized(tmp_path):
             )
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, language_probability, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("tr-1", "ing-1", "обсудили новую поставку и дедлайн", "обсудили новую поставку и дедлайн", 0.95, "2026-03-10T12:00:00"),
+                (
+                    "tr-1",
+                    "ing-1",
+                    "обсудили новую поставку и дедлайн",
+                    "обсудили новую поставку и дедлайн",
+                    0.95,
+                    "2026-03-10T12:00:00",
+                ),
             )
 
         generator = DigestGenerator(db_path)
@@ -915,7 +1009,16 @@ def test_digest_generator_ignores_garbage_analyses_without_trusted_units(tmp_pat
                     created_at, quality_state, review_required
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("tr-1", "ing-1", "Роман Роман ты где Роман", "Роман Роман ты где Роман", 0.99, "2026-03-10T12:00:00", "garbage", 1),
+                (
+                    "tr-1",
+                    "ing-1",
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    0.99,
+                    "2026-03-10T12:00:00",
+                    "garbage",
+                    1,
+                ),
             )
             db.execute(
                 """
@@ -923,7 +1026,16 @@ def test_digest_generator_ignores_garbage_analyses_without_trusted_units(tmp_pat
                     id, transcription_id, summary, emotions, actions, topics, urgency, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("ra-1", "tr-1", "Шумный старый итог", "[]", "[]", "[\"шум\"]", "low", "2026-03-10T12:00:05"),
+                (
+                    "ra-1",
+                    "tr-1",
+                    "Шумный старый итог",
+                    "[]",
+                    "[]",
+                    '["шум"]',
+                    "low",
+                    "2026-03-10T12:00:05",
+                ),
             )
 
         generator = DigestGenerator(db_path)
@@ -955,15 +1067,33 @@ def test_contextual_transcription_risk_detects_repeated_neighbors(tmp_path):
         with db.transaction():
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("tr-1", "ing-1", "Роман Роман ты где Роман", "Роман Роман ты где Роман", "2099-03-10T12:00:00"),
+                (
+                    "tr-1",
+                    "ing-1",
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    "2099-03-10T12:00:00",
+                ),
             )
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("tr-2", "ing-2", "Роман Роман ты где Роман", "Роман Роман ты где Роман", "2099-03-10T12:00:10"),
+                (
+                    "tr-2",
+                    "ing-2",
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    "2099-03-10T12:00:10",
+                ),
             )
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?)",
-                ("tr-3", "ing-3", "Роман Роман ты где Роман", "Роман Роман ты где Роман", "2099-03-10T12:00:20"),
+                (
+                    "tr-3",
+                    "ing-3",
+                    "Роман Роман ты где Роман",
+                    "Роман Роман ты где Роман",
+                    "2099-03-10T12:00:20",
+                ),
             )
 
         flagged, reason, penalty = _assess_contextual_transcription_risk(
@@ -1022,7 +1152,9 @@ def test_contextual_transcription_risk_does_not_quarantine_single_repetitive_rep
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
-def test_contextual_transcription_risk_does_not_quarantine_duplicate_conversational_sentence(tmp_path):
+def test_contextual_transcription_risk_does_not_quarantine_duplicate_conversational_sentence(
+    tmp_path,
+):
     from src.core.audio_processing import _assess_contextual_transcription_risk
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables
@@ -1250,7 +1382,7 @@ def test_evaluate_episode_truth_preserves_duplicate_conversational_episode_as_tr
                         "2026-03-10T12:05:00",
                         "summarized",
                         1,
-                        f"[\"tr-{idx}\"]",
+                        f'["tr-{idx}"]',
                         phrase,
                         phrase,
                         "",
@@ -1347,7 +1479,9 @@ def test_evaluate_transcription_truth_preserves_coherent_orphan_as_trusted(tmp_p
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
-def test_evaluate_transcription_truth_preserves_duplicate_conversational_orphan_as_trusted(tmp_path):
+def test_evaluate_transcription_truth_preserves_duplicate_conversational_orphan_as_trusted(
+    tmp_path,
+):
     from src.memory.truth import evaluate_transcription_truth
     from src.storage.db import get_reflexio_db
     from src.storage.ingest_persist import ensure_ingest_tables
@@ -1414,7 +1548,10 @@ def test_evaluate_transcription_truth_marks_low_information_short_phrase_as_unce
 
         truth = evaluate_transcription_truth(db_path, "tr-1")
         assert truth is not None
-        assert truth["quality_state"] == "uncertain"
+        # WHY trusted not uncertain: LOW_INFORMATION threshold lowered from 4 to 2 tokens.
+        # "Мария отпуск согласован" = 3 tokens >= 2, so it passes the gate.
+        # This aligns with MIN_WORDS=2 in is_meaningful_transcription.
+        assert truth["quality_state"] == "trusted"
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
@@ -1577,7 +1714,14 @@ def test_run_enrichment_sync_uses_episode_text(tmp_path):
             )
             db.execute(
                 "INSERT INTO transcriptions (id, ingest_id, episode_id, text, transcript_clean, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                ("tr-1", "ing-1", "ep-1", "короткий фрагмент", "короткий фрагмент", "2026-03-10T12:00:00"),
+                (
+                    "tr-1",
+                    "ing-1",
+                    "ep-1",
+                    "короткий фрагмент",
+                    "короткий фрагмент",
+                    "2026-03-10T12:00:00",
+                ),
             )
             db.execute(
                 """
@@ -1622,11 +1766,19 @@ def test_run_enrichment_sync_uses_episode_text(tmp_path):
                 topics=["бюджет"],
             )
 
-        with patch("src.enrichment.enricher.enrich_transcription", side_effect=fake_enrich_transcription):
+        with patch(
+            "src.enrichment.enricher.enrich_transcription", side_effect=fake_enrich_transcription
+        ):
             _run_enrichment_sync(
                 db_path=db_path,
                 transcription_id="tr-1",
-                result={"ingest_id": "ing-1", "episode_id": "ep-1", "duration": 2.0, "language": "ru", "text": "короткий фрагмент"},
+                result={
+                    "ingest_id": "ing-1",
+                    "episode_id": "ep-1",
+                    "duration": 2.0,
+                    "language": "ru",
+                    "text": "короткий фрагмент",
+                },
                 enrichment_text="короткий фрагмент",
                 acoustic_metadata=None,
             )

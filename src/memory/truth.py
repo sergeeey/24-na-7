@@ -44,8 +44,10 @@ def _instability_markers(reasons: list[dict[str, Any]], score: float) -> dict[st
     reason_codes = {reason["code"] for reason in reasons}
     return {
         "context_instability_score": round(max(0.0, 1.0 - score), 3),
-        "episode_instability": "DUPLICATE_NEIGHBOR" in reason_codes or "REPEATED_PHRASE" in reason_codes,
-        "day_context_fragility": "LOW_INFORMATION" in reason_codes or "EPISODE_CONTRADICTION" in reason_codes,
+        "episode_instability": "DUPLICATE_NEIGHBOR" in reason_codes
+        or "REPEATED_PHRASE" in reason_codes,
+        "day_context_fragility": "LOW_INFORMATION" in reason_codes
+        or "EPISODE_CONTRADICTION" in reason_codes,
         "turning_point": False,
         "mode_shift": "DUPLICATE_NEIGHBOR" in reason_codes,
     }
@@ -85,12 +87,15 @@ def evaluate_transcription_truth(
     if token_count == 0:
         reasons.append(_reason("EMPTY_TRANSCRIPT", "high", -1.0, token_count=0))
         score = 0.0
-    elif token_count < 4 or unique_ratio < 0.4:
+    # WHY 2 not 4: always-on mobile recording generates many 1-3 word segments.
+    # 4-token threshold was marking 70%+ as LOW_INFORMATION → uncertain.
+    # 2 tokens aligns with MIN_WORDS in is_meaningful_transcription.
+    elif token_count < 2 or unique_ratio < 0.3:
         reasons.append(
             _reason(
                 "LOW_INFORMATION",
                 "medium",
-                -0.35,
+                -0.25,
                 token_count=token_count,
                 unique_tokens=unique_count,
                 unique_ratio=round(unique_ratio, 3),
@@ -130,10 +135,7 @@ def evaluate_transcription_truth(
             if _signature(recent["transcript_clean"] or recent["text"] or "") == signature:
                 duplicate_neighbors += 1
     low_information_duplicate = (
-        dominant_share >= 0.5
-        or unique_ratio <= 0.55
-        or unique_count <= 3
-        or token_count <= 5
+        dominant_share >= 0.5 or unique_ratio <= 0.55 or unique_count <= 3 or token_count <= 5
     )
     if duplicate_neighbors >= 1 and low_information_duplicate:
         reasons.append(
@@ -163,7 +165,9 @@ def evaluate_transcription_truth(
         quality_state = "quarantined"
     elif token_count == 0:
         quality_state = "garbage"
-    elif repeated_phrase and ((duplicate_neighbors >= 1 and low_information_duplicate) or dominant_share >= 0.55):
+    elif repeated_phrase and (
+        (duplicate_neighbors >= 1 and low_information_duplicate) or dominant_share >= 0.55
+    ):
         quality_state = "garbage"
     elif score < 0.72 or repeated_phrase:
         quality_state = "uncertain"
@@ -254,10 +258,7 @@ def evaluate_episode_truth(db_path: Path, episode_id: str) -> dict[str, Any] | N
             if _signature(recent["clean_text"] or recent["raw_text"] or "") == signature:
                 duplicate_neighbors += 1
     low_information_duplicate = (
-        dominant_share >= 0.5
-        or unique_ratio <= 0.55
-        or unique_count <= 3
-        or token_count <= 5
+        dominant_share >= 0.5 or unique_ratio <= 0.55 or unique_count <= 3 or token_count <= 5
     )
     if duplicate_neighbors >= 1 and low_information_duplicate:
         reasons.append(
@@ -291,7 +292,9 @@ def evaluate_episode_truth(db_path: Path, episode_id: str) -> dict[str, Any] | N
         quality_state = "quarantined"
     elif token_count == 0:
         quality_state = "garbage"
-    elif repeated_phrase and ((duplicate_neighbors >= 1 and low_information_duplicate) or dominant_share >= 0.55):
+    elif repeated_phrase and (
+        (duplicate_neighbors >= 1 and low_information_duplicate) or dominant_share >= 0.55
+    ):
         quality_state = "garbage"
     elif score < 0.72 or contradiction or repeated_phrase:
         quality_state = "uncertain"
@@ -595,7 +598,9 @@ def reclassify_episodes_for_range(
         },
         "changed_episode_count": len(changed_episode_ids),
         "changed_transcription_count": sum(
-            1 for proposal in transcription_proposals if proposal["old_state"] != proposal["new_state"]
+            1
+            for proposal in transcription_proposals
+            if proposal["old_state"] != proposal["new_state"]
         ),
     }
 
@@ -611,7 +616,9 @@ def recheck_non_trusted_for_range(
     """Selective second-pass for already non-trusted items."""
     ensure_ingest_tables(db_path)
     db = get_reflexio_db(db_path)
-    allowed_states = tuple(state for state in target_states if state in QUALITY_STATES and state != "trusted")
+    allowed_states = tuple(
+        state for state in target_states if state in QUALITY_STATES and state != "trusted"
+    )
     if not allowed_states:
         allowed_states = ("uncertain", "quarantined")
     state_placeholders = ",".join("?" for _ in allowed_states)
@@ -701,6 +708,8 @@ def recheck_non_trusted_for_range(
         },
         "changed_episode_count": len(changed_episode_ids),
         "changed_transcription_count": sum(
-            1 for proposal in transcription_proposals if proposal["old_state"] != proposal["new_state"]
+            1
+            for proposal in transcription_proposals
+            if proposal["old_state"] != proposal["new_state"]
         ),
     }
