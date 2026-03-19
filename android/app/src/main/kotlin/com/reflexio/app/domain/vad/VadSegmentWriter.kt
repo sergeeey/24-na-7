@@ -6,7 +6,11 @@ import kotlin.math.max
 
 private const val SAMPLE_RATE = 16000
 private const val VAD_FRAME_SIZE = 320
-private const val SILENCE_FRAMES_TO_END = 15 // 300ms / 20ms
+// WHY 50 not 15: 300ms silence was too aggressive — normal speech has 0.5-2sec pauses
+// between phrases. 1sec silence keeps conversation context intact.
+// Before: "Да, любимая" + "А куда идти?" = 2 separate segments
+// After:  "Да, любимая. А куда идти?" = 1 coherent segment
+private const val SILENCE_FRAMES_TO_END = 50 // 1000ms / 20ms
 private const val MIN_SEGMENT_SAMPLES = (SAMPLE_RATE * 0.5).toInt() // 0.5 sec
 private const val MAX_SEGMENT_SAMPLES = SAMPLE_RATE * 30 // 30 sec hard cap
 private const val INITIAL_SEGMENT_CAPACITY = SAMPLE_RATE * 2 // 2 sec
