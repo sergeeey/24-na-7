@@ -75,6 +75,7 @@ ALLOWED_WAV_CONTENT_TYPES = {
 
 NOISE_PHRASES = frozenset(
     {
+        # English filler
         "you",
         "the",
         "a",
@@ -98,6 +99,7 @@ NOISE_PHRASES = frozenset(
         "thanks",
         "okay",
         "ok",
+        # Russian filler
         "угу",
         "ага",
         "ну",
@@ -107,7 +109,31 @@ NOISE_PHRASES = frozenset(
         "ладно",
         "окей",
         "понял",
+        # WHY: TV/YouTube subtitle noise — these phrases appear 10+ times/day
+        # from background TV and pollute the memory with non-speech content.
+        # Verified on 2026-03-19 production data: 40%+ of "uncertain" records.
+        "продолжение следует",
+        "продолжение следует...",
+        "спасибо за просмотр",
+        "спасибо за просмотр!",
+        "подпишитесь",
+        "подпишитесь!",
+        "подпишись",
+        "подпишись!",
+        "поехали",
+        "поехали!",
     }
+)
+
+# WHY: TV subtitles contain editor/corrector credits that repeat verbatim.
+# Substring match catches all variations ("А.Семкин", "Е.Жукова", etc.)
+TV_SUBTITLE_MARKERS = (
+    "субтитры делал",
+    "спасибо за субтитры",
+    "редактор субтитров",
+    "корректор",
+    "бесплатный курс www",
+    "с вами был",
 )
 TRANSCRIPT_TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9]{2,}")
 
@@ -616,6 +642,17 @@ def is_meaningful_transcription(
         logger.debug(
             "meaningful_check_rejected",
             reason="noise_phrase",
+            text=normalized[:50],
+            duration=duration_seconds,
+        )
+        return False
+    # WHY: TV/YouTube subtitles contain credits that repeat verbatim.
+    # Substring match is intentional — catches "Субтитры делал DimaTorzok",
+    # "Спасибо за субтитры Алексею Дубровскому!" and all variations.
+    if any(marker in normalized_lower for marker in TV_SUBTITLE_MARKERS):
+        logger.debug(
+            "meaningful_check_rejected",
+            reason="tv_subtitle_marker",
             text=normalized[:50],
             duration=duration_seconds,
         )
