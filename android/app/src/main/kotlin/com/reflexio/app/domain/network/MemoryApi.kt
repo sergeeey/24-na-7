@@ -85,6 +85,16 @@ data class DailyDigestData(
     val sourcesCount: Int,
     val notice: String?,
     val status: String?,
+    // v2 fields — richer digest context
+    val locations: List<String> = emptyList(),
+    val evidenceStrength: Float = 0f,
+    val trustedFraction: Float = 0f,
+    val threadCount: Int = 0,
+    val longThreadCount: Int = 0,
+    val episodesUsed: Int = 0,
+    val degraded: Boolean = false,
+    val verdict: String? = null,
+    val novelty: List<String> = emptyList(),
 )
 
 data class ThreadSummary(
@@ -243,6 +253,8 @@ object MemoryApi {
             val raw = resp.body?.string() ?: throw RuntimeException("Empty response")
             if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}: $raw")
             val json = JSONObject(raw)
+            // WHY: parse instability_markers for trusted_fraction
+            val markers = json.optJSONObject("instability_markers")
             return DailyDigestData(
                 date = json.optString("date", date),
                 summaryText = json.optString("summary_text", ""),
@@ -254,6 +266,15 @@ object MemoryApi {
                 sourcesCount = json.optInt("sources_count", 0),
                 notice = json.optString("_notice").ifBlank { null },
                 status = json.optString("_status").ifBlank { null },
+                locations = jsonArrayToList(json.optJSONArray("locations")),
+                evidenceStrength = json.optDouble("evidence_strength", 0.0).toFloat(),
+                trustedFraction = markers?.optDouble("trusted_fraction", 0.0)?.toFloat() ?: 0f,
+                threadCount = json.optInt("thread_count", 0),
+                longThreadCount = json.optInt("long_thread_count", 0),
+                episodesUsed = json.optInt("episodes_used", 0),
+                degraded = json.optBoolean("degraded", false),
+                verdict = json.optString("verdict").ifBlank { null },
+                novelty = jsonArrayToList(json.optJSONArray("novelty")),
             )
         }
     }
