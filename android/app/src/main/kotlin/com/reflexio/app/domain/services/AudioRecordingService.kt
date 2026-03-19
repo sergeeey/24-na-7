@@ -591,5 +591,26 @@ class AudioRecordingService : Service() {
         }
     }
 
+    // WHY: When user swipes app from Recent Apps, Android calls onTaskRemoved().
+    // Without this override, the foreground service dies silently.
+    // We reschedule restart via AlarmManager to survive the kill.
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.w(TAG, "onTaskRemoved — scheduling restart")
+        val restartIntent = Intent(applicationContext, AudioRecordingService::class.java)
+        val pendingIntent = PendingIntent.getService(
+            applicationContext,
+            1,
+            restartIntent,
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val alarmManager = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+        alarmManager.set(
+            android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            android.os.SystemClock.elapsedRealtime() + 3000, // restart in 3 sec
+            pendingIntent
+        )
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 }
