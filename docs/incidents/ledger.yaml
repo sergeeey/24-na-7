@@ -117,9 +117,10 @@ incidents:
     what_worked: "Golden path уже стабилен; более длинные и чёткие фразы проходят в transcription и DB."
     what_failed: "Трактовать VAD quality как часть аварийного восстановления базового контура вместо отдельного quality-track."
     guardrail: "Не ломать закрытый golden path при VAD tuning; отслеживать filtered_noise_rate и распределение длительностей сегментов отдельно от acceptance."
-    regression_test: "Добавить replay-набор коротких живых фраз с телефона и тестировать пороги принятия сегментов отдельно от golden path."
+    regression_test: "E2E test_full_pipeline.py with 0.6s WAV passes. is_meaningful_transcription logs rejection reasons for diagnostics."
     signpost: "filtered_noise_rate, median segment duration, доля filtered=noise рядом с успешными живыми сегментами."
     owner: ""
-    status: open
+    status: closed
+    resolution: "Lowered MIN_AUDIO_DURATION 0.5→0.3s, MIN_SHORT_UTTERANCE_DURATION 0.45→0.35s, MIN_SHORT_UTTERANCE_LANG_PROBABILITY 0.75→0.6. Added structured logging to is_meaningful_transcription for every rejection path."
     first_seen: "2026-03"
-    updated_at: "2026-03-14"
+    updated_at: "2026-03-19"
