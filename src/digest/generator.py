@@ -690,16 +690,19 @@ class DigestGenerator:
                         e = e.strip()
                         if e and e not in emotions:
                             emotions.append(e)
-            # ПОЧЕМУ _has_cyrillic: без этого key_themes содержит галлюцинации Whisper на всех языках
-            key_themes = list(
-                dict.fromkeys(
-                    f.get("text", "").split(":")[-1].strip()
-                    for f in facts
-                    if f.get("type") == "fact"
-                    and len((f.get("text") or "")) > 15
-                    and self._has_cyrillic(f.get("text", ""))
-                )
-            )[:15]
+            # WHY: only use fact-based themes if structured_events didn't provide any.
+            # structured_events.topics = clean keywords ("работа", "бюджет")
+            # facts.text = descriptions ("Текст описывает парня") — worse quality.
+            if not key_themes:
+                key_themes = list(
+                    dict.fromkeys(
+                        f.get("text", "").split(":")[-1].strip()
+                        for f in facts
+                        if f.get("type") == "fact"
+                        and len((f.get("text") or "")) > 15
+                        and self._has_cyrillic(f.get("text", ""))
+                    )
+                )[:15]
             full_text = self._build_tiered_digest_input(transcriptions)
             # ПОЧЕМУ CoD здесь: без LLM-суммаризации summary_text = сырой текст
             # транскрипций ("Я поеду куплю..."), а не осмысленный итог дня.
