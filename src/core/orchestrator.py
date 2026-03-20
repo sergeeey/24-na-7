@@ -395,9 +395,10 @@ def synthesize_response(
             # User wants to see WHAT happened, not how many rows found.
             snippets = []
             for ev in events[:5]:
-                snippet = ev.get("snippet", "")
-                if snippet and len(snippet) > 10:
-                    snippets.append(f"• {snippet[:100]}")
+                # WHY: events have "text" not "snippet" — try both
+                snippet = ev.get("snippet") or ev.get("text") or ev.get("summary") or ""
+                if snippet and len(snippet.strip()) > 10:
+                    snippets.append(f"• {snippet.strip()[:100]}")
             if snippets:
                 header = f"Найдено {total} событий."
                 if top:
