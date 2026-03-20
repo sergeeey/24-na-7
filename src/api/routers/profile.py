@@ -18,6 +18,7 @@ from src.memory.user_profile import (
     extract_profile_facts_from_events,
     get_enrichment_context,
 )
+from src.memory.consumed_content import get_content_summary
 
 logger = get_logger("api.profile")
 router = APIRouter(prefix="/profile", tags=["profile"])
@@ -63,6 +64,13 @@ def update_person(req: PersonUpdateRequest):
     db_path = settings.STORAGE_PATH / "reflexio.db"
     upsert_person(db_path, req.name, req.relationship, req.context, source="manual")
     return {"status": "ok", "name": req.name, "relationship": req.relationship}
+
+
+@router.get("/consumed")
+def get_consumed(hours: int = 24):
+    """Get consumed content summary (TV, YouTube, podcasts the user watched)."""
+    db_path = settings.STORAGE_PATH / "reflexio.db"
+    return get_content_summary(db_path, hours=hours)
 
 
 @router.post("/extract")

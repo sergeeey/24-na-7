@@ -647,6 +647,36 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
         return None
 
 
+def _ensure_consumed_content_table(conn: sqlite3.Connection) -> None:
+    """Consumed content store — TV, YouTube, podcasts, reels the user watches/listens to.
+
+    WHY: Instead of discarding filtered noise, we analyze what content the user
+    consumes. This reveals interests, learning patterns, mood indicators.
+    Separated from transcriptions to not pollute the voice diary.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS consumed_content (
+            id TEXT PRIMARY KEY,
+            text TEXT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'unknown',
+            topics TEXT NOT NULL DEFAULT '[]',
+            language TEXT,
+            duration REAL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_consumed_content_created ON consumed_content(created_at DESC)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_consumed_content_source ON consumed_content(source_type, created_at DESC)"
+    )
+    conn.commit()
+
+
 def _ensure_user_profile_table(conn: sqlite3.Connection) -> None:
     """User profile store — accumulated knowledge about the user from transcriptions."""
     cursor = conn.cursor()
@@ -694,6 +724,7 @@ def ensure_ingest_tables(db_path: Path) -> None:
     _ensure_episodes_tables(db.conn)
     _ensure_structured_events_table(db.conn)
     _ensure_client_signposts_table(db.conn)
+    _ensure_consumed_content_table(db.conn)
     _ensure_user_profile_table(db.conn)
 
 

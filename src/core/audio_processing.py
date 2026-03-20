@@ -1045,6 +1045,22 @@ def process_audio_from_artifact_sync(
             }
 
         if not is_meaningful_transcription(text, lang_prob, audio_duration):
+            # WHY: Save non-owner filtered content as "consumed content" instead
+            # of discarding. TV/YouTube/podcasts reveal user interests and habits.
+            # Only save if text is substantial (>10 chars) — tiny fragments are noise.
+            try:
+                if text and len(text.strip()) > 10:
+                    from src.memory.consumed_content import save_consumed_content
+
+                    save_consumed_content(
+                        db_path,
+                        text,
+                        language=detected_lang,
+                        duration=audio_duration,
+                    )
+            except Exception:
+                pass  # fire-and-forget — must not break pipeline
+
             _mark_ingest_status(
                 db_path,
                 ingest_id,
