@@ -54,6 +54,7 @@ DEFAULT_EXAMPLES = [
             "emotions": ["эмоция1", "эмоция2"],
             "actions": ["действие 1", "действие 2"],
             "topics": ["тема1", "тема2"],
+            "speakers": ["Имя1", "Имя2"],
             "urgency": "high",
         },
     },
@@ -137,8 +138,14 @@ def generate_structured_output(
     prompt = get_few_shot_actions_prompt(text, examples=relevant_examples)
 
     # Добавляем инструкцию для конкретного типа действия
+    # WHY: explicit speakers instruction — LLM was returning empty speakers[]
+    # because the prompt didn't ask for names. Now it extracts proper names
+    # (Максим Валерьевич, Катерина, Рустен) into speakers field.
     prompt += (
         f"\n\nТип действия: {action_type}\nСоздай структурированный вывод для этого типа действия."
+        "\n\nВАЖНО: В поле speakers укажи имена людей, которые упоминаются или к которым обращаются в тексте."
+        ' Извлекай имена, отчества, прозвища. Примеры: ["Максим Валерьевич", "Катерина", "Рустен"].'
+        " Если имён нет — верни пустой список []."
     )
 
     # ПОЧЕМУ validate_fn: Gemini часто возвращает обрезанный JSON (Unterminated string).
