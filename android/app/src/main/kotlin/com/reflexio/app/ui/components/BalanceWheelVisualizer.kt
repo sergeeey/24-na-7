@@ -208,7 +208,9 @@ fun BalanceWheelVisualizer(
         ) {
             val cx = size.width / 2f
             val cy = size.height / 2f
-            val maxR = min(size.width, size.height) * 0.462f
+            // WHY 0.34: was 0.462 — labels at 1.06*R were clipped by screen edge.
+            // 0.34 gives ~30% margin for label text + score values.
+            val maxR = min(size.width, size.height) * 0.34f
             val n = WHEEL_DOMAINS.size
             val readyState = wheelModel.state == WheelLoadState.READY
             val waveStartRadius = maxR * 0.17f
@@ -564,9 +566,10 @@ private fun DrawScope.drawLabels(
                 242,
                 247,
             )
-            textSize = size.width * 0.028f
+            // WHY 0.034: was 0.028 — too small on phone screens.
+            textSize = size.width * 0.034f
             textAlign = android.graphics.Paint.Align.CENTER
-            isFakeBoldText = false
+            isFakeBoldText = true
         }
         val scorePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.argb(
@@ -575,11 +578,13 @@ private fun DrawScope.drawLabels(
                 216,
                 248,
             )
-            textSize = size.width * 0.022f
+            textSize = size.width * 0.026f
             textAlign = android.graphics.Paint.Align.CENTER
         }
 
-        val labelR = maxR * 1.06f
+        // WHY 1.22: was 1.06 — labels overlapped with nodes.
+        // 1.22 gives clear separation between chart edge and label text.
+        val labelR = maxR * 1.22f
         repeat(n) { i ->
             val angle = -PI / 2.0 + i * 2.0 * PI / n
             val lx = cx + cos(angle).toFloat() * labelR

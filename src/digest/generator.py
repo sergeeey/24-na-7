@@ -717,6 +717,15 @@ class DigestGenerator:
             logger.warning("day_insights_failed", date=target_date.isoformat(), error=str(e))
             insights = []
 
+        # Consumed content summary — what user watched/listened to
+        consumed_summary: dict = {}
+        try:
+            from src.memory.consumed_content import get_content_summary
+
+            consumed_summary = get_content_summary(self.db_path, hours=24)
+        except Exception as e:
+            logger.debug("consumed_content_failed", date=target_date.isoformat(), error=str(e))
+
         # Location context — top places visited during the day
         # WHY: "офис → кафе → дом" adds spatial narrative to the digest.
         # Uses LocationCache (filled by PassiveLocationTracker every 5 min).
@@ -850,6 +859,10 @@ class DigestGenerator:
             "novelty": novelty_data.get("novel_topics", [])[:15],
             # Location context — places visited during the day
             "locations": locations_today,
+            # Consumed content — what user watched/listened to
+            "consumed_content": consumed_summary
+            if consumed_summary.get("total_count", 0) > 0
+            else None,
         }
 
     def _get_topics_last_7_days(self, target_date: date) -> list[str]:

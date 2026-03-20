@@ -95,6 +95,10 @@ data class DailyDigestData(
     val degraded: Boolean = false,
     val verdict: String? = null,
     val novelty: List<String> = emptyList(),
+    // Consumed content — what user watched/listened to
+    val consumedCount: Int = 0,
+    val consumedSources: Map<String, Int> = emptyMap(),
+    val consumedTopics: List<String> = emptyList(),
 )
 
 data class ThreadSummary(
@@ -275,6 +279,15 @@ object MemoryApi {
                 degraded = json.optBoolean("degraded", false),
                 verdict = json.optString("verdict").ifBlank { null },
                 novelty = jsonArrayToList(json.optJSONArray("novelty")),
+                consumedCount = json.optJSONObject("consumed_content")?.optInt("total_count", 0) ?: 0,
+                consumedSources = run {
+                    val src = json.optJSONObject("consumed_content")?.optJSONObject("sources")
+                    if (src != null) src.keys().asSequence().associateWith { src.optInt(it, 0) } else emptyMap()
+                },
+                consumedTopics = run {
+                    val arr = json.optJSONObject("consumed_content")?.optJSONArray("top_topics")
+                    if (arr != null) (0 until arr.length()).map { arr.optString(it) } else emptyList()
+                },
             )
         }
     }

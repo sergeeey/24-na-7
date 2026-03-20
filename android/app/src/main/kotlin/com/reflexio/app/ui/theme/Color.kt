@@ -35,32 +35,34 @@ val DarkOnErrorContainer = Color(0xFFFFDAD6)
 
 val DarkOutline = Color(0xFF314555)
 
-// === Light theme — fallback ===
-val LightPrimary = Color(0xFF006A8E)
+// === Light theme — premium warm palette ===
+// WHY: warm off-white (#F7F5F2) instead of cold gray — feels organic.
+// Indigo primary matches Спросить/Итог/Зеркало redesign palette.
+val LightPrimary = Color(0xFF6366F1)              // Indigo
 val LightOnPrimary = Color(0xFFFFFFFF)
-val LightPrimaryContainer = Color(0xFFCBEFFF)
-val LightOnPrimaryContainer = Color(0xFF001E2A)
+val LightPrimaryContainer = Color(0xFFF0F0FF)     // IndigoSoft
+val LightOnPrimaryContainer = Color(0xFF1A1A2E)
 
-val LightSecondary = Color(0xFF006C57)
+val LightSecondary = Color(0xFF34D399)             // Mint
 val LightOnSecondary = Color(0xFFFFFFFF)
-val LightSecondaryContainer = Color(0xFF96F8DE)
+val LightSecondaryContainer = Color(0xFFECFDF5)   // MintSoft
 val LightOnSecondaryContainer = Color(0xFF002019)
 
-val LightTertiary = Color(0xFF9B4320)
+val LightTertiary = Color(0xFFF59E0B)              // Amber
 val LightOnTertiary = Color(0xFFFFFFFF)
-val LightTertiaryContainer = Color(0xFFFFDBCF)
+val LightTertiaryContainer = Color(0xFFFFFBEB)    // AmberSoft
 val LightOnTertiaryContainer = Color(0xFF351000)
 
-val LightBackground = Color(0xFFF8F9FA)
-val LightOnBackground = Color(0xFF1B1B1F)
-val LightSurface = Color(0xFFFFFFFF)
-val LightOnSurface = Color(0xFF1B1B1F)
-val LightSurfaceVariant = Color(0xFFE7E8EC)
-val LightOnSurfaceVariant = Color(0xFF49454F)
+val LightBackground = Color(0xFFF7F5F2)            // Warm off-white
+val LightOnBackground = Color(0xFF1A1A2E)          // Dark text
+val LightSurface = Color(0xFFFFFFFF)               // Pure white cards
+val LightOnSurface = Color(0xFF1A1A2E)
+val LightSurfaceVariant = Color(0xFFF1F0ED)        // Slightly warmer
+val LightOnSurfaceVariant = Color(0xFF6B7280)      // Gray text
 
-val LightError = Color(0xFFBA1A1A)
+val LightError = Color(0xFFFF6B6B)                 // Coral
 val LightOnError = Color(0xFFFFFFFF)
-val LightErrorContainer = Color(0xFFFFDAD6)
+val LightErrorContainer = Color(0xFFFFF0F0)        // CoralSoft
 val LightOnErrorContainer = Color(0xFF410002)
 
-val LightOutline = Color(0xFF79747E)
+val LightOutline = Color(0xFFD1D5DB)               // Light gray border

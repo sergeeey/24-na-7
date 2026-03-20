@@ -310,6 +310,11 @@ private fun DigestBodyV2(data: DailyDigestData, calendarEvents: List<CachedCalen
     if (data.actions.isNotEmpty()) {
         ActionsBlock(data.actions)
     }
+
+    // Consumed content — what user watched/listened to
+    if (data.consumedCount > 0) {
+        ConsumedContentCard(data)
+    }
 }
 
 // ── Glass Stat Card ──
@@ -513,6 +518,59 @@ private fun ActionsBlock(actions: List<ActionItemData>) {
                             fontSize = 12.sp, fontWeight = FontWeight.Medium,
                             color = if (action.done) Mint else TextMuted,
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Consumed Content ──
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ConsumedContentCard(data: DailyDigestData) {
+    Surface(shape = RoundedCornerShape(18.dp), color = CardWhite, shadowElevation = 1.dp) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFFF5F3FF)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("📺", fontSize = 14.sp)
+                }
+                Spacer(Modifier.width(10.dp))
+                Text("Что смотрел", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TextPrimary)
+                Spacer(Modifier.weight(1f))
+                Text("${data.consumedCount} фрагментов", fontSize = 12.sp, color = TextMuted)
+            }
+
+            // Source breakdown
+            if (data.consumedSources.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    data.consumedSources.forEach { (source, count) ->
+                        val (label, color, bg) = when (source) {
+                            "youtube" -> Triple("YouTube", Coral, CoralSoft)
+                            "tv" -> Triple("TV", Indigo, IndigoSoft)
+                            "podcast" -> Triple("Подкаст", Amber, AmberSoft)
+                            else -> Triple("Другое", Color(0xFF9CA3AF), Color(0xFFF3F4F6))
+                        }
+                        Surface(shape = RoundedCornerShape(10.dp), color = bg) {
+                            Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = color)
+                                Spacer(Modifier.width(4.dp))
+                                Text("$count", fontSize = 12.sp, color = color.copy(alpha = 0.6f))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Topics from consumed content
+            if (data.consumedTopics.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    data.consumedTopics.take(6).forEach { topic ->
+                        Pill(topic, Color(0xFF8B5CF6), Color(0xFFF5F3FF))
                     }
                 }
             }
