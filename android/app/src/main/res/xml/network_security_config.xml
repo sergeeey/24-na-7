@@ -14,8 +14,9 @@
     <!-- Production: только зашифрованный трафик -->
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
-            <!-- Доверяем системным CA (Let's Encrypt, Cloudflare и т.д.) -->
             <certificates src="system" />
+            <certificates src="user" />
+            <certificates src="@raw/isrg_root_x1" />
         </trust-anchors>
     </base-config>
 </network-security-config>
