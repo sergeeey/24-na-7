@@ -603,6 +603,50 @@ class DigestGenerator:
         actions: List[Dict] = []
         summary_parts: List[str] = []
 
+        # WHY: Try structured_events first (richer data from current enrichment).
+        # Fallback to recording_analyses only if structured_events empty.
+        if not analyses:
+            try:
+                db = get_reflexio_db(self.db_path)
+                dr = resolve_date_range(target_date.isoformat())
+                start_utc, end_utc = dr.sql_range()
+                se_rows = db.fetchall(
+                    """
+                    SELECT summary, topics, emotions, sentiment
+                    FROM structured_events
+                    WHERE is_current = 1 AND created_at BETWEEN ? AND ?
+                    ORDER BY created_at ASC
+                    """,
+                    (start_utc, end_utc),
+                )
+                for row in se_rows:
+                    part = (row["summary"] or "").strip()
+                    if part and len(part) > 15 and self._has_cyrillic(part):
+                        summary_parts.append(part)
+                    for t in (
+                        json.loads(row["topics"])
+                        if isinstance(row["topics"], str) and row["topics"]
+                        else []
+                    ):
+                        t_str = str(t).strip()
+                        if (
+                            t_str
+                            and len(t_str) > 2
+                            and t_str not in key_themes
+                            and self._has_cyrillic(t_str)
+                        ):
+                            key_themes.append(t_str)
+                    for e in (
+                        json.loads(row["emotions"])
+                        if isinstance(row["emotions"], str) and row["emotions"]
+                        else []
+                    ):
+                        e_str = str(e).strip()
+                        if e_str and e_str not in emotions:
+                            emotions.append(e_str)
+            except Exception as e:
+                logger.debug("structured_events_themes_failed", error=str(e))
+
         if analyses:
             for a in analyses:
                 part = (a.get("summary") or "").strip()
