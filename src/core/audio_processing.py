@@ -555,6 +555,22 @@ def _run_enrichment_sync(
     )
     _enrich_latency_ms = int((_time.monotonic() - _enrich_t0) * 1000)
     persist_structured_event(db_path, event)
+
+    # WHY: extract people from enriched event into user profile.
+    # Fire-and-forget — profile extraction must not break enrichment pipeline.
+    try:
+        from src.memory.user_profile import upsert_person
+
+        speakers = getattr(event, "speakers", None) or []
+        topics = getattr(event, "topics", None) or []
+        topic_str = ", ".join(str(t) for t in (topics[:3] if topics else []))
+        for speaker in speakers if isinstance(speakers, list) else []:
+            name = str(speaker).strip()
+            if 2 <= len(name) <= 50:
+                upsert_person(db_path, name, context=topic_str, source="auto")
+    except Exception as _profile_err:
+        logger.debug("profile_extraction_failed", error=str(_profile_err))
+
     episode_id = refresh_episode_from_event(db_path, transcription_id, event)
     if episode_id:
         result["episode_id"] = episode_id

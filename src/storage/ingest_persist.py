@@ -74,28 +74,34 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    _ensure_columns(cursor, "ingest_queue", [
-        "file_path TEXT NOT NULL DEFAULT ''",
-        "status TEXT NOT NULL DEFAULT 'pending'",
-        "segment_id TEXT",
-        "transport_status TEXT NOT NULL DEFAULT 'received'",
-        "processing_status TEXT NOT NULL DEFAULT 'received'",
-        "captured_at TEXT",
-        "audio_sha256 TEXT",
-        "attempt_count INTEGER NOT NULL DEFAULT 0",
-        "next_attempt_at TEXT",
-        "error_code TEXT",
-        "created_at TEXT",
-        "processed_at TEXT",
-        "error_message TEXT",
-        "quarantine_reason TEXT",
-        "quality_score REAL",
-        "needs_recheck INTEGER NOT NULL DEFAULT 0",
-        "quality_state TEXT NOT NULL DEFAULT 'trusted'",
-        "quality_reasons_json TEXT NOT NULL DEFAULT '[]'",
-        "review_required INTEGER NOT NULL DEFAULT 0",
-    ])
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ingest_queue_segment_id ON ingest_queue(segment_id)")
+    _ensure_columns(
+        cursor,
+        "ingest_queue",
+        [
+            "file_path TEXT NOT NULL DEFAULT ''",
+            "status TEXT NOT NULL DEFAULT 'pending'",
+            "segment_id TEXT",
+            "transport_status TEXT NOT NULL DEFAULT 'received'",
+            "processing_status TEXT NOT NULL DEFAULT 'received'",
+            "captured_at TEXT",
+            "audio_sha256 TEXT",
+            "attempt_count INTEGER NOT NULL DEFAULT 0",
+            "next_attempt_at TEXT",
+            "error_code TEXT",
+            "created_at TEXT",
+            "processed_at TEXT",
+            "error_message TEXT",
+            "quarantine_reason TEXT",
+            "quality_score REAL",
+            "needs_recheck INTEGER NOT NULL DEFAULT 0",
+            "quality_state TEXT NOT NULL DEFAULT 'trusted'",
+            "quality_reasons_json TEXT NOT NULL DEFAULT '[]'",
+            "review_required INTEGER NOT NULL DEFAULT 0",
+        ],
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ingest_queue_segment_id ON ingest_queue(segment_id)"
+    )
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ingest_queue_status ON ingest_queue(status)")
     cursor.execute(
         """
@@ -122,22 +128,26 @@ def _ensure_sqlite_ingest_tables(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    _ensure_columns(cursor, "transcriptions", [
-        "episode_id TEXT",
-        "transcript_raw TEXT",
-        "transcript_clean TEXT",
-        "asr_model TEXT",
-        "asr_confidence REAL",
-        "garbage_flag INTEGER NOT NULL DEFAULT 0",
-        "quality_score REAL",
-        "needs_recheck INTEGER NOT NULL DEFAULT 0",
-        "quality_state TEXT NOT NULL DEFAULT 'trusted'",
-        "quality_reasons_json TEXT NOT NULL DEFAULT '[]'",
-        "review_required INTEGER NOT NULL DEFAULT 0",
-        "speaker_id INTEGER",
-        "is_user INTEGER NOT NULL DEFAULT 1",
-        "speaker_confidence REAL DEFAULT 0.0",
-    ])
+    _ensure_columns(
+        cursor,
+        "transcriptions",
+        [
+            "episode_id TEXT",
+            "transcript_raw TEXT",
+            "transcript_clean TEXT",
+            "asr_model TEXT",
+            "asr_confidence REAL",
+            "garbage_flag INTEGER NOT NULL DEFAULT 0",
+            "quality_score REAL",
+            "needs_recheck INTEGER NOT NULL DEFAULT 0",
+            "quality_state TEXT NOT NULL DEFAULT 'trusted'",
+            "quality_reasons_json TEXT NOT NULL DEFAULT '[]'",
+            "review_required INTEGER NOT NULL DEFAULT 0",
+            "speaker_id INTEGER",
+            "is_user INTEGER NOT NULL DEFAULT 1",
+            "speaker_confidence REAL DEFAULT 0.0",
+        ],
+    )
     _ensure_digest_cache_table(conn)
     _ensure_quality_transition_table(conn)
     conn.commit()
@@ -267,13 +277,23 @@ def _ensure_episodes_tables(conn: sqlite3.Connection) -> None:
             cursor.execute(f"ALTER TABLE long_threads ADD COLUMN {col_def}")
         except Exception:
             pass
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_day_key ON episodes(day_key, started_at)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_episodes_day_key ON episodes(day_key, started_at)"
+    )
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_status ON episodes(status, ended_at)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_episodes_quality_state ON episodes(quality_state, day_key)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_episodes_quality_state ON episodes(quality_state, day_key)"
+    )
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_day_threads_day_key ON day_threads(day_key)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_day_threads_confidence ON day_threads(day_key, thread_confidence)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_day_threads_long_thread_key ON day_threads(long_thread_key)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_long_threads_status ON long_threads(status, last_seen_at)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_day_threads_confidence ON day_threads(day_key, thread_confidence)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_day_threads_long_thread_key ON day_threads(long_thread_key)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_long_threads_status ON long_threads(status, last_seen_at)"
+    )
     conn.commit()
 
 
@@ -627,6 +647,43 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
         return None
 
 
+def _ensure_user_profile_table(conn: sqlite3.Connection) -> None:
+    """User profile store — accumulated knowledge about the user from transcriptions."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_profile (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'auto',
+            confidence REAL NOT NULL DEFAULT 0.5,
+            updated_at TEXT NOT NULL,
+            evidence_count INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    # WHY: known_people is a separate table — many-to-many with rich metadata.
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS known_people (
+            name TEXT PRIMARY KEY,
+            relationship TEXT NOT NULL DEFAULT 'unknown',
+            context TEXT NOT NULL DEFAULT '',
+            mention_count INTEGER NOT NULL DEFAULT 1,
+            last_mentioned_at TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'auto'
+        )
+        """
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_known_people_relationship ON known_people(relationship)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_known_people_mentions ON known_people(mention_count DESC)"
+    )
+    conn.commit()
+
+
 def ensure_ingest_tables(db_path: Path) -> None:
     """Создаёт таблицы ingest_queue, transcriptions, structured_events при отсутствии."""
     if not db_path.parent.exists():
@@ -637,6 +694,7 @@ def ensure_ingest_tables(db_path: Path) -> None:
     _ensure_episodes_tables(db.conn)
     _ensure_structured_events_table(db.conn)
     _ensure_client_signposts_table(db.conn)
+    _ensure_user_profile_table(db.conn)
 
 
 def write_digest_cache(

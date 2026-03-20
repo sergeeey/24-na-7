@@ -93,6 +93,10 @@ app.include_router(commitments.router)  # v0.5: Commitment Extraction (Relations
 app.include_router(admin.router)
 app.include_router(mirror.router)  # Mirror portrait endpoint
 
+from src.api.routers import profile  # noqa: E402
+
+app.include_router(profile.router)  # User Profile (auto + manual knowledge)
+
 # ── v1 compatibility layer ────────────────────
 # ПОЧЕМУ alias-слой вместо немедленного hard cutover:
 # существующие Android/ops клиенты уже завязаны на текущие пути.
