@@ -455,9 +455,10 @@ object MemoryApi {
             return buildList {
                 for (i in 0 until arr.length()) {
                     val item = arr.optJSONObject(i) ?: continue
+                    // WHY: server returns "insight", not "text" — try both
                     add(InsightCard(
                         role = item.optString("role"),
-                        text = item.optString("text"),
+                        text = item.optString("insight").ifBlank { item.optString("text") },
                     ))
                 }
             }

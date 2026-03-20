@@ -120,27 +120,32 @@ def _query_portrait(
     conn = get_reflexio_db()
 
     try:
-        # --- enriched_episodes: эмоции, темы, люди, сентимент ---
-        if _table_exists(conn, "enriched_episodes"):
+        # --- structured_events + episodes: эмоции, темы, люди, сентимент ---
+        # WHY: was enriched_episodes (legacy table that doesn't exist).
+        # Now reads from structured_events (current enrichment output).
+        if _table_exists(conn, "structured_events"):
             rows = conn.execute(
                 """
-                SELECT emotions_json, topics_json, participants_json, sentiment_score
-                FROM enriched_episodes
-                WHERE date(created_at) BETWEEN ? AND ?
+                SELECT emotions, topics, speakers, sentiment
+                FROM structured_events
+                WHERE is_current = 1
+                  AND date(created_at) BETWEEN ? AND ?
                 """,
                 (date_from.isoformat(), date_to.isoformat()),
             ).fetchall()
 
             episodes_count = len(rows)
+            sentiment_map = {"positive": 1.0, "neutral": 0.0, "negative": -1.0}
             for row in rows:
-                emotions.update(_parse_json_column(row["emotions_json"]))
-                topics.update(_parse_json_column(row["topics_json"]))
-                people.update(_parse_json_column(row["participants_json"]))
-                if row["sentiment_score"] is not None:
-                    sentiment_sum += float(row["sentiment_score"])
+                emotions.update(_parse_json_column(row["emotions"]))
+                topics.update(_parse_json_column(row["topics"]))
+                people.update(_parse_json_column(row["speakers"]))
+                sent = row["sentiment"]
+                if sent and sent in sentiment_map:
+                    sentiment_sum += sentiment_map[sent]
                     sentiment_count += 1
         else:
-            logger.info("mirror.table_missing", table="enriched_episodes")
+            logger.info("mirror.table_missing", table="structured_events")
 
         # --- balance_scores: тренд по доменам ---
         if _table_exists(conn, "balance_scores"):
