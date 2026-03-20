@@ -18,6 +18,7 @@ Pipeline:
   Rule-based даёт <5ms и покрывает 90% вопросов.
   При "непонятном" запросе → fallback на query_events.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,11 +47,31 @@ _PERSON_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 # Стоп-слова которые не являются именами персон
-_PERSON_STOPWORDS = frozenset({
-    "было", "чём", "ком", "чем", "том", "сём", "всём", "этом",
-    "работе", "доме", "деле", "мне", "тебе", "нас", "них",
-    "здоровье", "стрессе", "времени", "дне", "неделе", "месяце",
-})
+_PERSON_STOPWORDS = frozenset(
+    {
+        "было",
+        "чём",
+        "ком",
+        "чем",
+        "том",
+        "сём",
+        "всём",
+        "этом",
+        "работе",
+        "доме",
+        "деле",
+        "мне",
+        "тебе",
+        "нас",
+        "них",
+        "здоровье",
+        "стрессе",
+        "времени",
+        "дне",
+        "неделе",
+        "месяце",
+    }
+)
 _HEALTH_KEYWORDS = re.compile(
     r"здоровь|стресс|сон|энергия|усталост|самочувстви|настроени|тревог",
     re.IGNORECASE,
@@ -70,6 +91,7 @@ _DAYS_BACK_PATTERN = re.compile(r"за\s+(\d+)\s+дн|последни[еx]\s+(\
 @dataclass
 class ToolCall:
     """Описание вызова тула с параметрами."""
+
     tool: str
     params: dict[str, Any] = field(default_factory=dict)
 
@@ -92,6 +114,7 @@ def analyze_intent(question: str) -> list[ToolCall]:
     # Проверяем вчера/сегодня
     if "вчера" in question.lower():
         from datetime import date, timedelta
+
         date_param = (date.today() - timedelta(days=1)).isoformat()
 
     base_params: dict[str, Any] = {}
@@ -113,7 +136,11 @@ def analyze_intent(question: str) -> list[ToolCall]:
 
     # Здоровье/баланс?
     if _HEALTH_KEYWORDS.search(question):
-        calls.append(ToolCall("query_events", {**base_params, "q": question, "topics": "здоровье,стресс,сон"}))
+        calls.append(
+            ToolCall(
+                "query_events", {**base_params, "q": question, "topics": "здоровье,стресс,сон"}
+            )
+        )
 
     # Эмоции?
     if _EMOTION_KEYWORDS.search(question):
@@ -121,7 +148,9 @@ def analyze_intent(question: str) -> list[ToolCall]:
 
     # Задачи?
     if _TASK_KEYWORDS.search(question):
-        calls.append(ToolCall("query_events", {**base_params, "q": question, "topics": "задача,план"}))
+        calls.append(
+            ToolCall("query_events", {**base_params, "q": question, "topics": "задача,план"})
+        )
 
     # Fallback — семантический поиск по вопросу
     if not calls:
@@ -143,11 +172,13 @@ def analyze_intent(question: str) -> list[ToolCall]:
 # Tool Executor
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 async def _execute_tool(call: ToolCall) -> ToolResult:
     """Вызывает один тул по имени с параметрами."""
     try:
         if call.tool == "query_events":
             from src.api.routers.query import query_events
+
             raw = await query_events(
                 q=call.params.get("q", ""),
                 date=call.params.get("date"),
@@ -162,6 +193,7 @@ async def _execute_tool(call: ToolCall) -> ToolResult:
 
         elif call.tool == "get_digest":
             from src.api.routers.query import get_digest
+
             raw = await get_digest(
                 date=call.params.get("date"),
                 # ПОЧЕМУ True: оркестратор внутренний — ему нужны evidence_ids
@@ -172,6 +204,7 @@ async def _execute_tool(call: ToolCall) -> ToolResult:
 
         elif call.tool == "get_person_insights":
             from src.api.routers.query import get_person_insights
+
             raw = await get_person_insights(
                 name=call.params["name"],
                 include_evidence=False,
@@ -209,9 +242,11 @@ def _dict_to_tool_result(d: dict, tool_name: str) -> ToolResult:
 # Response Synthesis
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _extract_top_topics(events: list[dict], limit: int = 3) -> list[str]:
     """Извлекает top-N тем из списка событий (Counter по topics_json)."""
     import json as _json
+
     counter: Counter = Counter()
     for ev in events:
         raw = ev.get("topics_json", "")
@@ -298,9 +333,21 @@ def synthesize_response(
         primary_tool = "get_person_insights"
         for r in valid:
             if r.tool_name == "get_person_insights" and r.data:
-                name = (r.data.get("person") or {}).get("name", "")
+                person = r.data.get("person") or {}
+                name = person.get("name", "")
                 count = r.data.get("interactions_count", 0)
-                parts.append(f"Персона {name}: {count} взаимодействий.")
+                # WHY: Build a human-readable person summary, not just count.
+                person_parts = [f"{name}"]
+                if person.get("relationship") and person["relationship"] != "unknown":
+                    person_parts.append(f"({person['relationship']})")
+                person_parts.append(f"— {count} взаимодействий.")
+                topics = person.get("recent_topics", [])
+                if topics:
+                    person_parts.append(f"Темы: {', '.join(topics[:3])}.")
+                neighbors = person.get("neighbors", [])
+                if neighbors:
+                    person_parts.append(f"Связан с: {', '.join(neighbors[:3])}.")
+                parts.append(" ".join(person_parts))
                 break
 
     elif "query_events" in tool_names:
@@ -311,7 +358,20 @@ def synthesize_response(
             events = r.data.get("events", [])
             total = r.data.get("total", len(events))
             top = _extract_top_topics(events)
-            if top:
+            # WHY: Show actual event snippets, not just count.
+            # User wants to see WHAT happened, not how many rows found.
+            snippets = []
+            for ev in events[:5]:
+                snippet = ev.get("snippet", "")
+                if snippet and len(snippet) > 10:
+                    snippets.append(f"• {snippet[:100]}")
+            if snippets:
+                header = f"Найдено {total} событий."
+                if top:
+                    header += f" Темы: {', '.join(top[:3])}."
+                parts.append(header)
+                parts.append("\n".join(snippets))
+            elif top:
                 parts.append(f"Найдено {total} событий. Основные темы: {', '.join(top)}.")
             else:
                 parts.append(f"Найдено {total} событий по запросу.")
@@ -324,11 +384,13 @@ def synthesize_response(
 # Main Orchestrator
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class OrchestratorResponse:
     """Финальный ответ оркестратора."""
+
     answer: str
-    data: list[dict]           # данные от каждого тула
+    data: list[dict]  # данные от каждого тула
     confidence: float
     confidence_label: str
     evidence_count: int
@@ -336,7 +398,7 @@ class OrchestratorResponse:
     total_ms: float
     needs_clarification: bool
     warning: str | None
-    primary_tool: str | None   # какой тул дал основной ответ (для rich rendering)
+    primary_tool: str | None  # какой тул дал основной ответ (для rich rendering)
 
 
 async def orchestrate(question: str) -> OrchestratorResponse:
