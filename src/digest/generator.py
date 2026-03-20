@@ -623,15 +623,38 @@ class DigestGenerator:
                     part = (row["summary"] or "").strip()
                     if part and len(part) > 15 and self._has_cyrillic(part):
                         summary_parts.append(part)
+                    # WHY: filter out TV noise topics that pollute digest themes
+                    _noise_topics = {
+                        "текст",
+                        "субтитры",
+                        "содержит",
+                        "продолжение",
+                        "следует",
+                        "фрагмент",
+                        "говорящий",
+                        "просмотр",
+                        "канал",
+                        "подпишись",
+                        "высказывание",
+                        "выражает",
+                        "описывает",
+                        "сирена",
+                        "полицейская",
+                        "музыка",
+                        "спасибо",
+                        "комментарии",
+                        "продвижение канала",
+                    }
                     for t in (
                         json.loads(row["topics"])
                         if isinstance(row["topics"], str) and row["topics"]
                         else []
                     ):
-                        t_str = str(t).strip()
+                        t_str = str(t).strip().lower()
                         if (
                             t_str
                             and len(t_str) > 2
+                            and t_str not in _noise_topics
                             and t_str not in key_themes
                             and self._has_cyrillic(t_str)
                         ):
