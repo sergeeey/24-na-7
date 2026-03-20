@@ -318,48 +318,43 @@ def synthesize_response(
             if r.tool_name != "get_digest" or not r.data:
                 continue
             data = r.data
-            # Извлекаем verdict.text → fallback summary_text → fallback мета
+            # WHY: Always build answer from structured data, not summary_text.
+            # summary_text often contains LLM descriptions or JSON garbage.
+            # Structured fields (key_themes, emotions, balance) are cleaner.
             verdict = data.get("verdict")
             if isinstance(verdict, dict) and verdict.get("text"):
                 parts.append(verdict["text"])
             elif isinstance(verdict, str) and verdict.strip():
                 parts.append(verdict)
-            elif data.get("summary_text"):
-                summary = data["summary_text"]
-                # WHY: CoD sometimes returns JSON array instead of plain text.
-                # Clean it up to show human-readable summary.
-                if summary.startswith("[") or summary.startswith("{"):
-                    import json as _json
-
-                    try:
-                        parsed = _json.loads(summary)
-                        if isinstance(parsed, list) and parsed:
-                            summaries = [
-                                s.get("summary", "") if isinstance(s, dict) else str(s)
-                                for s in parsed[:3]
-                            ]
-                            summary = " ".join(s for s in summaries if s)
-                        elif isinstance(parsed, dict):
-                            summary = parsed.get("summary", str(parsed))
-                    except _json.JSONDecodeError:
-                        pass
-                if summary and not summary.startswith("["):
-                    parts.append(summary[:500])
-                else:
-                    # Build from available data
-                    themes = data.get("key_themes", [])[:3]
-                    recordings = data.get("total_recordings", 0)
-                    duration = data.get("total_duration", "")
-                    bits = [f"За сегодня {recordings} записей ({duration})."]
-                    if themes:
-                        bits.append(f"Темы: {', '.join(themes[:3])}.")
-                    balance = data.get("balance", {})
-                    if balance.get("alert"):
-                        bits.append(balance["alert"])
-                    parts.append(" ".join(bits))
             else:
-                date_str = data.get("date", "")
-                parts.append(f"Дайджест за {date_str}." if date_str else "Дайджест найден.")
+                recordings = data.get("total_recordings", 0)
+                duration = data.get("total_duration", "0m 0s")
+                themes = [t for t in data.get("key_themes", []) if len(t) < 30][:5]
+                emotions = data.get("emotions", [])[:3]
+                balance = data.get("balance", {})
+                insights = data.get("insights", [])
+
+                bits = [f"За сегодня {recordings} записей ({duration})."]
+                if themes:
+                    bits.append(f"Темы: {', '.join(themes)}.")
+                if emotions:
+                    bits.append(f"Эмоции: {', '.join(emotions)}.")
+                if balance.get("alert"):
+                    bits.append(balance["alert"])
+                if balance.get("recommendation"):
+                    bits.append(balance["recommendation"])
+                # Add first insight if available
+                if insights:
+                    first = insights[0]
+                    role = {
+                        "psychologist": "Психолог",
+                        "coach": "Коуч",
+                        "pattern_detector": "Паттерны",
+                    }.get(first.get("role", ""), "")
+                    text = first.get("insight", first.get("text", ""))
+                    if role and text:
+                        bits.append(f"{role}: {text}")
+                parts.append(" ".join(bits))
             break
 
     elif "get_person_insights" in tool_names:
