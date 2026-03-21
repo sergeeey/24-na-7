@@ -125,6 +125,38 @@ def pass_3_truth_reeval(db, db_path, apply: bool):
     print(f"  [pass 3] Episodes affected: {result.get('affected_episodes', '?')}")
 
 
+def pass_35_cascade(db, apply: bool):
+    """Cascade quality_state/owner_scope from episodes/transcriptions to structured_events.
+
+    WHY: reclassify only updates episodes and transcriptions, not structured_events.
+    Without this pass, structured_events remain NULL after truth re-evaluation.
+    This is the bridge between source truth and derived truth.
+    """
+    from src.memory.truth_cascade import cascade_quality_to_structured_events
+
+    if not apply:
+        # Preview: count NULLs that would be fixed
+        null_count = db.fetchone(
+            "SELECT COUNT(*) as cnt FROM structured_events "
+            "WHERE is_current = 1 AND quality_state IS NULL"
+        )
+        print(f"  [pass 3.5] Would cascade to {null_count['cnt']} events with NULL quality_state")
+        return
+
+    updated = cascade_quality_to_structured_events(db)
+    print(f"  [pass 3.5] Cascaded quality to structured_events: {updated} updated")
+
+    # Verify no NULLs remain
+    null_count = db.fetchone(
+        "SELECT COUNT(*) as cnt FROM structured_events "
+        "WHERE is_current = 1 AND (quality_state IS NULL OR owner_scope IS NULL)"
+    )
+    if null_count["cnt"] > 0:
+        print(f"  [pass 3.5] WARNING: {null_count['cnt']} events still have NULL fields!")
+    else:
+        print("  [pass 3.5] OK: 0 NULLs in quality_state/owner_scope")
+
+
 def pass_4_verify(db):
     """Print honest distribution."""
     print("\n=== VERIFICATION ===")
@@ -195,6 +227,9 @@ def main():
 
     print("\nPass 3: Truth Re-evaluation")
     pass_3_truth_reeval(db, db_path, apply)
+
+    print("\nPass 3.5: Cascade to Structured Events")
+    pass_35_cascade(db, apply)
 
     pass_4_verify(db)
     db.close_conn()

@@ -137,6 +137,15 @@ async def reclassify_truth_layer(request: Request, response: Response, body: Rec
 
     digest_rebuilds = 0
     if body.mode == "apply":
+        # WHY: reclassify updates episodes/transcriptions but NOT structured_events.
+        # Cascade bridges source truth → derived truth. Without it, structured_events
+        # remain NULL/stale after reclassification.
+        from src.memory.truth_cascade import cascade_quality_to_structured_events
+        from src.storage.db import get_reflexio_db
+
+        cascade_db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
+        cascade_quality_to_structured_events(cascade_db)
+
         generator = DigestGenerator(settings.STORAGE_PATH / "reflexio.db")
         for day_key in preview["affected_days"]:
             digest = generator.get_daily_digest_json(date.fromisoformat(day_key))
@@ -193,6 +202,12 @@ async def recheck_truth_layer(request: Request, response: Response, body: Rechec
 
     digest_rebuilds = 0
     if body.mode == "apply":
+        from src.memory.truth_cascade import cascade_quality_to_structured_events
+        from src.storage.db import get_reflexio_db
+
+        cascade_db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
+        cascade_quality_to_structured_events(cascade_db)
+
         generator = DigestGenerator(settings.STORAGE_PATH / "reflexio.db")
         for day_key in preview["affected_days"]:
             digest = generator.get_daily_digest_json(date.fromisoformat(day_key))

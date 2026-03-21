@@ -455,6 +455,9 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
         "owner_scope TEXT DEFAULT 'unknown'",
         "source_kind TEXT DEFAULT 'user_speech'",
         "lineage_id TEXT",
+        "quality_state TEXT",
+        "quality_score REAL",
+        "quality_reasons_json TEXT",
     ]:
         try:
             cursor.execute(f"ALTER TABLE structured_events ADD COLUMN {col_def}")

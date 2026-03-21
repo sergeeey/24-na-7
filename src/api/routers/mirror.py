@@ -270,14 +270,42 @@ async def get_portrait(
     agg = _query_portrait(date_from, date_to)
     episodes_count: int = agg["episodes_count"]
 
+    top_emotions = [{"emotion": e, "count": c} for e, c in agg["emotions"].most_common(_TOP_N)]
+    top_topics = [{"topic": t, "count": c} for t, c in agg["topics"].most_common(_TOP_N)]
+    top_people = [{"person": p, "count": c} for p, c in agg["people"].most_common(_TOP_N)]
+
+    # WHY 5 canonical sections: Mirror v1 answers 5 questions about the user.
+    # This is the first real "digital mirror" payload, not just analytics widgets.
     result: dict[str, Any] = {
         "days_back": days_back,
         "period": {"from": date_from.isoformat(), "to": date_to.isoformat()},
-        "top_emotions": [
-            {"emotion": e, "count": c} for e, c in agg["emotions"].most_common(_TOP_N)
-        ],
-        "top_topics": [{"topic": t, "count": c} for t, c in agg["topics"].most_common(_TOP_N)],
-        "top_people": [{"person": p, "count": c} for p, c in agg["people"].most_common(_TOP_N)],
+        # Section 1: Who am I right now
+        "identity": {
+            "top_emotions": top_emotions,
+            "avg_sentiment": agg["avg_sentiment"],
+            "top_topics": top_topics,
+            "episodes_count": episodes_count,
+        },
+        # Section 2: What influences me
+        "influences": {
+            "top_people": top_people,
+            "balance_trend": agg["balance_trend"],
+        },
+        # Section 3: What repeats
+        "patterns": {
+            "open_commitments": agg["open_commitments"],
+        },
+        # Section 4: What's changing (placeholder — needs historical comparison)
+        "drift": {},
+        # Section 5: Why the system thinks so
+        "evidence": {
+            "ownership_breakdown": agg.get("ownership_breakdown", {}),
+            "data_quality": agg.get("data_quality", {}),
+        },
+        # Backward compat — flat fields for existing Android UI
+        "top_emotions": top_emotions,
+        "top_topics": top_topics,
+        "top_people": top_people,
         "avg_sentiment": agg["avg_sentiment"],
         "episodes_count": episodes_count,
         "balance_trend": agg["balance_trend"],
@@ -300,3 +328,78 @@ async def get_portrait(
     return add_meta(
         result, confidence=confidence, evidence_count=episodes_count, tool="mirror_portrait"
     )
+
+
+# ── Memory Observability ──────────────────────────────────────────────────
+
+
+@router.get("/memory-quality")
+@limiter.limit("30/minute")
+async def get_memory_quality(request: Request, response: Response) -> dict[str, Any]:
+    """Memory Backbone quality dashboard — ownership, quality, invariants.
+
+    Returns honest runtime metrics for memory health monitoring.
+    Not a product endpoint — an operational diagnostics tool.
+    """
+    from src.memory.truth_cascade import verify_no_nulls
+    from src.utils.config import settings
+
+    db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
+    conn = db.conn
+
+    # Quality summary per entity type
+    def _quality_summary(table: str, where: str = "") -> dict:
+        clause = f"WHERE {where}" if where else ""
+        rows = conn.execute(
+            f"SELECT quality_state, COUNT(*) as cnt FROM {table} {clause} "
+            f"GROUP BY quality_state ORDER BY quality_state"
+        ).fetchall()
+        total = sum(r["cnt"] for r in rows)
+        return {
+            "total": total,
+            "breakdown": {r["quality_state"] or "NULL": r["cnt"] for r in rows},
+            "trusted_fraction": round(
+                sum(r["cnt"] for r in rows if r["quality_state"] == "trusted") / total, 3
+            )
+            if total
+            else 0.0,
+        }
+
+    # Ownership summary
+    own_rows = conn.execute(
+        "SELECT owner_scope, COUNT(*) as cnt FROM structured_events "
+        "WHERE is_current = 1 GROUP BY owner_scope"
+    ).fetchall()
+    ownership = {(r["owner_scope"] or "NULL"): r["cnt"] for r in own_rows}
+
+    # Null invariant check
+    nulls = verify_no_nulls(db)
+
+    # Lineage coverage
+    try:
+        lineage_row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM structured_events "
+            "WHERE is_current = 1 AND lineage_id IS NOT NULL"
+        ).fetchone()
+        lineage_total = conn.execute(
+            "SELECT COUNT(*) as cnt FROM structured_events WHERE is_current = 1"
+        ).fetchone()
+        lineage_coverage = (
+            round(lineage_row["cnt"] / lineage_total["cnt"], 3) if lineage_total["cnt"] else 0.0
+        )
+    except Exception:
+        lineage_coverage = 0.0
+
+    return {
+        "structured_events": _quality_summary("structured_events", "is_current = 1"),
+        "episodes": _quality_summary("episodes"),
+        "transcriptions": _quality_summary("transcriptions"),
+        "ownership": ownership,
+        "invariants": {
+            "null_quality_state": nulls["null_quality_state"],
+            "null_owner_scope": nulls["null_owner_scope"],
+            "null_lineage_id": nulls["null_lineage_id"],
+            "invariant_ok": all(v == 0 for v in nulls.values()),
+        },
+        "lineage_coverage": lineage_coverage,
+    }

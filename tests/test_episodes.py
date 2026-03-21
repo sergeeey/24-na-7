@@ -2119,3 +2119,214 @@ def test_finalize_closed_episodes_marks_summarized(tmp_path):
         assert "ep-1" in thread["episode_ids_json"]
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+# ── Cascade & Invariant Tests ─────────────────────────────────────────────
+
+
+def test_cascade_quality_from_episode_to_structured_event(tmp_path):
+    """Cascade propagates quality_state from episode to structured_event."""
+    from src.memory.truth_cascade import cascade_quality_to_structured_events
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """INSERT INTO episodes (id, started_at, ended_at, status, source_count,
+                    transcription_ids_json, raw_text, clean_text, summary,
+                    topics_json, participants_json, commitments_json,
+                    importance_score, needs_review, day_key, quality_state)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "ep-casc",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:02:00",
+                    "closed",
+                    1,
+                    '["tr-casc"]',
+                    "test",
+                    "test",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.5,
+                    0,
+                    "2026-03-10",
+                    "trusted",
+                ),
+            )
+            db.execute(
+                """INSERT INTO structured_events (id, transcription_id, episode_id,
+                    text, created_at, is_current, quality_state)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                ("se-casc", "tr-casc", "ep-casc", "test cascade", "2026-03-10T12:00:00", 1, None),
+            )
+
+        cascade_quality_to_structured_events(db)
+
+        row = db.fetchone("SELECT quality_state FROM structured_events WHERE id = 'se-casc'")
+        assert row is not None
+        assert row["quality_state"] == "trusted"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_cascade_fallback_to_transcription(tmp_path):
+    """When no episode, cascade falls back to transcription quality_state."""
+    from src.memory.truth_cascade import cascade_quality_to_structured_events
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """INSERT INTO transcriptions (id, ingest_id, text, created_at, quality_state)
+                VALUES (?, ?, ?, ?, ?)""",
+                ("tr-fb", "ing-fb", "fallback test", "2026-03-10T12:00:00", "garbage"),
+            )
+            db.execute(
+                """INSERT INTO structured_events (id, transcription_id, episode_id,
+                    text, created_at, is_current, quality_state)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                ("se-fb", "tr-fb", None, "fallback test", "2026-03-10T12:00:00", 1, None),
+            )
+
+        cascade_quality_to_structured_events(db)
+
+        row = db.fetchone("SELECT quality_state FROM structured_events WHERE id = 'se-fb'")
+        assert row is not None
+        assert row["quality_state"] == "garbage"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_cascade_hard_fallback_no_parent(tmp_path):
+    """Event with no parent gets 'uncertain' fallback, never NULL."""
+    from src.memory.truth_cascade import cascade_quality_to_structured_events
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """INSERT INTO structured_events (id, transcription_id, episode_id,
+                    text, created_at, is_current, quality_state)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "se-orphan",
+                    "tr-nonexistent",
+                    None,
+                    "orphan event",
+                    "2026-03-10T12:00:00",
+                    1,
+                    None,
+                ),
+            )
+
+        cascade_quality_to_structured_events(db)
+
+        row = db.fetchone("SELECT quality_state FROM structured_events WHERE id = 'se-orphan'")
+        assert row is not None
+        assert row["quality_state"] == "uncertain"  # fallback, never NULL
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_invariant_no_nulls_after_cascade(tmp_path):
+    """After cascade, no current structured_event should have NULL quality_state or owner_scope."""
+    from src.memory.truth_cascade import cascade_quality_to_structured_events, verify_no_nulls
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            # Mix of events: with parent, without, orphan
+            db.execute(
+                """INSERT INTO episodes (id, started_at, ended_at, status, source_count,
+                    transcription_ids_json, raw_text, clean_text, summary,
+                    topics_json, participants_json, commitments_json,
+                    importance_score, needs_review, day_key, quality_state)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "ep-inv",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:02:00",
+                    "closed",
+                    1,
+                    '["tr-inv"]',
+                    "inv",
+                    "inv",
+                    "",
+                    "[]",
+                    "[]",
+                    "[]",
+                    0.5,
+                    0,
+                    "2026-03-10",
+                    "trusted",
+                ),
+            )
+            for i, (ep_id, qs) in enumerate([("ep-inv", None), (None, None), (None, None)]):
+                db.execute(
+                    """INSERT INTO structured_events (id, transcription_id, episode_id,
+                        text, created_at, is_current, quality_state, owner_scope)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        f"se-inv-{i}",
+                        f"tr-inv-{i}",
+                        ep_id,
+                        f"event {i}",
+                        "2026-03-10T12:00:00",
+                        1,
+                        qs,
+                        None,
+                    ),
+                )
+
+        cascade_quality_to_structured_events(db)
+        nulls = verify_no_nulls(db)
+
+        assert nulls["null_quality_state"] == 0, (
+            f"Found {nulls['null_quality_state']} NULL quality_state"
+        )
+        assert nulls["null_owner_scope"] == 0, f"Found {nulls['null_owner_scope']} NULL owner_scope"
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
