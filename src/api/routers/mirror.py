@@ -186,6 +186,41 @@ def _query_portrait(
         round(sentiment_sum / sentiment_count, 4) if sentiment_count > 0 else None
     )
 
+    # WHY: Memory Backbone — ownership breakdown for honest data quality reporting.
+    ownership_breakdown = {"self": 0, "other_person": 0, "unknown": 0}
+    total_events = 0
+    trusted_count = 0
+    if _table_exists(conn, "structured_events"):
+        try:
+            own_rows = conn.execute(
+                """
+                SELECT owner_scope, COUNT(*) as cnt
+                FROM structured_events
+                WHERE is_current = 1 AND date(created_at) BETWEEN ? AND ?
+                GROUP BY owner_scope
+                """,
+                (date_from.isoformat(), date_to.isoformat()),
+            ).fetchall()
+            for r in own_rows:
+                scope = r["owner_scope"] or "unknown"
+                if scope in ownership_breakdown:
+                    ownership_breakdown[scope] = r["cnt"]
+                total_events += r["cnt"]
+        except Exception:
+            pass  # owner_scope column may not exist yet
+        try:
+            t_row = conn.execute(
+                """
+                SELECT COUNT(*) as cnt FROM structured_events
+                WHERE is_current = 1 AND quality_state = 'trusted'
+                  AND date(created_at) BETWEEN ? AND ?
+                """,
+                (date_from.isoformat(), date_to.isoformat()),
+            ).fetchone()
+            trusted_count = t_row["cnt"] if t_row else 0
+        except Exception:
+            pass
+
     return {
         "emotions": emotions,
         "topics": topics,
@@ -194,6 +229,12 @@ def _query_portrait(
         "episodes_count": episodes_count,
         "balance_trend": balance_trend,
         "open_commitments": open_commitments,
+        "ownership_breakdown": ownership_breakdown,
+        "data_quality": {
+            "total_events": total_events,
+            "trusted_count": trusted_count,
+            "trusted_fraction": round(trusted_count / total_events, 3) if total_events else 0.0,
+        },
     }
 
 
@@ -241,6 +282,8 @@ async def get_portrait(
         "episodes_count": episodes_count,
         "balance_trend": agg["balance_trend"],
         "open_commitments": agg["open_commitments"],
+        "ownership_breakdown": agg.get("ownership_breakdown", {}),
+        "data_quality": agg.get("data_quality", {}),
     }
 
     # ПОЧЕМУ такая формула confidence: при 0 эпизодов — 0.0, при ~30 — 0.9.

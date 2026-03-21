@@ -448,6 +448,13 @@ def _ensure_structured_events_table(conn: sqlite3.Connection) -> None:
         "enrichment_prompt_hash TEXT",
         "enrichment_version TEXT DEFAULT ''",
         "commitments TEXT DEFAULT '[]'",
+        # WHY: Memory Backbone contract — ownership and provenance tracking.
+        # owner_scope: who produced this audio (self/other_person/mixed/unknown)
+        # source_kind: what type of audio (user_speech/conversation/background_media/noise/system)
+        # lineage_id: links to transcription chain for evidence provenance
+        "owner_scope TEXT DEFAULT 'unknown'",
+        "source_kind TEXT DEFAULT 'user_speech'",
+        "lineage_id TEXT",
     ]:
         try:
             cursor.execute(f"ALTER TABLE structured_events ADD COLUMN {col_def}")
@@ -574,8 +581,9 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                     version, supersedes_id, is_current,
                     pitch_hz_mean, pitch_variance, energy_mean,
                     spectral_centroid_mean, acoustic_arousal,
-                    enrichment_prompt_hash, enrichment_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    enrichment_prompt_hash, enrichment_version,
+                    owner_scope, source_kind, lineage_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
@@ -621,6 +629,10 @@ def persist_structured_event(db_path: Path, event) -> Optional[str]:
                     getattr(event, "acoustic_arousal", None),
                     getattr(event, "enrichment_prompt_hash", None),
                     getattr(event, "enrichment_version", ""),
+                    # WHY: Memory Backbone contract fields for ownership/provenance
+                    getattr(event, "owner_scope", "self"),
+                    getattr(event, "source_kind", "user_speech"),
+                    event.transcription_id,  # lineage_id = transcription_id
                 ),
             )
         logger.info(

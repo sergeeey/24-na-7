@@ -61,7 +61,8 @@ def evaluate_transcription_truth(
     db = get_reflexio_db(db_path)
     row = db.fetchone(
         """
-        SELECT id, episode_id, created_at, text, transcript_clean, quality_state
+        SELECT id, episode_id, created_at, text, transcript_clean, quality_state,
+               is_user, speaker_confidence
         FROM transcriptions
         WHERE id = ?
         LIMIT 1
@@ -159,6 +160,32 @@ def evaluate_transcription_truth(
             )
         )
         score -= 0.15
+
+    # WHY: ownership-aware quality — non-user speech should not be treated as trusted memory.
+    # is_user=0 means speaker verification determined this is background/TV/other person.
+    is_user = row["is_user"]
+    speaker_conf = row["speaker_confidence"] or 0.0
+    if is_user is not None and not is_user:
+        reasons.append(
+            _reason(
+                "NON_USER_SPEAKER",
+                "high",
+                -0.4,
+                is_user=False,
+                speaker_confidence=round(speaker_conf, 3),
+            )
+        )
+        score -= 0.4
+    elif is_user is not None and is_user and speaker_conf < 0.3:
+        reasons.append(
+            _reason(
+                "LOW_SPEAKER_CONFIDENCE",
+                "low",
+                -0.1,
+                speaker_confidence=round(speaker_conf, 3),
+            )
+        )
+        score -= 0.1
 
     score = max(0.0, min(1.0, score))
     if contradiction and duplicate_neighbors >= 2:
@@ -289,6 +316,41 @@ def evaluate_episode_truth(db_path: Path, episode_id: str) -> dict[str, Any] | N
             )
         )
         score -= 0.15
+
+    # WHY: ownership-aware episode quality — check speaker composition of child transcriptions.
+    # Episodes dominated by background speakers (TV, reels) should not be trusted memory.
+    child_rows = db.fetchall(
+        "SELECT is_user, speaker_confidence FROM transcriptions WHERE episode_id = ?",
+        (episode_id,),
+    )
+    if child_rows:
+        user_count = sum(1 for r in child_rows if r["is_user"])
+        total_children = len(child_rows)
+        user_ratio = user_count / total_children if total_children else 0.5
+        avg_confidence = sum(r["speaker_confidence"] or 0.0 for r in child_rows) / total_children
+        if user_count == 0 and total_children > 0:
+            reasons.append(
+                _reason("ALL_BACKGROUND", "high", -0.5, user_ratio=0.0, children=total_children)
+            )
+            score -= 0.5
+        elif user_ratio < 0.5 and total_children >= 2:
+            reasons.append(
+                _reason(
+                    "MIXED_OWNERSHIP",
+                    "medium",
+                    -0.15,
+                    user_ratio=round(user_ratio, 2),
+                    children=total_children,
+                )
+            )
+            score -= 0.15
+        if avg_confidence < 0.3 and avg_confidence > 0.0:
+            reasons.append(
+                _reason(
+                    "LOW_SPEAKER_CONFIDENCE", "low", -0.1, avg_confidence=round(avg_confidence, 3)
+                )
+            )
+            score -= 0.1
 
     score = max(0.0, min(1.0, score))
     if contradiction and duplicate_neighbors >= 1 and low_information_duplicate:

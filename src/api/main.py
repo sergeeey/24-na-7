@@ -48,8 +48,8 @@ limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(
     title="Reflexio 24/7",
-    description="Умный диктофон и дневной анализатор",
-    version="0.2.0",
+    description="Цифровая память всей жизни — evidence-based memory platform",
+    version="0.5.2-beta",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -151,7 +151,7 @@ async def health(request: Request, response: Response):
     return {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.2.0",
+        "version": "0.5.2-beta",
     }
 
 
@@ -162,7 +162,7 @@ async def health_v1(request: Request, response: Response):
     return {
         "status": "ok",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "version": "0.2.0",
+        "version": "0.5.2-beta",
     }
 
 
@@ -227,7 +227,7 @@ async def root():
     """Корневой endpoint со списком всех доступных endpoints."""
     return {
         "service": "Reflexio 24/7",
-        "version": "0.2.0",
+        "version": "0.5.2-beta",
         "endpoints": {
             "health": "/health",
             "ingest_audio": "/ingest/audio",
