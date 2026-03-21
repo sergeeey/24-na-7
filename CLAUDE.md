@@ -141,6 +141,29 @@ D:/24 na 7/
 - Предпочитать починку существующего кода созданию нового
 - **Инциденты:** повторяемый баг фиксировать в [docs/incidents/ledger.yaml](docs/incidents/ledger.yaml); баг не закрыт, пока нет теста, guard или записи с проверяемым signpost; после инцидента — ритуал ≤10 мин ([docs/incidents/README.md](docs/incidents/README.md))
 
+### CogniML — после нетривиального фикса
+Домен: "Reflexio". Endpoint: http://localhost:8400/api/retrospective
+ВАЖНО: использовать structured fields (не logs)! Иначе LLM перепишет конкретику.
+```json
+{
+  "experiment_id": "Reflexio-<slug>-<YYYY-MM-DD>",
+  "project_name": "Reflexio",
+  "tracker_type": "mlflow",
+  "capture_mode": "verified",
+  "logs": "<краткий контекст>",
+  "problem_summary": "что сломалось",
+  "symptoms": ["точная ошибка", "условия воспроизведения"],
+  "root_cause": "настоящая причина",
+  "fix_summary": "точное решение",
+  "what_did_not_work": ["что пробовали и не сработало"],
+  "commands": ["BROKEN: <cmd>", "FIXED: <cmd>", "VERIFY: <cmd>"],
+  "applicability": ["когда применять", "когда НЕ применять"],
+  "artifacts": ["git SHA", "file:line"],
+  "git_refs": ["sha"]
+}
+```
+Quality gate: root_cause + fix_summary + commands обязательны. Без них — draft.
+
 ---
 
 ## ТЕКУЩИЙ СТАТУС
