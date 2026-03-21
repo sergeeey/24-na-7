@@ -144,6 +144,10 @@ class AudioRecordingService : Service() {
         }
         startRecording()
         scope.launch {
+            // WHY: SSL cert fix (ISRG Root X1 added to debug config) — give
+            // exhausted uploads another chance now that the root cause is resolved.
+            val resetCount = pendingUploadDao!!.resetAllFailed()
+            if (resetCount > 0) Log.i(TAG, "Reset $resetCount exhausted uploads for retry")
             cleanupOrphanSegments()
             drainRetryableUploads()
         }

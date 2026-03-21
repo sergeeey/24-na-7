@@ -13,6 +13,9 @@
             <certificates src="system" />
             <!-- Доверяем пользовательским CA — для self-signed SSL в dev окружении -->
             <certificates src="user" />
+            <!-- WHY: Let's Encrypt E8 (ECDSA) requires ISRG Root X1/X2 which may be
+                 missing from system CA store on older Android. Same pin as release build. -->
+            <certificates src="@raw/isrg_root_x1" />
         </trust-anchors>
     </base-config>
 </network-security-config>

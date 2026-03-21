@@ -40,4 +40,13 @@ interface PendingUploadDao {
 
     @Query("SELECT * FROM pending_uploads WHERE status = 'failed' ORDER BY createdAt DESC LIMIT 1")
     suspend fun getLastFailed(): PendingUpload?
+
+    /** Reset all exhausted uploads so UploadWorker retries them. */
+    @Query(
+        "UPDATE pending_uploads SET status = 'pending', retryCount = 0, " +
+            "nextAttemptAt = NULL, lastError = NULL, lastErrorCode = NULL, " +
+            "transportStatus = 'queued_local' " +
+            "WHERE status = 'failed'"
+    )
+    suspend fun resetAllFailed(): Int
 }
