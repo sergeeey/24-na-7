@@ -603,6 +603,59 @@ object MemoryApi {
         }
     }
 
+    /** DELETE /compliance/erase/{name} — GDPR right to erasure */
+    fun erasePerson(baseHttpUrl: String, name: String): Boolean {
+        val encodedName = URLEncoder.encode(name, StandardCharsets.UTF_8.toString())
+        val request = requestBuilder("${baseHttpUrl.removeSuffix("/")}/compliance/erase/$encodedName")
+            .delete()
+            .build()
+        NetworkClients.sharedClient.newCall(request).execute().use { resp ->
+            return resp.isSuccessful
+        }
+    }
+
+    /**
+     * POST /query/note — manual text note into memory.
+     * Backend uses 2-step confirmation: 1st call → 403 + token, 2nd call with token → success.
+     */
+    fun postNote(baseHttpUrl: String, text: String, tags: List<String> = emptyList()): String? {
+        val bodyJson = JSONObject()
+            .put("text", text)
+            .put("tags", JSONArray(tags))
+            .toString()
+            .toRequestBody(jsonMediaType)
+
+        val baseNoteUrl = "${baseHttpUrl.removeSuffix("/")}/query/note"
+
+        // Step 1: get confirmation token
+        val step1 = requestBuilder(baseNoteUrl).post(bodyJson).build()
+        val token: String
+        NetworkClients.sharedClient.newCall(step1).execute().use { resp ->
+            val raw = resp.body?.string() ?: return null
+            if (resp.isSuccessful) {
+                // Server didn't require confirmation — return note_id directly
+                return JSONObject(raw).optJSONObject("data")?.optString("note_id")
+            }
+            if (resp.code != 403) return null
+            token = JSONObject(raw).optString("confirm_token").ifBlank { return null }
+        }
+
+        // Step 2: re-send with confirmation token
+        val step2Body = JSONObject()
+            .put("text", text)
+            .put("tags", JSONArray(tags))
+            .toString()
+            .toRequestBody(jsonMediaType)
+        val step2 = requestBuilder("$baseNoteUrl?confirm_token=$token")
+            .post(step2Body)
+            .build()
+        NetworkClients.sharedClient.newCall(step2).execute().use { resp ->
+            if (!resp.isSuccessful) return null
+            val raw = resp.body?.string() ?: return null
+            return JSONObject(raw).optJSONObject("data")?.optString("note_id")
+        }
+    }
+
     private fun parseRootArray(raw: String, fieldName: String): JSONArray {
         val trimmed = raw.trim()
         return when {

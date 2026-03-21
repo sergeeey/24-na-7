@@ -60,26 +60,26 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 
-// ── Same palette ──
-private val PageBg = Color(0xFFF7F5F2)
-private val CardWhite = Color(0xFFFFFFFF)
-private val TextPrimary = Color(0xFF1A1A2E)
-private val TextSecondary = Color(0xFF6B7280)
-private val TextMuted = Color(0xFF9CA3AF)
+// ── Design System: Dark Glassmorphism ──
+private val PageBg = Color.Transparent
+private val CardWhite = Color(0x1AFFFFFF) // 10% white for glass effect
+private val TextPrimary = Color(0xFFFFFFFF)
+private val TextSecondary = Color(0xFFA0AAB2)
+private val TextMuted = Color(0xFF6B7C8A)
 private val Coral = Color(0xFFFF6B6B)
-private val CoralSoft = Color(0xFFFFF0F0)
-private val Indigo = Color(0xFF6366F1)
-private val IndigoSoft = Color(0xFFF0F0FF)
+private val CoralSoft = Color(0x26FF6B6B)
+private val Indigo = Color(0xFF818CF8)
+private val IndigoSoft = Color(0x26818CF8)
 private val Mint = Color(0xFF34D399)
-private val MintSoft = Color(0xFFECFDF5)
+private val MintSoft = Color(0x2634D399)
 private val Amber = Color(0xFFF59E0B)
-private val AmberSoft = Color(0xFFFFFBEB)
-private val Purple = Color(0xFF8B5CF6)
-private val PurpleSoft = Color(0xFFF5F3FF)
-private val Rose = Color(0xFFF43F5E)
-private val RoseSoft = Color(0xFFFFF1F2)
-private val Sky = Color(0xFF0EA5E9)
-private val SkySoft = Color(0xFFF0F9FF)
+private val AmberSoft = Color(0x26F59E0B)
+private val Purple = Color(0xFFC084FC)
+private val PurpleSoft = Color(0x26C084FC)
+private val Rose = Color(0xFFFB7185)
+private val RoseSoft = Color(0x26FB7185)
+private val Sky = Color(0xFF38BDF8)
+private val SkySoft = Color(0x2638BDF8)
 
 private data class RoleStyle(val title: String, val color: Color, val bg: Color, val icon: ImageVector)
 

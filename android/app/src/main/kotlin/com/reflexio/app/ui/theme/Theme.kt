@@ -65,9 +65,9 @@ private val LightColorScheme = lightColorScheme(
  */
 @Composable
 fun ReflexioTheme(
-    // WHY false: switched to light premium theme across all screens.
-    // Спросить, Итог, Зеркало already use warm off-white palette.
-    darkTheme: Boolean = false,
+    // WHY true: switched to a premium, unified dark mode + glassmorphism across all screens.
+    // Спросить, Итог, Зеркало, and People will now share a seamless neon/dark immersive vibe.
+    darkTheme: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme

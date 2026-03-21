@@ -7,13 +7,19 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -35,7 +41,9 @@ import com.reflexio.app.domain.network.MemoryApi
 import com.reflexio.app.domain.network.PersonInsightData
 import com.reflexio.app.domain.network.SearchEvent
 import com.reflexio.app.domain.network.ThreadSummary
+import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private data class PersonCommitment(
@@ -84,11 +92,15 @@ fun PersonScreen(
     name: String,
     onAskPerson: (String) -> Unit = {},
     onOpenThreads: () -> Unit = {},
+    onPersonErased: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val scope = rememberCoroutineScope()
     var loading by remember(name) { mutableStateOf(true) }
     var error by remember(name) { mutableStateOf<String?>(null) }
     var notebook by remember(name) { mutableStateOf<PersonNotebookModel?>(null) }
+    var showEraseDialog by remember { mutableStateOf(false) }
+    var erasing by remember { mutableStateOf(false) }
 
     LaunchedEffect(baseHttpUrl, name) {
         loading = true
@@ -129,12 +141,38 @@ fun PersonScreen(
             Text(error!!, color = MaterialTheme.colorScheme.error)
         }
 
-        notebook != null -> PersonNotebook(
-            notebook = notebook!!,
-            onAskPerson = { onAskPerson("Что важно сейчас по человеку ${notebook!!.profile.name}?") },
-            onOpenThreads = onOpenThreads,
-            modifier = modifier,
-        )
+        notebook != null -> {
+            PersonNotebook(
+                notebook = notebook!!,
+                onAskPerson = { onAskPerson("Что важно сейчас по человеку ${notebook!!.profile.name}?") },
+                onOpenThreads = onOpenThreads,
+                onErase = { showEraseDialog = true },
+                erasing = erasing,
+                modifier = modifier,
+            )
+            if (showEraseDialog) {
+                AlertDialog(
+                    onDismissRequest = { showEraseDialog = false },
+                    title = { Text("Удалить данные") },
+                    text = { Text("Все голосовые данные «$name» будут удалены навсегда. Это действие нельзя отменить.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            showEraseDialog = false
+                            erasing = true
+                            scope.launch {
+                                val ok = withContext(Dispatchers.IO) { MemoryApi.erasePerson(baseHttpUrl, name) }
+                                erasing = false
+                                if (ok) onPersonErased(name)
+                                else error = "Не удалось удалить данные"
+                            }
+                        }) { Text("Удалить", color = MaterialTheme.colorScheme.error) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showEraseDialog = false }) { Text("Отмена") }
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -144,6 +182,8 @@ private fun PersonNotebook(
     notebook: PersonNotebookModel,
     onAskPerson: () -> Unit,
     onOpenThreads: () -> Unit,
+    onErase: () -> Unit = {},
+    erasing: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val profile = notebook.profile
@@ -290,6 +330,25 @@ private fun PersonNotebook(
                             AssistChip(onClick = {}, label = { Text(neighbor) })
                         }
                     }
+                }
+            }
+
+            // ── Erase person data (GDPR) ──
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = onErase,
+                enabled = !erasing,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                ),
+            ) {
+                if (erasing) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("Удалить голосовые данные")
                 }
             }
         }

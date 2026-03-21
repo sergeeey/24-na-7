@@ -6,9 +6,9 @@ import java.util.concurrent.TimeUnit
 object NetworkClients {
     val sharedClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(35, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(120, TimeUnit.SECONDS) // Увеличено до 120с для тяжелых вызовов /ask (LLM)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .pingInterval(20, TimeUnit.SECONDS)
             .build()
     }

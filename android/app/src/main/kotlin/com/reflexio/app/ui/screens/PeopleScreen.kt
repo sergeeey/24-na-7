@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -281,6 +282,14 @@ fun PeopleScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            Box(modifier = Modifier.padding(top = 16.dp)) {
+                                Button(
+                                    onClick = { /* TODO: manual person add */ },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("Добавить профиль вручную")
+                                }
+                            }
                         }
                     }
                 }

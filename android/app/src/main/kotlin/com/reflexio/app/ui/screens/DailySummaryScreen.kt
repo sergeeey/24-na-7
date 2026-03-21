@@ -66,22 +66,22 @@ import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.ZoneId
 
-// ── Design System: Light, Premium, Unique ──
-// WHY: warm off-white instead of pure white — feels organic, less clinical.
-// Coral+indigo palette is rare in productivity apps (most use blue/green).
-private val PageBg = Color(0xFFF7F5F2)
-private val CardWhite = Color(0xFFFFFFFF)
-private val TextPrimary = Color(0xFF1A1A2E)
-private val TextSecondary = Color(0xFF6B7280)
-private val TextMuted = Color(0xFF9CA3AF)
+// ── Design System: Dark Glassmorphism ──
+// WHY: Switched from bright off-white to seamless transparent dark mode
+// to match RecordScreen's AmbientBackdrop.
+private val PageBg = Color.Transparent
+private val CardWhite = Color(0x1AFFFFFF) // 10% white for glass effect
+private val TextPrimary = Color(0xFFFFFFFF)
+private val TextSecondary = Color(0xFFA0AAB2)
+private val TextMuted = Color(0xFF6B7C8A)
 private val Coral = Color(0xFFFF6B6B)
-private val CoralSoft = Color(0xFFFFF0F0)
-private val Indigo = Color(0xFF6366F1)
-private val IndigoSoft = Color(0xFFF0F0FF)
+private val CoralSoft = Color(0x26FF6B6B) // 15% opacity neon softness
+private val Indigo = Color(0xFF818CF8)
+private val IndigoSoft = Color(0x26818CF8)
 private val Mint = Color(0xFF34D399)
-private val MintSoft = Color(0xFFECFDF5)
+private val MintSoft = Color(0x2634D399)
 private val Amber = Color(0xFFF59E0B)
-private val AmberSoft = Color(0xFFFFFBEB)
+private val AmberSoft = Color(0x26F59E0B)
 private val Slate = Color(0xFF475569)
 
 private sealed class DigestUiState {
@@ -95,6 +95,7 @@ private sealed class DigestUiState {
 fun DailySummaryScreen(
     modifier: Modifier = Modifier,
     baseHttpUrl: String,
+    onNavigateToRecord: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
@@ -221,7 +222,7 @@ fun DailySummaryScreen(
                 }
             }
             is DigestUiState.Success -> {
-                DigestBodyV2(current.data, calendarEvents)
+                DigestBodyV2(current.data, calendarEvents, onNavigateToRecord)
             }
         }
 
@@ -232,7 +233,7 @@ fun DailySummaryScreen(
 // ── Quick Stats ──
 
 @Composable
-private fun DigestBodyV2(data: DailyDigestData, calendarEvents: List<CachedCalendarEvent>) {
+private fun DigestBodyV2(data: DailyDigestData, calendarEvents: List<CachedCalendarEvent>, onNavigateToRecord: () -> Unit = {}) {
 
     // Stats row
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -270,7 +271,7 @@ private fun DigestBodyV2(data: DailyDigestData, calendarEvents: List<CachedCalen
     if (data.summaryText.isNotBlank() && data.summaryText != "Нет записей за день.") {
         SummaryCard(data)
     } else if (data.totalRecordings == 0) {
-        EmptyCard()
+        EmptyCard(onNavigateToRecord)
     }
 
     // Verdict
@@ -399,7 +400,7 @@ private fun SummaryCard(data: DailyDigestData) {
 }
 
 @Composable
-private fun EmptyCard() {
+private fun EmptyCard(onNavigateToRecord: () -> Unit = {}) {
     Surface(shape = RoundedCornerShape(20.dp), color = CardWhite, shadowElevation = 1.dp) {
         Column(
             Modifier.padding(32.dp).fillMaxWidth(),
@@ -410,6 +411,14 @@ private fun EmptyCard() {
             Text("Пока нет записей", fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = TextPrimary)
             Spacer(Modifier.height(4.dp))
             Text("Записи появятся после начала записи", fontSize = 13.sp, color = TextMuted, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(16.dp))
+            androidx.compose.material3.Button(
+                onClick = onNavigateToRecord,
+                shape = RoundedCornerShape(12.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Indigo),
+            ) {
+                Text("Сделать первую запись", fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }

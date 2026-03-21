@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.People
+import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.CircularProgressIndicator
@@ -58,20 +59,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-// ── Same palette as DailySummaryScreen ──
-private val PageBg = Color(0xFFF7F5F2)
-private val CardWhite = Color(0xFFFFFFFF)
-private val TextPrimary = Color(0xFF1A1A2E)
-private val TextSecondary = Color(0xFF6B7280)
-private val TextMuted = Color(0xFF9CA3AF)
+// ── Design System: Dark Glassmorphism (matches DailySummaryScreen / MirrorScreen) ──
+private val PageBg = Color.Transparent
+private val CardWhite = Color(0x1AFFFFFF)          // 10% white glass
+private val TextPrimary = Color(0xFFFFFFFF)
+private val TextSecondary = Color(0xFFA0AAB2)
+private val TextMuted = Color(0xFF6B7C8A)
 private val Coral = Color(0xFFFF6B6B)
-private val CoralSoft = Color(0xFFFFF0F0)
-private val Indigo = Color(0xFF6366F1)
-private val IndigoSoft = Color(0xFFF0F0FF)
+private val CoralSoft = Color(0x26FF6B6B)
+private val Indigo = Color(0xFF818CF8)
+private val IndigoSoft = Color(0x26818CF8)
 private val Mint = Color(0xFF34D399)
-private val MintSoft = Color(0xFFECFDF5)
+private val MintSoft = Color(0x2634D399)
 private val Amber = Color(0xFFF59E0B)
-private val AmberSoft = Color(0xFFFFFBEB)
+private val AmberSoft = Color(0x26F59E0B)
+private val Teal = Color(0xFF14B8A6)
+private val TealSoft = Color(0x2614B8A6)
 
 private sealed class AskUiState {
     object Idle : AskUiState()
@@ -93,6 +96,10 @@ fun AskScreen(
     val scope = rememberCoroutineScope()
     var question by remember(initialQuestion) { mutableStateOf(initialQuestion) }
     var state by remember { mutableStateOf<AskUiState>(AskUiState.Idle) }
+    var showNoteInput by remember { mutableStateOf(false) }
+    var noteText by remember { mutableStateOf("") }
+    var noteSaving by remember { mutableStateOf(false) }
+    var noteResult by remember { mutableStateOf<String?>(null) }
 
     val samples = listOf(
         SampleQuery("Что было сегодня?", Icons.Rounded.Lightbulb, Indigo),
@@ -188,6 +195,82 @@ fun AskScreen(
             }
         }
 
+        // ── Note input ──
+        Surface(
+            onClick = { showNoteInput = !showNoteInput; noteResult = null },
+            shape = RoundedCornerShape(14.dp),
+            color = if (showNoteInput) TealSoft else CardWhite,
+            shadowElevation = 1.dp,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.EditNote, contentDescription = null, tint = Teal, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Записать заметку", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = TextPrimary)
+            }
+        }
+
+        if (showNoteInput) {
+            Surface(shape = RoundedCornerShape(20.dp), color = CardWhite, shadowElevation = 2.dp) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    TextField(
+                        value = noteText,
+                        onValueChange = { noteText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Запишите мысль, инсайт или заметку...", color = TextMuted) },
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            cursorColor = Teal,
+                        ),
+                        minLines = 2,
+                        maxLines = 6,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        noteResult?.let { msg ->
+                            Text(msg, fontSize = 12.sp, color = if (msg.startsWith("✓")) Teal else Coral)
+                        }
+                        Spacer(Modifier.weight(1f))
+                        Surface(
+                            onClick = {
+                                if (noteText.isBlank() || noteSaving) return@Surface
+                                scope.launch {
+                                    noteSaving = true
+                                    noteResult = null
+                                    val id = withContext(Dispatchers.IO) { MemoryApi.postNote(baseHttpUrl, noteText.trim()) }
+                                    noteSaving = false
+                                    if (id != null) {
+                                        noteResult = "✓ Сохранено"
+                                        noteText = ""
+                                    } else {
+                                        noteResult = "Ошибка сохранения"
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (noteSaving || noteText.isBlank()) TealSoft else Teal,
+                        ) {
+                            Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (noteSaving) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Teal)
+                                } else {
+                                    Text("Сохранить", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = if (noteText.isBlank()) Teal else Color.White)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ── Result area ──
         when (val current = state) {
             AskUiState.Idle -> {
@@ -202,6 +285,13 @@ fun AskScreen(
                         "Задайте вопрос — память ответит",
                         fontSize = 15.sp, color = TextMuted, textAlign = TextAlign.Center,
                     )
+                    Spacer(Modifier.height(20.dp))
+                    androidx.compose.material3.Button(
+                        onClick = { question = samples.first().text; submit(samples.first().text) },
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Text("Задать первый вопрос")
+                    }
                 }
             }
             AskUiState.Loading -> {

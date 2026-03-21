@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,7 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Search
@@ -82,7 +83,7 @@ import kotlinx.coroutines.withContext
 private enum class Screen(val title: String, val icon: ImageVector) {
     ASK("Спросить", Icons.Default.Search),
     DAY("Итог", Icons.Default.DateRange),
-    PEOPLE("Люди", Icons.Default.Home),
+    PEOPLE("Люди", Icons.Default.People),
     MIRROR("Зеркало", Icons.Default.Insights),
     RECORD("Запись", Icons.Default.RecordVoiceOver),
 }
@@ -100,7 +101,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         try {
             onCreateImpl()
         } catch (e: Throwable) {
@@ -279,6 +283,7 @@ fun RecordingApp(
                     1 -> DailySummaryScreen(
                         baseHttpUrl = baseHttpUrl,
                         modifier = Modifier.padding(padding),
+                        onNavigateToRecord = { selectedTab = Screen.RECORD.ordinal },
                     )
                     2 -> PeopleScreen(
                         baseHttpUrl = baseHttpUrl,
@@ -405,6 +410,7 @@ fun RecordingApp(
                         onOpenThreads = {
                             showThreads = true
                         },
+                        onPersonErased = { personDraft = "" },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -525,6 +531,6 @@ private fun latestDetail(recording: Recording?): String {
         RecordingStatus.FAILED ->
             "Сегмент не дошёл до транскрипции. Проверьте локальный сервер и повторите запись."
         else ->
-            "Ждём первый транскрипт."
+            "Идёт анализ данных."
     }
 }
