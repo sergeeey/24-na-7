@@ -538,11 +538,11 @@ def _run_enrichment_sync(
     from src.enrichment.enricher import enrich_transcription
 
     episode_context = get_episode_context(db_path, result.get("episode_id"))
-    episode_text = (
-        (episode_context or {}).get("clean_text")
-        or (episode_context or {}).get("raw_text")
-        or enrichment_text
-    )
+    # WHY: use individual transcription text, not accumulated episode text.
+    # Episode clean_text joins ALL previous texts with \n, causing duplicates
+    # in structured_events and confusing LLM (can't extract speakers from mixed text).
+    # Episode context is still used for duration calculation below.
+    episode_text = enrichment_text
     _enrich_t0 = _time.monotonic()
     event = enrich_transcription(
         transcription_id=transcription_id,
@@ -572,50 +572,55 @@ def _run_enrichment_sync(
         logger.debug("profile_extraction_failed", error=str(_profile_err))
 
     # WHY: populate person_interactions so social graph has real data.
-    # Match enriched speakers against known_people, record interaction.
+    # Match speakers AND text mentions against known_people.
+    # Speakers alone is insufficient — LLM often leaves speakers=[] when
+    # user talks ABOUT a person rather than WITH them.
     try:
         _speakers = getattr(event, "speakers", None) or []
         _topics = getattr(event, "topics", None) or []
         _emotions = getattr(event, "emotions", None) or []
-        if _speakers and isinstance(_speakers, list):
-            import json as _json
-            import uuid as _uuid
-            from datetime import datetime as _dt
+        _event_text = (getattr(event, "text", "") or "").lower()
 
-            _db = get_reflexio_db(db_path)
-            _known = {
-                tuple(r)[0].lower(): tuple(r)[0]
-                for r in _db.fetchall("SELECT name FROM known_people")
-            }
-            for _sp in _speakers:
-                _sp_name = str(_sp).strip()
-                _sp_lower = _sp_name.lower()
-                # Match against known_people (exact or substring)
-                _matched = None
-                for _kn_lower, _kn_orig in _known.items():
-                    if _sp_lower in _kn_lower or _kn_lower in _sp_lower:
-                        _matched = _kn_orig
-                        break
-                if _matched:
-                    _db.execute(
-                        "INSERT INTO person_interactions "
-                        "(id, person_name, ingest_id, topics_json, emotions_json, duration_sec, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (
-                            str(_uuid.uuid4()),
-                            _matched,
-                            result.get("ingest_id", transcription_id),
-                            _json.dumps([str(t) for t in _topics[:5]], ensure_ascii=False),
-                            _json.dumps([str(e) for e in _emotions[:5]], ensure_ascii=False),
-                            result.get("duration", 0.0) or 0.0,
-                            _dt.now().isoformat(),
-                        ),
-                    )
-                    logger.info(
-                        "person_interaction_recorded",
-                        person=_matched,
-                        ingest_id=result.get("ingest_id", ""),
-                    )
+        import json as _json
+        import uuid as _uuid
+        from datetime import datetime as _dt
+
+        _db = get_reflexio_db(db_path)
+        _known = {
+            tuple(r)[0].lower(): tuple(r)[0] for r in _db.fetchall("SELECT name FROM known_people")
+        }
+        # Collect matched people from speakers + text mentions
+        _matched_people: set[str] = set()
+        for _sp in _speakers if isinstance(_speakers, list) else []:
+            _sp_lower = str(_sp).strip().lower()
+            for _kn_lower, _kn_orig in _known.items():
+                if _sp_lower in _kn_lower or _kn_lower in _sp_lower:
+                    _matched_people.add(_kn_orig)
+        # Also scan text for known names (catches "talks about" cases)
+        for _kn_lower, _kn_orig in _known.items():
+            if _kn_lower in _event_text:
+                _matched_people.add(_kn_orig)
+
+        for _matched in _matched_people:
+            _db.execute(
+                "INSERT INTO person_interactions "
+                "(id, person_name, ingest_id, topics_json, emotions_json, duration_sec, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(_uuid.uuid4()),
+                    _matched,
+                    result.get("ingest_id", transcription_id),
+                    _json.dumps([str(t) for t in _topics[:5]], ensure_ascii=False),
+                    _json.dumps([str(e) for e in _emotions[:5]], ensure_ascii=False),
+                    result.get("duration", 0.0) or 0.0,
+                    _dt.now().isoformat(),
+                ),
+            )
+            logger.info(
+                "person_interaction_recorded",
+                person=_matched,
+                ingest_id=result.get("ingest_id", ""),
+            )
             _db.conn.commit()
     except Exception as _pi_err:
         logger.debug("person_interaction_insert_failed", error=str(_pi_err))

@@ -109,7 +109,12 @@ fun PersonScreen(
             notebook = withContext(Dispatchers.IO) {
                 val profile = MemoryApi.fetchPersonInsights(baseHttpUrl, name)
                 val commitments = fetchPersonCommitments(baseHttpUrl, name)
-                val recentEvents = MemoryApi.queryEvents(baseHttpUrl, name, limit = 6).events
+                // WHY: queryEvents does semantic search which may return
+                // unrelated events. Filter to only events mentioning this person.
+                val allEvents = MemoryApi.queryEvents(baseHttpUrl, name, limit = 20).events
+                val recentEvents = allEvents
+                    .filter { it.snippet.contains(name, ignoreCase = true) }
+                    .take(6)
                 val threads = MemoryApi.queryThreads(baseHttpUrl)
                     .filter { thread ->
                         thread.participants.any { it.equals(name, ignoreCase = true) } ||

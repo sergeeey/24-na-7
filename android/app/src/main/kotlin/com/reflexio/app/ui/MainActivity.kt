@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.RecordVoiceOver
@@ -328,14 +329,20 @@ fun RecordingApp(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Голос", style = MaterialTheme.typography.titleLarge)
-                        TextButton(onClick = { showVoiceEnrollment = false }) {
-                            Text("Закрыть")
+                        IconButton(onClick = { showVoiceEnrollment = false }) {
+                            Icon(
+                                Icons.Default.ArrowBack,
+                                contentDescription = "Назад",
+                            )
                         }
+                        Text(
+                            "Голос",
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f),
+                        )
                     }
                     VoiceEnrollmentScreen(
                         baseHttpUrl = baseHttpUrl,
@@ -359,14 +366,20 @@ fun RecordingApp(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Потоки", style = MaterialTheme.typography.titleLarge)
-                        TextButton(onClick = { showThreads = false }) {
-                            Text("Закрыть")
+                        IconButton(onClick = { showThreads = false }) {
+                            Icon(
+                                Icons.Default.ArrowBack,
+                                contentDescription = "Назад",
+                            )
                         }
+                        Text(
+                            "Потоки",
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f),
+                        )
                     }
                     ThreadsScreen(
                         baseHttpUrl = baseHttpUrl,
@@ -390,14 +403,20 @@ fun RecordingApp(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(personDraft, style = MaterialTheme.typography.titleLarge)
-                        TextButton(onClick = { personDraft = "" }) {
-                            Text("Закрыть")
+                        IconButton(onClick = { personDraft = "" }) {
+                            Icon(
+                                Icons.Default.ArrowBack,
+                                contentDescription = "Назад",
+                            )
                         }
+                        Text(
+                            personDraft,
+                            style = MaterialTheme.typography.titleLarge,
+                            modifier = Modifier.weight(1f),
+                        )
                     }
                     PersonScreen(
                         baseHttpUrl = baseHttpUrl,

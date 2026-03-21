@@ -1783,7 +1783,9 @@ def test_run_enrichment_sync_uses_episode_text(tmp_path):
                 acoustic_metadata=None,
             )
 
-        assert captured["text"] == "полный эпизод про бюджет и согласование сроков"
+        # WHY: enrichment now uses individual transcription text (not accumulated episode text)
+        # to prevent text duplication and improve LLM analysis quality.
+        assert captured["text"] == "короткий фрагмент"
         row = db.fetchone("SELECT episode_id FROM structured_events WHERE id = ?", ("ev-1",))
         assert row["episode_id"] == "ep-1"
     finally:

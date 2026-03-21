@@ -5,16 +5,17 @@
 на structured_events (для backward-compat), поэтому эта таблица должна
 существовать до первого вызова любой balance-функции.
 """
+
 import json
 import sqlite3
 from datetime import date
 from pathlib import Path
 
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _create_structured_events(db_path: Path) -> None:
     """Создаём минимальную схему structured_events, которая нужна balance."""
@@ -27,7 +28,9 @@ def _create_structured_events(db_path: Path) -> None:
             sentiment TEXT DEFAULT 'neutral',
             urgency TEXT DEFAULT 'low',
             created_at TEXT NOT NULL,
-            domains TEXT DEFAULT '[]'
+            domains TEXT DEFAULT '[]',
+            is_current INTEGER DEFAULT 1,
+            quality_state TEXT DEFAULT 'trusted'
         )
         """
     )
@@ -39,6 +42,7 @@ def _create_structured_events(db_path: Path) -> None:
 # Tests: balance/storage.py
 # ---------------------------------------------------------------------------
 
+
 class TestEnsureBalanceTables:
     def test_creates_domain_config_table(self, tmp_path):
         """ensure_balance_tables создаёт таблицу domain_config."""
@@ -49,7 +53,10 @@ class TestEnsureBalanceTables:
         ensure_balance_tables(db)
 
         conn = sqlite3.connect(str(db))
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
         conn.close()
         assert "domain_config" in tables
 
@@ -326,6 +333,7 @@ class TestDomainClassifier:
 # Tests: persongraph/service.py
 # ---------------------------------------------------------------------------
 
+
 class TestEnsurePersonGraphTables:
     def test_creates_table(self, tmp_path):
         """ensure_person_graph_tables создаёт person_graph_events."""
@@ -335,7 +343,10 @@ class TestEnsurePersonGraphTables:
         ensure_person_graph_tables(db)
 
         conn = sqlite3.connect(str(db))
-        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
         conn.close()
         assert "person_graph_events" in tables
 
@@ -353,55 +364,65 @@ class TestBuildSimpleSummary:
         """При нулевых маркерах — нейтральный ответ."""
         from src.persongraph.service import _build_simple_summary
 
-        result = _build_simple_summary({
-            "absolutism_score": 0.0,
-            "self_criticism_score": 0.0,
-            "procrastination_score": 0.0,
-        })
+        result = _build_simple_summary(
+            {
+                "absolutism_score": 0.0,
+                "self_criticism_score": 0.0,
+                "procrastination_score": 0.0,
+            }
+        )
         assert "нейтральна" in result
 
     def test_absolutism_marker(self):
         """При absolutism_score > 0.01 — упоминание категоричности."""
         from src.persongraph.service import _build_simple_summary
 
-        result = _build_simple_summary({
-            "absolutism_score": 0.5,
-            "self_criticism_score": 0.0,
-            "procrastination_score": 0.0,
-        })
+        result = _build_simple_summary(
+            {
+                "absolutism_score": 0.5,
+                "self_criticism_score": 0.0,
+                "procrastination_score": 0.0,
+            }
+        )
         assert "категоричности" in result
 
     def test_self_criticism_marker(self):
         """При self_criticism_score > 0.01 — маркеры самокритики."""
         from src.persongraph.service import _build_simple_summary
 
-        result = _build_simple_summary({
-            "absolutism_score": 0.0,
-            "self_criticism_score": 0.3,
-            "procrastination_score": 0.0,
-        })
+        result = _build_simple_summary(
+            {
+                "absolutism_score": 0.0,
+                "self_criticism_score": 0.3,
+                "procrastination_score": 0.0,
+            }
+        )
         assert "самокритики" in result
 
     def test_procrastination_marker(self):
         """При procrastination_score > 0.01 — сигналы откладывания."""
         from src.persongraph.service import _build_simple_summary
 
-        result = _build_simple_summary({
-            "absolutism_score": 0.0,
-            "self_criticism_score": 0.0,
-            "procrastination_score": 0.2,
-        })
+        result = _build_simple_summary(
+            {
+                "absolutism_score": 0.0,
+                "self_criticism_score": 0.0,
+                "procrastination_score": 0.2,
+            }
+        )
         assert "откладывания" in result
 
     def test_all_markers(self):
         """При всех трёх маркерах — все три упоминания в тексте."""
         from src.persongraph.service import _build_simple_summary
 
-        result = _build_simple_summary({
-            "absolutism_score": 0.5,
-            "self_criticism_score": 0.3,
-            "procrastination_score": 0.2,
-        })
+        result = _build_simple_summary(
+            {
+                "absolutism_score": 0.5,
+                "self_criticism_score": 0.3,
+                "procrastination_score": 0.2,
+            }
+        )
         assert "категоричности" in result
         assert "самокритики" in result
         assert "откладывания" in result
@@ -501,16 +522,23 @@ class TestGetDayInsights:
 
     def test_returns_latest_snapshot(self, tmp_path):
         """При нескольких снимках — возвращается последний (ORDER BY created_at DESC LIMIT 1)."""
-        from src.persongraph.service import save_day_psychology_snapshot, get_day_insights, ensure_person_graph_tables
+        from src.persongraph.service import (
+            save_day_psychology_snapshot,
+            get_day_insights,
+            ensure_person_graph_tables,
+        )
 
         db = tmp_path / "pg.db"
         ensure_person_graph_tables(db)
 
         # Вставляем старый снимок с явно обновлённым created_at
         import time
+
         save_day_psychology_snapshot(db, "2025-01-17", "Старый текст.")
         time.sleep(0.01)
-        save_day_psychology_snapshot(db, "2025-01-17", "Новый текст с явными маркерами: всегда должен.")
+        save_day_psychology_snapshot(
+            db, "2025-01-17", "Новый текст с явными маркерами: всегда должен."
+        )
 
         insights = get_day_insights(db, "2025-01-17")
         # Должны вернуться 5 инсайтов, основанных на последнем снимке

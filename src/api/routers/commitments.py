@@ -47,6 +47,7 @@ def get_commitments(
         SELECT id, created_at, summary, commitments, topics
         FROM structured_events
         WHERE is_current = 1
+          AND quality_state = 'trusted'
           AND commitments IS NOT NULL
           AND commitments != '[]'
           AND created_at >= ?

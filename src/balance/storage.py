@@ -1,4 +1,5 @@
 """Balance domain storage and aggregation."""
+
 from __future__ import annotations
 
 import json
@@ -153,6 +154,8 @@ def get_balance_wheel(db_path: Path, from_date: date, to_date: date) -> dict[str
                AVG(CASE WHEN sentiment='positive' THEN 1.0 WHEN sentiment='negative' THEN -1.0 ELSE 0.0 END) as avg_sentiment
         FROM structured_events, json_each(structured_events.domains)
         WHERE created_at BETWEEN ? AND ?
+          AND is_current = 1
+          AND quality_state = 'trusted'
         GROUP BY json_each.value
         """,
         (start_utc, end_utc),
@@ -205,4 +208,3 @@ def get_balance_wheel(db_path: Path, from_date: date, to_date: date) -> dict[str
         "alert": alert,
         "recommendation": recommendation,
     }
-

@@ -129,6 +129,7 @@ def _query_portrait(
                 SELECT emotions, topics, speakers, sentiment
                 FROM structured_events
                 WHERE is_current = 1
+                  AND quality_state = 'trusted'
                   AND date(created_at) BETWEEN ? AND ?
                 """,
                 (date_from.isoformat(), date_to.isoformat()),
