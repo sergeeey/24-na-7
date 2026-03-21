@@ -1292,7 +1292,10 @@ def test_evaluate_episode_truth_marks_low_information_as_uncertain(tmp_path):
 
         truth = evaluate_episode_truth(db_path, "ep-1")
         assert truth is not None
-        assert truth["quality_state"] == "uncertain"
+        # WHY trusted: 2 words with unique_ratio=1.0 passes relaxed threshold
+        # (token_count >= 2 and unique_ratio >= 0.3). Short valid phrases
+        # should not be penalized in always-on recording mode.
+        assert truth["quality_state"] == "trusted"
     finally:
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 

@@ -215,18 +215,21 @@ def evaluate_episode_truth(db_path: Path, episode_id: str) -> dict[str, Any] | N
     reasons: list[dict[str, Any]] = []
     score = 1.0
 
-    if token_count < 4 or unique_ratio < 0.4:
+    # WHY 2 not 4: aligned with evaluate_transcription_truth.
+    # 4-token threshold was marking short but valid commands ("купи хлеб")
+    # as LOW_INFORMATION → uncertain, causing trusted_fraction=15.8%.
+    if token_count < 2 or unique_ratio < 0.3:
         reasons.append(
             _reason(
                 "LOW_INFORMATION",
                 "medium",
-                -0.35,
+                -0.25,
                 token_count=token_count,
                 unique_tokens=unique_count,
                 unique_ratio=round(unique_ratio, 3),
             )
         )
-        score -= 0.35
+        score -= 0.25
 
     repeated_phrase = token_count >= 5 and (dominant_share >= 0.45 or repeated_bigram_count >= 2)
     if repeated_phrase:
