@@ -1314,6 +1314,44 @@ def process_audio_from_artifact_sync(
         if delete_audio_after:
             file_path.unlink(missing_ok=True)
 
+        # WHY: skip enrichment for non-user audio (TV, reels, background speakers).
+        # Speaker verification already determined is_user — use it to avoid polluting
+        # structured_events with TV drama topics/emotions. Save as consumed_content instead.
+        _is_user = result.get("is_user", True)  # default True if verification disabled
+        if run_enrichment and transcription_id and not _is_user:
+            try:
+                from src.memory.consumed_content import save_consumed_content
+
+                save_consumed_content(
+                    db_path,
+                    result.get("text", ""),
+                    language=result.get("language"),
+                    duration=result.get("duration", 0.0),
+                )
+            except Exception:
+                pass
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "filtered",
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="background_speaker",
+            )
+            logger.info(
+                "enrichment_skipped_background_speaker",
+                ingest_id=ingest_id,
+                confidence=result.get("speaker_confidence", 0),
+            )
+            return {
+                "status": "filtered",
+                "reason": "background_speaker",
+                "ingest_id": ingest_id,
+                "filename": filename,
+                "transcription_id": transcription_id,
+                "result": result,
+            }
+
         if run_enrichment and transcription_id:
             text_for_enrichment = (
                 f"{(enrichment_prefix or '').strip()} {result.get('text', '').strip()}".strip()
@@ -1797,6 +1835,37 @@ async def process_audio_bytes(
         )
         if delete_audio_after:
             dest_path.unlink(missing_ok=True)
+
+        # Skip enrichment for background speakers (same logic as sync path)
+        _is_user_ws = result.get("is_user", True)
+        if run_enrichment and transcription_id and not _is_user_ws:
+            try:
+                from src.memory.consumed_content import save_consumed_content
+
+                save_consumed_content(
+                    db_path,
+                    result.get("text", ""),
+                    language=result.get("language"),
+                    duration=result.get("duration", 0.0),
+                )
+            except Exception:
+                pass
+            _mark_ingest_status(
+                db_path,
+                ingest_id,
+                "filtered",
+                transport_status="server_acked",
+                processing_status="filtered",
+                error_code="background_speaker",
+            )
+            logger.info("enrichment_skipped_background_speaker", ingest_id=ingest_id)
+            return {
+                "status": "filtered",
+                "reason": "background_speaker",
+                "ingest_id": ingest_id,
+                "transcription_id": transcription_id,
+                "result": result,
+            }
 
         if run_enrichment and transcription_id:
             text_for_enrichment = (
