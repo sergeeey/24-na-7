@@ -571,6 +571,55 @@ def _run_enrichment_sync(
     except Exception as _profile_err:
         logger.debug("profile_extraction_failed", error=str(_profile_err))
 
+    # WHY: populate person_interactions so social graph has real data.
+    # Match enriched speakers against known_people, record interaction.
+    try:
+        _speakers = getattr(event, "speakers", None) or []
+        _topics = getattr(event, "topics", None) or []
+        _emotions = getattr(event, "emotions", None) or []
+        if _speakers and isinstance(_speakers, list):
+            import json as _json
+            import uuid as _uuid
+            from datetime import datetime as _dt
+
+            _db = get_reflexio_db(db_path)
+            _known = {
+                tuple(r)[0].lower(): tuple(r)[0]
+                for r in _db.fetchall("SELECT name FROM known_people")
+            }
+            for _sp in _speakers:
+                _sp_name = str(_sp).strip()
+                _sp_lower = _sp_name.lower()
+                # Match against known_people (exact or substring)
+                _matched = None
+                for _kn_lower, _kn_orig in _known.items():
+                    if _sp_lower in _kn_lower or _kn_lower in _sp_lower:
+                        _matched = _kn_orig
+                        break
+                if _matched:
+                    _db.execute(
+                        "INSERT INTO person_interactions "
+                        "(id, person_name, ingest_id, topics_json, emotions_json, duration_sec, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            str(_uuid.uuid4()),
+                            _matched,
+                            result.get("ingest_id", transcription_id),
+                            _json.dumps([str(t) for t in _topics[:5]], ensure_ascii=False),
+                            _json.dumps([str(e) for e in _emotions[:5]], ensure_ascii=False),
+                            result.get("duration", 0.0) or 0.0,
+                            _dt.now().isoformat(),
+                        ),
+                    )
+                    logger.info(
+                        "person_interaction_recorded",
+                        person=_matched,
+                        ingest_id=result.get("ingest_id", ""),
+                    )
+            _db.conn.commit()
+    except Exception as _pi_err:
+        logger.debug("person_interaction_insert_failed", error=str(_pi_err))
+
     episode_id = refresh_episode_from_event(db_path, transcription_id, event)
     if episode_id:
         result["episode_id"] = episode_id

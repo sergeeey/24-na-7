@@ -84,6 +84,10 @@ _EMOTION_KEYWORDS = re.compile(
     r"эмоци|чувств|настрое|тревог|радост|злост|грустн|счастл",
     re.IGNORECASE,
 )
+_COMMITMENT_KEYWORDS = re.compile(
+    r"обеща|commit|клял|долг|обязал|договор|слово дал|обещани",
+    re.IGNORECASE,
+)
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 _DAYS_BACK_PATTERN = re.compile(r"за\s+(\d+)\s+дн|последни[еx]\s+(\d+)\s+дн", re.IGNORECASE)
 
@@ -152,6 +156,10 @@ def analyze_intent(question: str) -> list[ToolCall]:
             ToolCall("query_events", {**base_params, "q": question, "topics": "задача,план"})
         )
 
+    # Обещания/обязательства?
+    if _COMMITMENT_KEYWORDS.search(question):
+        calls.append(ToolCall("get_commitments", base_params))
+
     # Fallback — семантический поиск по вопросу
     if not calls:
         calls.append(ToolCall("query_events", {**base_params, "q": question}))
@@ -210,6 +218,16 @@ async def _execute_tool(call: ToolCall) -> ToolResult:
                 include_evidence=False,
             )
             return _dict_to_tool_result(raw, "get_person_insights")
+
+        elif call.tool == "get_commitments":
+            from src.api.routers.commitments import get_commitments
+
+            raw = get_commitments(
+                days_back=call.params.get("days_back", 30),
+                limit=call.params.get("limit", 20),
+                person=call.params.get("person"),
+            )
+            return _dict_to_tool_result(raw, "get_commitments")
 
         else:
             return ToolResult.error_result(call.tool, f"Unknown tool: {call.tool}")
