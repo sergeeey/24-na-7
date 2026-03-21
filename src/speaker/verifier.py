@@ -14,6 +14,7 @@
     Если silence/шум сразу отсекается на уровне 1, тяжёлый inference (~50ms/сегмент)
     запускается только при реальном голосе — значительная экономия CPU.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -48,7 +49,10 @@ def verify_speaker(
     db_path: Path,
     sample_rate: int = 16000,
     amplitude_threshold: float = 0.01,
-    similarity_threshold: float = 0.75,
+    # WHY 0.45: real-world conditions (2-3s chunks, background noise, TV)
+    # give cosine similarity ~0.4-0.5 for the actual user. 0.75 was lab-grade.
+    # TV/reels speakers typically score 0.30-0.38, so 0.45 separates them.
+    similarity_threshold: float = 0.45,
     user_id: str = "default",
 ) -> VerificationResult:
     """Проверяет, является ли спикер в аудио-сегменте пользователем.
