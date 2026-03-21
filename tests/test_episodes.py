@@ -1350,6 +1350,187 @@ def test_evaluate_episode_truth_marks_coherent_episode_as_trusted(tmp_path):
         object.__setattr__(settings, "STORAGE_PATH", old_storage)
 
 
+def test_episode_truth_all_background_speakers_is_garbage(tmp_path):
+    """Episode where ALL child transcriptions are is_user=0 should be garbage."""
+    from src.memory.truth import evaluate_episode_truth
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "ep-bg",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:01:00",
+                    "closed",
+                    2,
+                    '["tr-bg1","tr-bg2"]',
+                    "подпишитесь на канал и поставьте лайк",
+                    "подпишитесь на канал и поставьте лайк",
+                    "",
+                    '["youtube"]',
+                    "[]",
+                    "[]",
+                    0.2,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+            # WHY: both transcriptions are background (is_user=0)
+            for tr_id in ["tr-bg1", "tr-bg2"]:
+                db.execute(
+                    """INSERT INTO transcriptions (
+                        id, ingest_id, episode_id, text, created_at, is_user, speaker_confidence
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        tr_id,
+                        f"ing-{tr_id}",
+                        "ep-bg",
+                        "подпишитесь на канал",
+                        "2026-03-10T12:00:00",
+                        0,
+                        0.35,
+                    ),
+                )
+
+        truth = evaluate_episode_truth(db_path, "ep-bg")
+        assert truth is not None
+        # ALL_BACKGROUND reason code should fire, score drops by 0.5
+        reason_codes = [r["code"] for r in truth["quality_reasons_json"]]
+        assert "ALL_BACKGROUND" in reason_codes
+        # Score should be low enough for garbage or uncertain
+        assert truth["quality_state"] in ("garbage", "uncertain")
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_episode_truth_mixed_ownership_is_uncertain(tmp_path):
+    """Episode with <50% user transcriptions gets MIXED_OWNERSHIP penalty."""
+    from src.memory.truth import evaluate_episode_truth
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """INSERT INTO episodes (
+                    id, started_at, ended_at, status, source_count, transcription_ids_json,
+                    raw_text, clean_text, summary, topics_json, participants_json,
+                    commitments_json, importance_score, needs_review, day_key
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "ep-mix",
+                    "2026-03-10T12:00:00",
+                    "2026-03-10T12:02:00",
+                    "closed",
+                    3,
+                    '["tr-u1","tr-o1","tr-o2"]',
+                    "обсудили планы на вечер и заказали еду",
+                    "обсудили планы на вечер и заказали еду",
+                    "",
+                    '["планы"]',
+                    "[]",
+                    "[]",
+                    0.5,
+                    0,
+                    "2026-03-10",
+                ),
+            )
+            # 1 user + 2 other = 33% user ratio
+            db.execute(
+                """INSERT INTO transcriptions (
+                    id, ingest_id, episode_id, text, created_at, is_user, speaker_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                ("tr-u1", "ing-u1", "ep-mix", "пойдём ужинать", "2026-03-10T12:00:00", 1, 0.92),
+            )
+            for tr_id in ["tr-o1", "tr-o2"]:
+                db.execute(
+                    """INSERT INTO transcriptions (
+                        id, ingest_id, episode_id, text, created_at, is_user, speaker_confidence
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        tr_id,
+                        f"ing-{tr_id}",
+                        "ep-mix",
+                        "давай закажем",
+                        "2026-03-10T12:00:10",
+                        0,
+                        0.38,
+                    ),
+                )
+
+        truth = evaluate_episode_truth(db_path, "ep-mix")
+        assert truth is not None
+        reason_codes = [r["code"] for r in truth["quality_reasons_json"]]
+        assert "MIXED_OWNERSHIP" in reason_codes
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
+def test_transcription_truth_non_user_speaker_penalized(tmp_path):
+    """Transcription with is_user=0 gets NON_USER_SPEAKER penalty."""
+    from src.memory.truth import evaluate_transcription_truth
+    from src.storage.db import get_reflexio_db
+    from src.storage.ingest_persist import ensure_ingest_tables
+    from src.utils.config import settings
+
+    storage_path = tmp_path / "storage"
+    storage_path.mkdir()
+    old_storage = settings.STORAGE_PATH
+    object.__setattr__(settings, "STORAGE_PATH", storage_path)
+
+    try:
+        db_path = storage_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """INSERT INTO transcriptions (
+                    id, ingest_id, text, created_at, is_user, speaker_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    "tr-tv",
+                    "ing-tv",
+                    "добро пожаловать на наш канал",
+                    "2026-03-10T12:00:00",
+                    0,
+                    0.32,
+                ),
+            )
+
+        truth = evaluate_transcription_truth(db_path, "tr-tv")
+        assert truth is not None
+        reason_codes = [r["code"] for r in truth["quality_reasons_json"]]
+        assert "NON_USER_SPEAKER" in reason_codes
+        assert truth["quality_score"] < 0.72
+    finally:
+        object.__setattr__(settings, "STORAGE_PATH", old_storage)
+
+
 def test_evaluate_episode_truth_preserves_duplicate_conversational_episode_as_trusted(tmp_path):
     from src.memory.truth import evaluate_episode_truth
     from src.storage.db import get_reflexio_db

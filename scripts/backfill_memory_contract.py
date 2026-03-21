@@ -117,7 +117,9 @@ def pass_3_truth_reeval(db, db_path, apply: bool):
         db.conn.execute("UPDATE structured_events SET quality_state = NULL WHERE is_current = 1")
         db.conn.commit()
 
-    result = reclassify_episodes_for_range(db_path, start_day, end_day, apply_changes=apply)
+    result = reclassify_episodes_for_range(
+        db_path, start_day=start_day, end_day=end_day, apply_changes=apply
+    )
     proposed = result.get("proposed_state_counts", result.get("state_counts", {}))
     print(f"  [pass 3] {'Applied' if apply else 'Proposed'}: {proposed}")
     print(f"  [pass 3] Episodes affected: {result.get('affected_episodes', '?')}")
