@@ -142,69 +142,46 @@ def _score_from_mentions(mentions: int, max_mentions: int) -> float:
 
 
 def get_balance_wheel(db_path: Path, from_date: date, to_date: date) -> dict[str, Any]:
+    """Get balance wheel data using shared calculator.
+
+    WHY: single source of truth — same calculation for /balance/wheel and mirror.
+    """
+    from src.balance.calculator import calculate_balance
+
     ensure_balance_tables(db_path)
     db = get_reflexio_db(db_path)
-    # ПОЧЕМУ resolve_date_range: timezone-safe UTC-диапазон для Алматы UTC+6
-    dr = resolve_date_range(start_str=from_date.isoformat(), end_str=to_date.isoformat())
-    start_utc, end_utc = dr.sql_range()
-    rows = db.fetchall(
-        """
-        SELECT json_each.value as domain,
-               COUNT(*) as mention_count,
-               AVG(CASE WHEN sentiment='positive' THEN 1.0 WHEN sentiment='negative' THEN -1.0 ELSE 0.0 END) as avg_sentiment
-        FROM structured_events, json_each(structured_events.domains)
-        WHERE created_at BETWEEN ? AND ?
-          AND is_current = 1
-          AND quality_state = 'trusted'
-        GROUP BY json_each.value
-        """,
-        (start_utc, end_utc),
-    )
+    result = calculate_balance(db, from_date.isoformat(), to_date.isoformat())
 
-    mention_max = max([int(r["mention_count"]) for r in rows], default=0)
-    domains = []
-    total_mentions = 0
-    for row in rows:
-        mentions = int(row["mention_count"] or 0)
-        total_mentions += mentions
-        domains.append(
-            {
-                "domain": row["domain"],
-                "mentions": mentions,
-                "sentiment": round(float(row["avg_sentiment"] or 0.0), 2),
-                "score": _score_from_mentions(mentions, mention_max),
-            }
-        )
-
-    domains = sorted(domains, key=lambda x: x["mentions"], reverse=True)
-
-    balance_score = 0.0
-    if domains:
-        values = [d["score"] for d in domains]
-        avg = sum(values) / len(values)
-        variance = sum((v - avg) ** 2 for v in values) / len(values)
-        balance_score = round(1.0 / (1.0 + variance), 2)
+    # Backward-compat response format for Android
+    domains = [
+        {
+            "domain": d.domain,
+            "mentions": d.mentions,
+            "sentiment": d.avg_sentiment,
+            "score": round(d.presence_score * 10.0, 1),  # 0-10 scale for legacy
+            "presence_score": d.presence_score,
+        }
+        for d in result.domains
+    ]
 
     alert = "Баланс в норме."
     recommendation = "Продолжай текущий ритм."
-    if domains:
-        dominant = domains[0]
-        if dominant["mentions"] > max(5, total_mentions * 0.6):
-            alert = f"Дисбаланс: домен '{dominant['domain']}' доминирует в дне."
+    if result.domains:
+        dominant = result.domains[0]
+        if dominant.mentions > max(5, result.total_mentions * 0.6):
+            alert = f"Дисбаланс: домен '{dominant.domain}' доминирует в дне."
             recommendation = "Запланируй 30-60 минут на недопредставленный домен."
 
-    has_data = bool(domains)
-    empty_reason = None if has_data else "no_structured_events"
-
+    has_data = bool(result.domains)
     return {
         "from": from_date.isoformat(),
         "to": to_date.isoformat(),
         "domains": domains,
-        "balance_score": balance_score,
+        "balance_score": result.balance_score,
         "has_data": has_data,
-        "covered_domains": len(domains),
-        "total_mentions": total_mentions,
-        "empty_reason": empty_reason,
+        "covered_domains": result.covered_domains,
+        "total_mentions": result.total_mentions,
+        "empty_reason": None if has_data else "no_structured_events",
         "alert": alert,
         "recommendation": recommendation,
     }

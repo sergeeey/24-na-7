@@ -185,40 +185,14 @@ def _query_portrait(
         else:
             logger.info("mirror.table_missing", table="structured_events")
 
-        # WHY: balance_scores table doesn't exist — balance is computed on-the-fly
-        # from structured_events.domains (JSON array). Extract domain mentions
-        # and calculate avg sentiment per domain, same logic as /balance/wheel.
-        if _table_exists(conn, "structured_events"):
-            try:
-                domain_rows = conn.execute(
-                    """
-                    SELECT domains, sentiment
-                    FROM structured_events
-                    WHERE is_current = 1
-                      AND quality_state = 'trusted'
-                      AND date(created_at) BETWEEN ? AND ?
-                    """,
-                    (date_from.isoformat(), date_to.isoformat()),
-                ).fetchall()
-                domain_counts: Counter = Counter()
-                domain_sentiment: dict[str, list[float]] = {}
-                for dr in domain_rows:
-                    doms = _parse_json_column(dr["domains"])
-                    sent_val = sentiment_map.get(dr["sentiment"], 0.0)
-                    for d in doms:
-                        domain_counts[d] += 1
-                        domain_sentiment.setdefault(d, []).append(sent_val)
-                max_mentions = max(domain_counts.values()) if domain_counts else 1
-                balance_trend = [
-                    {
-                        "domain": d,
-                        "avg_score": round(cnt / max_mentions, 2),
-                        "mentions": cnt,
-                    }
-                    for d, cnt in domain_counts.most_common()
-                ]
-            except Exception as e:
-                logger.warning("mirror.balance_calc_failed", error=str(e))
+        # WHY: shared calculator ensures mirror and /balance/wheel agree.
+        try:
+            from src.balance.calculator import calculate_balance
+
+            balance_result = calculate_balance(db, date_from.isoformat(), date_to.isoformat())
+            balance_trend = balance_result.to_mirror_trend()
+        except Exception as e:
+            logger.warning("mirror.balance_calc_failed", error=str(e))
 
         # --- commitments: открытые обязательства ---
         if _table_exists(conn, "commitments"):

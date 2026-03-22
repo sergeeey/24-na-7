@@ -552,3 +552,127 @@ class TestGetDayInsights:
         save_day_psychology_snapshot(db, "2025-01-15", "Текст.")
         result = get_day_insights(db, "2025-01-16")
         assert result == []
+
+
+# ── Shared Calculator Tests ───────────────────────────────────────────────
+
+
+class TestBalanceCalculator:
+    """Tests for shared balance calculator used by both /balance/wheel and mirror."""
+
+    def test_calculator_returns_domains_with_presence_score(self, tmp_path):
+        from src.balance.calculator import calculate_balance
+        from src.storage.db import get_reflexio_db
+        from src.storage.ingest_persist import ensure_ingest_tables
+
+        db_path = tmp_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """INSERT INTO structured_events (id, transcription_id, text, created_at,
+                    is_current, quality_state, domains)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "se-1",
+                    "tr-1",
+                    "работа встреча",
+                    "2026-03-22T12:00:00",
+                    1,
+                    "trusted",
+                    '["work", "relations"]',
+                ),
+            )
+            db.execute(
+                """INSERT INTO structured_events (id, transcription_id, text, created_at,
+                    is_current, quality_state, domains)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                ("se-2", "tr-2", "дети играют", "2026-03-22T13:00:00", 1, "trusted", '["family"]'),
+            )
+
+        result = calculate_balance(db, "2026-03-22", "2026-03-22")
+        assert result.total_mentions == 3
+        assert result.covered_domains == 3
+        domain_names = {d.domain for d in result.domains}
+        assert "work" in domain_names and "family" in domain_names
+        assert all(0.0 <= d.presence_score <= 1.0 for d in result.domains)
+        # Top domain should have presence_score = 1.0
+        assert result.domains[0].presence_score == 1.0
+
+    def test_calculator_empty_returns_zero(self, tmp_path):
+        from src.balance.calculator import calculate_balance
+        from src.storage.db import get_reflexio_db
+        from src.storage.ingest_persist import ensure_ingest_tables
+
+        db_path = tmp_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+
+        result = calculate_balance(db, "2026-03-22", "2026-03-22")
+        assert result.total_mentions == 0
+        assert result.domains == []
+        assert result.balance_score == 0.0
+
+    def test_calculator_ignores_untrusted(self, tmp_path):
+        from src.balance.calculator import calculate_balance
+        from src.storage.db import get_reflexio_db
+        from src.storage.ingest_persist import ensure_ingest_tables
+
+        db_path = tmp_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            db.execute(
+                """INSERT INTO structured_events (id, transcription_id, text, created_at,
+                    is_current, quality_state, domains)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "se-u",
+                    "tr-u",
+                    "garbage tv",
+                    "2026-03-22T12:00:00",
+                    1,
+                    "uncertain",
+                    '["leisure"]',
+                ),
+            )
+
+        result = calculate_balance(db, "2026-03-22", "2026-03-22")
+        assert result.total_mentions == 0  # uncertain excluded
+
+    def test_mirror_trend_matches_calculator(self, tmp_path):
+        """Mirror balance_trend must use same calculator as /balance/wheel."""
+        from src.balance.calculator import calculate_balance
+        from src.storage.db import get_reflexio_db
+        from src.storage.ingest_persist import ensure_ingest_tables
+
+        db_path = tmp_path / "reflexio.db"
+        ensure_ingest_tables(db_path)
+        db = get_reflexio_db(db_path)
+        with db.transaction():
+            for i, domain in enumerate(["work", "work", "family"]):
+                db.execute(
+                    """INSERT INTO structured_events (id, transcription_id, text, created_at,
+                        is_current, quality_state, domains, sentiment)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        f"se-{i}",
+                        f"tr-{i}",
+                        "test",
+                        "2026-03-22T12:00:00",
+                        1,
+                        "trusted",
+                        json.dumps([domain]),
+                        "positive",
+                    ),
+                )
+
+        result = calculate_balance(db, "2026-03-22", "2026-03-22")
+        trend = result.to_mirror_trend()
+
+        assert len(trend) == 2
+        assert trend[0]["domain"] == "work"
+        assert trend[0]["mentions"] == 2
+        assert trend[0]["avg_score"] == 1.0  # top domain = 1.0 presence
+        assert trend[1]["domain"] == "family"
+        assert trend[1]["mentions"] == 1
