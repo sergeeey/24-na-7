@@ -40,6 +40,19 @@ _MEDIA_TOPIC_BLACKLIST = frozenset(
         "выражает",
         "описание",
         "высказывание",
+        # YouTube creators and shows that leak through
+        "dimatorzok",
+        "DimaTorzok",
+        # Generic media terms
+        "сезон",
+        "серия",
+        "эпизод",
+        "трейлер",
+        "реклама",
+        "промо",
+        "ролик",
+        "видео",
+        "стрим",
     }
 )
 

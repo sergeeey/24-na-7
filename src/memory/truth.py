@@ -33,6 +33,32 @@ def _tokens(text: str) -> list[str]:
     return [token.lower() for token in re.findall(TOKEN_RE, text or "")]
 
 
+# WHY: TV/YouTube audio passes speaker verification because the phone mic
+# picks up speaker output. Content-based detection catches what acoustic
+# analysis can't — recognizable media phrases in the transcribed text.
+_MEDIA_TEXT_MARKERS = [
+    "субтитры",
+    "подпишитесь",
+    "подписывайтесь",
+    "ставьте лайк",
+    "спасибо за просмотр",
+    "dimatorzok",
+    "DimaTorzok",
+    "смотрите в следующей серии",
+    "не переключайтесь",
+    "добро пожаловать на канал",
+    "всем привет с вами",
+    "ссылка в описании",
+    "промокод",
+]
+
+
+def _is_media_content(text: str) -> bool:
+    """Detect TV/YouTube content by text markers."""
+    lower = (text or "").lower()
+    return any(marker.lower() in lower for marker in _MEDIA_TEXT_MARKERS)
+
+
 def _signature(text: str) -> str:
     tokens = _tokens(text)
     if len(tokens) < 2:
@@ -160,6 +186,11 @@ def evaluate_transcription_truth(
             )
         )
         score -= 0.15
+
+    # WHY: content-based media detection catches TV/YouTube that passes speaker verification.
+    if _is_media_content(text):
+        reasons.append(_reason("MEDIA_CONTENT_DETECTED", "high", -0.5, text_snippet=text[:60]))
+        score -= 0.5
 
     # WHY: ownership-aware quality — non-user speech should not be treated as trusted memory.
     # is_user=0 means speaker verification determined this is background/TV/other person.
