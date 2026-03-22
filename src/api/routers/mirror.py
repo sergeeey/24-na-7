@@ -445,6 +445,31 @@ async def get_memory_quality(request: Request, response: Response) -> dict[str, 
     except Exception:
         lineage_coverage = 0.0
 
+    # WHY: fresh SLO separates current health from historical debt.
+    # Old uncertain data from pre-speaker-verification era drags corpus SLO down,
+    # but fresh events are already much healthier. Soak test needs fresh metrics.
+    fresh_slo = {}
+    try:
+        for window, label in [("24 hours", "24h"), ("7 days", "7d")]:
+            fresh = conn.execute(
+                f"SELECT quality_state, owner_scope, COUNT(*) as cnt "
+                f"FROM structured_events "
+                f"WHERE is_current = 1 AND created_at >= datetime('now', '-{window}') "
+                f"GROUP BY quality_state, owner_scope"
+            ).fetchall()
+            total = sum(r["cnt"] for r in fresh)
+            trusted = sum(r["cnt"] for r in fresh if r["quality_state"] == "trusted")
+            self_count = sum(r["cnt"] for r in fresh if r["owner_scope"] == "self")
+            fresh_slo[label] = {
+                "total": total,
+                "trusted": trusted,
+                "trusted_fraction": round(trusted / total, 3) if total else 0.0,
+                "self_count": self_count,
+                "self_fraction": round(self_count / total, 3) if total else 0.0,
+            }
+    except Exception:
+        pass
+
     return {
         "structured_events": _quality_summary("structured_events", "is_current = 1"),
         "episodes": _quality_summary("episodes"),
@@ -457,4 +482,5 @@ async def get_memory_quality(request: Request, response: Response) -> dict[str, 
             "invariant_ok": all(v == 0 for v in nulls.values()),
         },
         "lineage_coverage": lineage_coverage,
+        "fresh_slo": fresh_slo,
     }
