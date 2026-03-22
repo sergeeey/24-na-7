@@ -1,6 +1,6 @@
 # CLAUDE.md — Reflexio 24/7
-# Цифровая память всей жизни
-# Версия: 2.0 | Обновлено: 2026-02-24
+# Evidence-based digital mirror — passive memory that reflects who you are
+# Версия: 3.0 | Обновлено: 2026-03-22
 
 ---
 
@@ -168,16 +168,14 @@ Quality gate: root_cause + fix_summary + commands обязательны. Без
 
 ## ТЕКУЩИЙ СТАТУС
 
-**Phase:** MVP не запускался end-to-end
-**Код:** 104 .py файла, ~16K строк
-**Тесты:** 25+ файлов, target coverage 80%
-**Проблемы:**
-- 54 .md файла в корне (AI-generated bloat)
-- 15 модулей в src/ (scope creep: OSINT, billing, monetization — преждевременно)
-- Никогда не тестировался end-to-end
-- Зависимость от LLM API и Letta SDK (может не быть настроено)
+**Version:** v0.5.2-beta (deployed, dogfooding active)
+**Код:** 157 .py файлов, ~30K строк + 63 Kotlin файла
+**Тесты:** 697 passed, 0 failed
+**Pipeline:** live — 5000+ structured events, 2400+ episodes, 300+ long threads
+**Memory quality:** trusted=15.8% (honest, post-backfill), ownership=100% classified
+**Product loop:** RECORD → DAY → ASK → PEOPLE → MIRROR
 
-**Приоритет:** запустить core pipeline (Edge → ASR → Digest)
+**Приоритет:** Sprint 3 — product alignment (README, Mirror UX, documentation sync)
 
 ---
 

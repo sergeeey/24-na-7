@@ -1,74 +1,134 @@
 # Reflexio 24/7
 
-**AI-powered voice diary & daily cognitive digest**
-*Умный голосовой дневник с AI-анализом и ежедневным когнитивным дайджестом*
+**Evidence-based digital mirror — passive memory that reflects who you are**
+*Цифровое зеркало на основе доказательной памяти*
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi)
 ![Kotlin](https://img.shields.io/badge/Kotlin-Android-7F52FF?logo=kotlin)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker)
+![Version](https://img.shields.io/badge/version-0.5.2--beta-orange)
+![Tests](https://img.shields.io/badge/tests-697%20passed-brightgreen)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green)
 
-<p align="center">
-  <img src="docs/screenshots/reflexio_home_v2.png" width="270" alt="Reflexio Home"/>
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/reflexio_digest_deployed.png" width="270" alt="Daily Digest"/>
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/reflexio_v7_polish.png" width="270" alt="Final Design"/>
-</p>
+---
+
+## What is Reflexio?
+
+Reflexio is a **digital mirror** — not a voice diary, not a smart recorder.
+
+Your phone captures speech 24/7. The system transcribes it, determines whose voice it is, enriches with context (emotions, topics, people, commitments), stores permanently as structured memory, and reflects it back through 5 canonical questions:
+
+1. **Who am I becoming?** — emotional baseline, recurring topics, active hours
+2. **What influences me?** — people, places, content consumption
+3. **What patterns repeat?** — unresolved commitments, behavioral loops
+4. **What's changing?** — drift signals vs 7/30 day baseline
+5. **Why does the system think so?** — evidence trail with confidence and lineage
+
+**Key question:** *"What did I talk about with Marat in January?"*
+**System answer:** finds, summarizes, shows patterns — with evidence.
+
+**North Star:** *The user reads their evening digest and discovers something important about themselves they hadn't noticed.*
+
+### What Reflexio is NOT
+
+- Not a transcription service (transcription is just the substrate)
+- Not a daily diary (accumulation over months/years is the point)
+- Not an analytics dashboard (mirror reflects, doesn't just chart)
+- Not an AI advisor — yet (guidance is north star, not current scope)
 
 ---
 
-## What is Reflexio? / Что такое Reflexio?
-
-Reflexio записывает речь 24/7 на телефоне, распознает только голос (игнорирует тишину, музыку, ТВ), транскрибирует через Whisper, анализирует через LLM и вечером выдает **дневной когнитивный дайджест** — что говорил, что чувствовал, какие решения принимал.
-
-Это пассивный когнитивный ассистент: превращает поток речи в осмысленную дневную сводку с эмоциями, задачами и социальным графом.
-
----
-
-## Architecture / Архитектура
+## Architecture
 
 ```
-Android (Kotlin)              Backend (FastAPI)              Output
-+-----------------+          +---------------------+        +------------------+
-| Microphone      |   HTTP   | /ingest/audio       |        | Daily Digest     |
-| VAD Filter  ----+--------->| Whisper ASR         |------->| Emotion Analysis |
-| Auto-upload     |          | LLM Analysis        |        | Social Graph     |
-| Local cleanup   |          | SQLite / Supabase   |        | Task Extraction  |
-+-----------------+          +---------------------+        +------------------+
+Capture              Memory Backbone              Mirror
+─────────            ───────────────              ──────
+Phone 24/7           Transcription                Identity
+  → VAD                → Episode                  Influences
+  → Speaker ID           → Structured Event       Patterns
+  → Upload                 → Day Thread           Drift
+                             → Long Thread        Evidence
+                               → Profile
+
+Truth Layer: trusted / uncertain / garbage / quarantined
+Ownership:   self / other_person / mixed / unknown
 ```
 
----
+### Canonical Data Flow
 
-## Features / Возможности
+```
+raw_audio → transcription → episode → structured_event → day_thread → long_thread
+                                          ↓
+                                    mirror payload
+```
 
-- **Voice Activity Detection** — запись только речи, пропуск тишины/музыки/шума
-- **Speaker Diarization** — разделение говорящих (кто говорил)
-- **Whisper ASR** — транскрипция через faster-whisper (local)
-- **LLM Digest** — ежедневная сводка с эмоциями и задачами (OpenAI / Anthropic)
-- **Trusted Truth Layer** — `trusted / uncertain / garbage / quarantined` для эпизодической памяти
-- **Episodic Memory** — `episode -> day_thread -> long_thread` вместо россыпи фрагментов
-- **Continuity Query** — `/query/threads` для поиска живых линий через дни
-- **Reclassify / Recheck** — безопасный пересчёт проблемных дней и non-trusted памяти
-- **Pipeline SLO Snapshot** — `pipeline-status` и `pipeline-trends` для operational truth
-- **Social Graph** — автоматическое построение графа контактов из речи (KuzuDB)
-- **Compliance Layer** — PII-маскирование, TTL, zero-retention аудио
-- **Balance Wheel** — визуализация жизненного баланса на Android
-- **Docker Deploy** — production-ready с Caddy, Redis, Vault
+Every level has: `quality_state`, `owner_scope`, `evidence_strength`, `lineage_id`.
+See [MEMORY_CONTRACT.md](MEMORY_CONTRACT.md) for the full data contract.
 
 ---
 
-## Quick Start / Быстрый запуск
+## Product Loop
 
-### Docker (рекомендуемый)
+```
+RECORD → MEMORY → ASK → MIRROR
+  ↑                        |
+  └────── feedback ────────┘
+```
+
+| Tab | Purpose |
+|-----|---------|
+| **RECORD** | Always-on capture with speaker verification |
+| **DAY** | Daily digest with calendar, emotions, evidence |
+| **ASK** | Natural language queries to your memory (`POST /ask`) |
+| **PEOPLE** | Social graph — who matters, interaction history |
+| **MIRROR** | Digital portrait — identity, influences, patterns, drift |
+
+---
+
+## Features
+
+### Core Pipeline
+- **24/7 Capture** — Android foreground service, VAD segmentation, offline queue
+- **Speaker Verification** — resemblyzer GE2E embeddings, user vs background separation
+- **ASR** — faster-whisper (medium, int8, local inference)
+- **LLM Enrichment** — Gemini Flash → Claude Haiku → GPT-4o-mini cascade
+- **Ownership-Aware Truth Layer** — quality evaluation based on who spoke, not just word count
+
+### Memory Backbone
+- **Episodic Memory** — `episode → day_thread → long_thread` hierarchy
+- **Quality States** — `trusted / uncertain / garbage / quarantined`
+- **Ownership** — `self / other_person / mixed / unknown` per event
+- **Evidence Lineage** — every fact traces back to source transcription
+- **Cascade Integrity** — source truth auto-propagates to derived layer
+
+### Intelligence
+- **One Interface** — `POST /ask` with evidence-based answers and confidence
+- **Mirror Portrait** — 5-section canonical payload (identity, influences, patterns, drift, evidence)
+- **Memory Observability** — `/mirror/memory-quality` for operational health
+- **Balance Wheel** — 8 life domains tracked from speech
+- **Social Graph** — automatic people tracking with KuzuDB
+
+### Security & Privacy
+- **Zero-retention** — audio deleted after transcription
+- **SQLCipher AES-256** — database encryption at rest
+- **PII masking** — before LLM enrichment
+- **GDPR erase** — delete all data for a person
+- **Bearer auth** — on all endpoints
+
+---
+
+## Quick Start
+
+### Docker (recommended)
 
 ```bash
 git clone https://github.com/sergeeey/24-na-7.git
 cd 24-na-7
-cp .env.example .env   # заполнить API ключи
+cp .env.example .env   # fill in API keys
 docker compose up -d
 curl http://localhost:8000/health
+# → {"status":"ok","version":"0.5.2-beta"}
 ```
 
 ### Local development
@@ -77,152 +137,78 @@ curl http://localhost:8000/health
 python -m venv venv && source venv/bin/activate
 pip install -e ".[dev]"
 uvicorn src.api.main:app --reload --host 0.0.0.0 --port 8000
+pytest tests/  # 697 passed
 ```
 
-Android-приложение: `android/` — открыть в Android Studio, собрать APK.
+Android app: open `android/` in Android Studio, build debug APK.
 
 ---
 
-## Tech Stack / Стек
+## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Mobile | Kotlin, Jetpack Compose, Material 3 |
-| Backend | Python 3.11+, FastAPI, Pydantic |
-| ASR | faster-whisper (local inference) |
-| LLM | OpenAI GPT / Anthropic Claude |
-| Database | SQLite (dev) / Supabase (prod) |
-| Graph DB | KuzuDB (social graph) |
+| Mobile | Kotlin, Jetpack Compose, Room, WorkManager |
+| Backend | Python 3.11+, FastAPI, Pydantic, structlog |
+| ASR | faster-whisper (local, medium int8) |
+| LLM | Gemini Flash / Claude Haiku / GPT-4o-mini (cascade) |
+| Speaker ID | resemblyzer (GE2E, 256-dim d-vectors) |
+| Database | SQLite + SQLCipher (AES-256) |
+| Graph | KuzuDB (temporal social graph) |
 | Queue | Redis + APScheduler |
-| Secrets | HashiCorp Vault |
-| Deploy | Docker Compose, Caddy, systemd |
-| Security | SAFE validation, CoVe, PII masking |
+| Deploy | Docker Compose, Caddy (TLS), systemd |
 
 ---
 
-<details>
-<summary><strong>Project Structure / Структура проекта</strong></summary>
+## Key API Endpoints
 
-```
-24-na-7/
-├── android/                # Kotlin Android app (Jetpack Compose)
-│   └── app/src/main/kotlin/com/reflexio/app/
-│       ├── ui/             # Screens, components, Balance Wheel
-│       ├── domain/         # Use cases, models
-│       ├── data/           # API client, repositories
-│       └── debug/          # Debug tools
-├── src/
-│   ├── api/                # FastAPI endpoints
-│   │   └── main.py         # /ingest/audio, /digest, /health
-│   ├── edge/               # Edge listener (VAD + upload)
-│   │   └── listener.py
-│   ├── asr/                # Whisper transcription
-│   ├── digest/             # Daily digest generation
-│   ├── social_graph/       # Speaker graph (KuzuDB)
-│   ├── compliance/         # PII masking, TTL, audit
-│   ├── utils/              # Config, logging, guards
-│   └── storage/            # File & DB storage
-├── tests/                  # 40+ pytest tests
-├── digests/                # Generated daily digests (JSON + MD)
-├── docs/                   # Documentation & screenshots
-├── config/                 # Environment configs
-├── scripts/                # Launch & check scripts
-├── docker-compose.yml      # Dev deployment
-├── docker-compose.prod.yml # Production deployment
-├── Dockerfile.api          # API container
-├── Dockerfile.worker       # Worker container
-├── Caddyfile               # Reverse proxy config
-└── pyproject.toml          # Python dependencies
-```
-</details>
-
----
-
-<details>
-<summary><strong>Screenshots / Скриншоты</strong></summary>
-
-| Home Screen | Daily Digest | Smart Cards | Balance Wheel |
-|:-----------:|:------------:|:-----------:|:-------------:|
-| <img src="docs/screenshots/reflexio_home_v2.png" width="200"/> | <img src="docs/screenshots/reflexio_digest_deployed.png" width="200"/> | <img src="docs/screenshots/reflexio_smart_cards.png" width="200"/> | <img src="docs/screenshots/reflexio_v7_polish.png" width="200"/> |
-
-<details>
-<summary>All screenshots (23)</summary>
-
-| Screenshot | File |
-|-----------|------|
-| After Splash | `reflexio_after_splash.png` |
-| After Tap | `reflexio_after_tap.png` |
-| Clean Cards | `reflexio_clean_cards.png` |
-| Clean Cards v2 | `reflexio_clean_cards2.png` |
-| Dark Theme | `reflexio_dark_theme.png` |
-| Deployed | `reflexio_deployed.png` |
-| Digest Deployed | `reflexio_digest_deployed.png` |
-| Digest v2 | `reflexio_digest_v2.png` |
-| Digest v2b | `reflexio_digest_v2b.png` |
-| Digest v2c | `reflexio_digest_v2c.png` |
-| Digest v2d | `reflexio_digest_v2d.png` |
-| Enrichment | `reflexio_enrichment.png` |
-| Home v2 | `reflexio_home_v2.png` |
-| New Design | `reflexio_new_design.png` |
-| Smart Cards | `reflexio_smart_cards.png` |
-| Splash | `reflexio_splash.png` |
-| Splash v2 | `reflexio_splash2.png` |
-| Splash v3 | `reflexio_splash3.png` |
-| v3 | `reflexio_v3.png` |
-| v4 FAB | `reflexio_v4_fab.png` |
-| v5 Border | `reflexio_v5_border.png` |
-| v6 Teal | `reflexio_v6_teal.png` |
-| v7 Polish | `reflexio_v7_polish.png` |
-
-All screenshots are in [`docs/screenshots/`](docs/screenshots/).
-</details>
-</details>
-
----
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check |
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/ask` | One Interface — ask anything about your memory |
+| `GET` | `/mirror/portrait` | Digital mirror — 5-section canonical payload |
+| `GET` | `/mirror/memory-quality` | Memory observability — ownership, quality, invariants |
 | `POST` | `/ingest/audio` | Upload audio segment |
-| `GET` | `/ingest/pipeline-status` | Snapshot of episodic memory health and SLO state |
-| `GET` | `/ingest/pipeline-trends` | Recent daily quality and continuity trends |
-| `POST` | `/asr/transcribe?file_id=...` | Transcribe uploaded file |
-| `GET` | `/ingest/status/{id}` | Processing status |
 | `GET` | `/digest/today` | Today's digest |
-| `GET` | `/digest/{date}` | Digest by date (YYYY-MM-DD) |
-| `GET` | `/digest/{date}/density` | Information density analysis |
-| `GET` | `/query/threads` | Trusted continuity lines across recent days |
+| `GET` | `/query/events` | Search structured events |
+| `GET` | `/query/threads` | Long-term continuity lines |
+| `GET` | `/graph/persons` | Social graph |
+| `GET` | `/ingest/pipeline-status` | Pipeline health + SLO state |
+| `POST` | `/admin/reclassify` | Re-evaluate truth layer (dry_run/apply) |
 
 ---
 
-## Documentation / Документация
+## Current State
+
+**Version:** `v0.5.2-beta` (deployed, dogfooding active)
+
+| Metric | Value |
+|--------|-------|
+| Structured events | 5,154+ |
+| Episodes | 2,451+ |
+| Long threads | 317+ |
+| Tests | 697 passed, 0 failed |
+| Trusted fraction | 15.8% (honest, post-backfill) |
+| Ownership classified | 100% (self: 1047, other: 1302) |
+| Invariants | OK (0 NULLs in quality/ownership) |
+| Lineage coverage | 100% |
+
+### Maturity Levels
+
+| Level | Name | Status |
+|-------|------|--------|
+| **L1** | Fixation (capture → store → digest) | ~90% |
+| **L2** | Understanding (patterns, emotions, people) | ~40% |
+| **L3** | Cognitive Twin (prediction, guidance) | Concept |
+
+---
+
+## Documentation
 
 | Doc | Description |
 |-----|-------------|
-| [QUICKSTART.md](docs/QUICKSTART.md) | Step-by-step launch guide |
-| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment |
-| [SECURITY.md](docs/SECURITY.md) | Security policy (SAFE, CoVe, PII) |
-| [DIGEST.md](docs/DIGEST.md) | Digest system documentation |
-| [API_KEYS_SETUP.md](docs/ENV_SETUP_INSTRUCTIONS.md) | API keys & env configuration |
-| [USER_GUIDE_DEMO.md](docs/USER_GUIDE_DEMO.md) | User guide & demo |
-| [RUNBOOKS.md](docs/RUNBOOKS.md) | Incident runbooks |
-
----
-
-## Current Release Snapshot
-
-`v0.5.1-beta` reflects the current production direction:
-
-- trusted episodic memory with explicit truth states
-- day-level storyline grouping via `day_threads`
-- cross-day continuity via `long_threads`
-- truth-aware digest and selective `reclassify` / `recheck`
-- operational visibility through `pipeline-status`, `pipeline-trends`, and `slo_state`
-- semantic golden regression for the memory pipeline and a reproducible benchmark smoke script
-
-This is no longer just a voice diary backend; it is a beta platform for **trusted episodic life memory**.
+| [MEMORY_CONTRACT.md](MEMORY_CONTRACT.md) | Canonical data contract — fields, quality states, ownership |
+| [PROJECT.md](PROJECT.md) | Full technical specification |
+| [CLAUDE.md](CLAUDE.md) | AI assistant configuration |
 
 ---
 
@@ -232,4 +218,4 @@ MIT
 
 ## Author
 
-Sergey Kucherenko — [@sergeeey](https://github.com/sergeeey)
+Sergey Boyko — Almaty, KZ
