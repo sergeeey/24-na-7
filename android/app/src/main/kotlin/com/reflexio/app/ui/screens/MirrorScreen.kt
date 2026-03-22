@@ -51,6 +51,7 @@ import com.reflexio.app.data.health.HealthConnectReader
 import com.reflexio.app.data.model.CachedHealthMetric
 import com.reflexio.app.domain.network.InsightCard
 import com.reflexio.app.domain.network.MemoryApi
+import com.reflexio.app.domain.network.CountedItem
 import com.reflexio.app.domain.network.MirrorPortrait
 import com.reflexio.app.domain.network.ServerEndpointResolver
 import com.reflexio.app.ui.permissions.HealthPermissionGate
@@ -162,90 +163,152 @@ fun MirrorScreen(
         // ── Header ──
         Text("Зеркало", fontSize = 32.sp, fontWeight = FontWeight.Black, color = TextPrimary)
         Text(
-            "Кто ты сейчас, какие темы тянутся, что повторяется",
+            "Кто ты сейчас, что на тебя влияет, что повторяется",
             fontSize = 14.sp, color = TextMuted, lineHeight = 18.sp,
         )
 
-        // ── Portrait ──
         when {
-            portrait != null -> PortraitSection(portrait!!, onOpenPerson)
+            portrait != null -> {
+                val p = portrait!!
+
+                // ── Section 1: Кто я сейчас (Identity) ──
+                SectionHeader("Кто я сейчас")
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PortraitStat("${p.episodesCount}", "Эпизодов", Indigo, IndigoSoft, Modifier.weight(1f))
+                    PortraitStat(
+                        p.avgSentiment?.let { "${((it + 1f) / 2f * 100).toInt()}%" } ?: "—",
+                        "Настроение", if ((p.avgSentiment ?: 0f) >= 0f) Mint else Coral,
+                        if ((p.avgSentiment ?: 0f) >= 0f) MintSoft else CoralSoft,
+                        Modifier.weight(1f),
+                    )
+                    PortraitStat("${p.openCommitments}", "Обещаний", Amber, AmberSoft, Modifier.weight(1f))
+                }
+                if (p.topEmotions.isNotEmpty()) {
+                    TagSection("Эмоции", p.topEmotions.take(4)) { item ->
+                        val label = if (item.count > 0) "${item.name} (${item.count})" else item.name
+                        val (c, bg) = when {
+                            item.name.contains("радость") || item.name.contains("энтузиазм") -> Mint to MintSoft
+                            item.name.contains("тревога") || item.name.contains("раздражение") -> Coral to CoralSoft
+                            else -> Indigo to IndigoSoft
+                        }
+                        Pill(label, c, bg)
+                    }
+                }
+                if (p.topTopics.isNotEmpty()) {
+                    TagSection("Темы", p.topTopics.take(4)) { item ->
+                        val label = if (item.count > 0) "${item.name} (${item.count})" else item.name
+                        Pill(label, Indigo, IndigoSoft)
+                    }
+                }
+
+                // ── Section 2: Что на меня влияет (Influences) ──
+                if (p.topPeople.isNotEmpty() || p.balanceTrend.isNotEmpty()) {
+                    SectionHeader("Что на меня влияет")
+                    if (p.topPeople.isNotEmpty()) {
+                        TagSection("Люди", p.topPeople.take(4)) { item ->
+                            val label = if (item.count > 0) "${item.name} (${item.count})" else item.name
+                            Surface(
+                                onClick = { onOpenPerson(item.name) },
+                                shape = RoundedCornerShape(12.dp),
+                                color = PurpleSoft,
+                            ) {
+                                Text(label, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                                    fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Purple)
+                            }
+                        }
+                    }
+                    if (p.balanceTrend.isNotEmpty()) {
+                        Surface(shape = RoundedCornerShape(18.dp), color = CardWhite, shadowElevation = 1.dp) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("Баланс жизни", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = TextPrimary)
+                                Spacer(Modifier.height(10.dp))
+                                p.balanceTrend.sortedByDescending { it.avgScore }.forEach { bd ->
+                                    val pct = (bd.avgScore * 100).toInt()
+                                    val color = if (pct >= 50) Mint else Amber
+                                    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Text(bd.domain, fontSize = 13.sp, color = TextSecondary, modifier = Modifier.width(90.dp))
+                                        Box(
+                                            Modifier.weight(1f).height(8.dp)
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(color.copy(alpha = 0.15f))
+                                        ) {
+                                            Box(
+                                                Modifier.fillMaxWidth(bd.avgScore.coerceIn(0f, 1f)).height(8.dp)
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .background(color)
+                                            )
+                                        }
+                                        Text("$pct%", fontSize = 12.sp, color = TextMuted,
+                                            modifier = Modifier.width(40.dp), textAlign = TextAlign.End)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Section 3: Что повторяется (Patterns) ──
+                if (p.openCommitments > 0) {
+                    SectionHeader("Что повторяется")
+                    Surface(shape = RoundedCornerShape(14.dp), color = AmberSoft) {
+                        Text("${p.openCommitments} открытых обещаний", modifier = Modifier.padding(14.dp),
+                            color = Amber, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+
+                // ── Section 4: Health ──
+                HealthPermissionGate(onGranted = { healthGranted = true })
+                if (healthMetrics.isNotEmpty()) {
+                    HealthCard(healthMetrics)
+                }
+
+                // ── Section 5: Почему система так думает (Evidence) ──
+                p.dataQuality?.let { dq ->
+                    SectionHeader("На чём основано")
+                    Surface(shape = RoundedCornerShape(18.dp), color = CardWhite, shadowElevation = 1.dp) {
+                        Column(Modifier.padding(16.dp)) {
+                            val trustPct = (dq.trustedFraction * 100).toInt()
+                            val trustColor = if (trustPct >= 30) Mint else Coral
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Доверие", fontSize = 13.sp, color = TextSecondary)
+                                Text("$trustPct% (${dq.trustedCount}/${dq.totalEvents})",
+                                    fontSize = 13.sp, fontWeight = FontWeight.Bold, color = trustColor)
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Мой голос", fontSize = 13.sp, color = TextSecondary)
+                                Text("${p.ownershipSelf}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Mint)
+                            }
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Чужой / фон", fontSize = 13.sp, color = TextSecondary)
+                                Text("${p.ownershipOther}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TextMuted)
+                            }
+                        }
+                    }
+                }
+
+                // ── Insights ──
+                if (insights.isNotEmpty()) {
+                    SectionHeader("Что это говорит о тебе")
+                    insights.forEach { card -> InsightBubble(card) }
+                } else if (insightsError != null) {
+                    ErrorBubble(insightsError!!)
+                }
+            }
             portraitError != null -> ErrorBubble(portraitError!!)
             else -> LoadingCenter()
-        }
-
-        // ── Health ──
-        HealthPermissionGate(onGranted = { healthGranted = true })
-        if (healthMetrics.isNotEmpty()) {
-            HealthCard(healthMetrics)
-        }
-
-        // ── Insights ──
-        if (insights.isNotEmpty() || insightsError != null || portrait == null) {
-            Text("Что это говорит о тебе", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = TextPrimary)
-        }
-
-        when {
-            insights.isNotEmpty() -> {
-                insights.forEach { card -> InsightBubble(card) }
-            }
-            insightsError != null -> ErrorBubble(insightsError!!)
-            portrait == null -> LoadingCenter()
-            else -> EmptyInsights()
         }
 
         Spacer(Modifier.height(80.dp))
     }
 }
 
-// ── Portrait Section ──
+// ── Section Header ──
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PortraitSection(portrait: MirrorPortrait, onOpenPerson: (String) -> Unit) {
-    // Stats row
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        PortraitStat("${portrait.episodesCount}", "Эпизодов", Indigo, IndigoSoft, Modifier.weight(1f))
-        PortraitStat(
-            portrait.avgSentiment?.let { "${((it + 1f) / 2f * 100).toInt()}%" } ?: "—",
-            "Настроение", if ((portrait.avgSentiment ?: 0f) >= 0f) Mint else Coral,
-            if ((portrait.avgSentiment ?: 0f) >= 0f) MintSoft else CoralSoft,
-            Modifier.weight(1f),
-        )
-        PortraitStat("${portrait.openCommitments}", "Обещаний", Amber, AmberSoft, Modifier.weight(1f))
-    }
-
-    // Emotions
-    if (portrait.topEmotions.isNotEmpty()) {
-        TagSection("Эмоции", portrait.topEmotions.take(4)) { emotion ->
-            val (c, bg) = when {
-                emotion.contains("радость") || emotion.contains("энтузиазм") -> Mint to MintSoft
-                emotion.contains("тревога") || emotion.contains("раздражение") -> Coral to CoralSoft
-                else -> Indigo to IndigoSoft
-            }
-            Pill(emotion, c, bg)
-        }
-    }
-
-    // Topics
-    if (portrait.topTopics.isNotEmpty()) {
-        TagSection("Темы", portrait.topTopics.take(4)) { topic ->
-            Pill(topic, Indigo, IndigoSoft)
-        }
-    }
-
-    // People
-    if (portrait.topPeople.isNotEmpty()) {
-        TagSection("Люди", portrait.topPeople.take(4)) { person ->
-            Surface(
-                onClick = { onOpenPerson(person) },
-                shape = RoundedCornerShape(12.dp),
-                color = PurpleSoft,
-            ) {
-                Text(person, modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                    fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Purple)
-            }
-        }
-    }
+private fun SectionHeader(title: String) {
+    Spacer(Modifier.height(8.dp))
+    Text(title, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = TextPrimary)
 }
 
 @Composable

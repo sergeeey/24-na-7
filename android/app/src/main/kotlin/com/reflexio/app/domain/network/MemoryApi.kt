@@ -144,14 +144,28 @@ data class DigestReviewDay(
     val status: String,  // "green", "yellow", "red", "gray"
 )
 
+data class CountedItem(val name: String, val count: Int)
+
+data class BalanceDomain(val domain: String, val avgScore: Float)
+
+data class DataQuality(
+    val totalEvents: Int,
+    val trustedCount: Int,
+    val trustedFraction: Float,
+)
+
 data class MirrorPortrait(
     val daysBack: Int,
-    val topEmotions: List<String>,
-    val topTopics: List<String>,
-    val topPeople: List<String>,
+    val topEmotions: List<CountedItem>,
+    val topTopics: List<CountedItem>,
+    val topPeople: List<CountedItem>,
     val avgSentiment: Float?,
     val episodesCount: Int,
     val openCommitments: Int,
+    val balanceTrend: List<BalanceDomain>,
+    val ownershipSelf: Int,
+    val ownershipOther: Int,
+    val dataQuality: DataQuality?,
 )
 
 object MemoryApi {
@@ -473,29 +487,57 @@ object MemoryApi {
             val raw = resp.body?.string() ?: throw RuntimeException("Empty response")
             if (!resp.isSuccessful) throw RuntimeException("HTTP ${resp.code}: $raw")
             val json = JSONObject(raw)
+            // WHY: parse with counts for richer Mirror display ("Марат — 18 раз")
+            val ownership = json.optJSONObject("ownership_breakdown")
+            val dq = json.optJSONObject("data_quality")
             return MirrorPortrait(
                 daysBack = json.optInt("days_back", daysBack),
                 topEmotions = buildList {
                     val arr = json.optJSONArray("top_emotions") ?: JSONArray()
                     for (i in 0 until arr.length()) {
-                        arr.optJSONObject(i)?.optString("emotion")?.takeIf { it.isNotBlank() }?.let(::add)
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val name = obj.optString("emotion").takeIf { it.isNotBlank() } ?: continue
+                        add(CountedItem(name, obj.optInt("count", 0)))
                     }
                 },
                 topTopics = buildList {
                     val arr = json.optJSONArray("top_topics") ?: JSONArray()
                     for (i in 0 until arr.length()) {
-                        arr.optJSONObject(i)?.optString("topic")?.takeIf { it.isNotBlank() }?.let(::add)
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val name = obj.optString("topic").takeIf { it.isNotBlank() } ?: continue
+                        add(CountedItem(name, obj.optInt("count", 0)))
                     }
                 },
                 topPeople = buildList {
                     val arr = json.optJSONArray("top_people") ?: JSONArray()
                     for (i in 0 until arr.length()) {
-                        arr.optJSONObject(i)?.optString("person")?.takeIf { it.isNotBlank() }?.let(::add)
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val name = obj.optString("person").takeIf { it.isNotBlank() } ?: continue
+                        add(CountedItem(name, obj.optInt("count", 0)))
                     }
                 },
                 avgSentiment = if (json.isNull("avg_sentiment")) null else json.optDouble("avg_sentiment", 0.0).toFloat(),
                 episodesCount = json.optInt("episodes_count", 0),
                 openCommitments = json.optInt("open_commitments", 0),
+                balanceTrend = buildList {
+                    val arr = json.optJSONArray("balance_trend") ?: JSONArray()
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        add(BalanceDomain(
+                            obj.optString("domain", ""),
+                            obj.optDouble("avg_score", 0.0).toFloat()
+                        ))
+                    }
+                },
+                ownershipSelf = ownership?.optInt("self", 0) ?: 0,
+                ownershipOther = ownership?.optInt("other_person", 0) ?: 0,
+                dataQuality = dq?.let {
+                    DataQuality(
+                        totalEvents = it.optInt("total_events", 0),
+                        trustedCount = it.optInt("trusted_count", 0),
+                        trustedFraction = it.optDouble("trusted_fraction", 0.0).toFloat(),
+                    )
+                },
             )
         }
     }
