@@ -221,13 +221,16 @@ def _query_portrait(
                     people[r["person_name"]] = r["cnt"]
             except Exception:
                 pass
-        # Also try known_people if still empty
+        # Also try known_people if still empty — but filter by date range
+        # WHY date filter: without it, known_people returns ALL ever-mentioned people
+        # even for a 1-day portrait, showing stale contacts (e.g. colleague from 3 days ago).
         if not people and _table_exists(conn, "known_people"):
             try:
                 kp_rows = conn.execute(
                     "SELECT name, mention_count FROM known_people "
-                    "WHERE mention_count > 0 ORDER BY mention_count DESC LIMIT ?",
-                    (_TOP_N,),
+                    "WHERE mention_count > 0 AND date(last_mentioned_at) BETWEEN ? AND ? "
+                    "ORDER BY mention_count DESC LIMIT ?",
+                    (date_from.isoformat(), date_to.isoformat(), _TOP_N),
                 ).fetchall()
                 for r in kp_rows:
                     people[r["name"]] = r["mention_count"]
