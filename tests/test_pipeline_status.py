@@ -24,11 +24,46 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
             rows = [
                 ("1", "received", "received", "2099-03-10 12:00:00", None, None),
                 ("2", "asr_pending", "received", "2099-03-10 12:00:00", None, None),
-                ("3", "event_ready", "server_acked", "2099-03-10 12:00:00", "2099-03-10 12:02:00", None),
-                ("4", "retryable_error", "server_acked", "2099-03-10 12:00:00", "2099-03-10 12:03:00", "watchdog_stuck_received"),
-                ("5", "filtered", "server_acked", "2099-03-10 12:00:00", "2099-03-10 12:01:00", None),
-                ("6", "quarantined", "server_acked", "2099-03-10 12:00:00", "2099-03-10 12:04:00", None),
-                ("7", "transcribed", "deduplicated", "2099-03-10 12:00:00", "2099-03-10 12:01:30", "asr_runtime_error"),
+                (
+                    "3",
+                    "event_ready",
+                    "server_acked",
+                    "2099-03-10 12:00:00",
+                    "2099-03-10 12:02:00",
+                    None,
+                ),
+                (
+                    "4",
+                    "retryable_error",
+                    "server_acked",
+                    "2099-03-10 12:00:00",
+                    "2099-03-10 12:03:00",
+                    "watchdog_stuck_received",
+                ),
+                (
+                    "5",
+                    "filtered",
+                    "server_acked",
+                    "2099-03-10 12:00:00",
+                    "2099-03-10 12:01:00",
+                    None,
+                ),
+                (
+                    "6",
+                    "quarantined",
+                    "server_acked",
+                    "2099-03-10 12:00:00",
+                    "2099-03-10 12:04:00",
+                    None,
+                ),
+                (
+                    "7",
+                    "transcribed",
+                    "deduplicated",
+                    "2099-03-10 12:00:00",
+                    "2099-03-10 12:01:30",
+                    "asr_runtime_error",
+                ),
             ]
             for ingest_id, status, transport_status, created_at, processed_at, error_code in rows:
                 db.execute(
@@ -139,8 +174,12 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
                     0.9,
                 ),
             )
-            db.execute("UPDATE day_threads SET long_thread_key = ? WHERE id = ?", ("lt-1", "thread-1"))
-            db.execute("UPDATE episodes SET long_thread_key = ? WHERE id = ?", ("lt-1", "ep-trusted"))
+            db.execute(
+                "UPDATE day_threads SET long_thread_key = ? WHERE id = ?", ("lt-1", "thread-1")
+            )
+            db.execute(
+                "UPDATE episodes SET long_thread_key = ? WHERE id = ?", ("lt-1", "ep-trusted")
+            )
             db.execute(
                 """
                 INSERT INTO digest_cache (
@@ -249,7 +288,8 @@ def test_pipeline_status_exposes_stage_specific_counters(tmp_path):
         assert payload["golden_path"]["checks"]["server_ok"] is True
         assert payload["golden_path"]["checks"]["stale_received_ok"] is True
         assert payload["golden_path"]["checks"]["stale_asr_pending_ok"] is True
-        assert payload["golden_path"]["checks"]["runtime_storage"] is False
+        # WHY True: runtime_storage now checks path+DB existence, not naming convention
+        assert payload["golden_path"]["checks"]["runtime_storage"] is True
         assert payload["golden_path"]["checks"]["transcription_available"] is False
         assert payload["golden_path"]["non_blocking_checks"] == ["android_route_signpost_observed"]
     finally:
@@ -340,8 +380,9 @@ def test_recover_retryable_ingest_tasks_requeues_and_quarantines_missing(tmp_pat
     ensure_ingest_tables(db_path)
     audio_path = uploads_path / "retry.wav"
     audio_path.write_bytes(
-        b"RIFF$\x00\x00\x00WAVEfmt " + b"\x10\x00\x00\x00\x01\x00\x01\x00" +
-        b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+        b"RIFF$\x00\x00\x00WAVEfmt "
+        + b"\x10\x00\x00\x00\x01\x00\x01\x00"
+        + b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
     )
     db = get_reflexio_db(db_path)
     with db.transaction():
@@ -437,8 +478,9 @@ def test_recover_retryable_ingest_tasks_respects_limit(tmp_path):
         for idx in range(2):
             audio_path = uploads_path / f"retry-{idx}.wav"
             audio_path.write_bytes(
-                b"RIFF$\x00\x00\x00WAVEfmt " + b"\x10\x00\x00\x00\x01\x00\x01\x00" +
-                b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
+                b"RIFF$\x00\x00\x00WAVEfmt "
+                + b"\x10\x00\x00\x00\x01\x00\x01\x00"
+                + b"\x80>\x00\x00\x00}\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00"
             )
             db.execute(
                 """

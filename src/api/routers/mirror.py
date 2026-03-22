@@ -20,6 +20,29 @@ router = APIRouter(prefix="/mirror", tags=["mirror"])
 
 _TOP_N = 5
 
+# WHY: media/TV topics leak into trusted events when speaker verification
+# can't distinguish TV audio played through speakers from user speech.
+# Filter these from Mirror aggregation to keep the mirror clean.
+_MEDIA_TOPIC_BLACKLIST = frozenset(
+    {
+        "канал",
+        "субтитры",
+        "подписка",
+        "лайки",
+        "подпишитесь",
+        "просмотры",
+        "спасибо за просмотр",
+        "музыка",
+        "фрагмент",
+        "текст",
+        "говорящий",
+        "содержит",
+        "выражает",
+        "описание",
+        "высказывание",
+    }
+)
+
 
 # ── Pydantic-схемы ответа ──────────────────────────────────────────────────
 
@@ -139,7 +162,8 @@ def _query_portrait(
             sentiment_map = {"positive": 1.0, "neutral": 0.0, "negative": -1.0}
             for row in rows:
                 emotions.update(_parse_json_column(row["emotions"]))
-                topics.update(_parse_json_column(row["topics"]))
+                raw_topics = _parse_json_column(row["topics"])
+                topics.update(t for t in raw_topics if t.lower() not in _MEDIA_TOPIC_BLACKLIST)
                 people.update(_parse_json_column(row["speakers"]))
                 sent = row["sentiment"]
                 if sent and sent in sentiment_map:
@@ -178,6 +202,37 @@ def _query_portrait(
             open_commitments = int(row_c[0]) if row_c else 0
         else:
             logger.info("mirror.table_missing", table="commitments")
+
+        # WHY: speakers field in structured_events is often empty because LLM
+        # can't extract names from short phrases. Fall back to person_interactions
+        # which tracks people via text matching on known_people names.
+        if not people and _table_exists(conn, "person_interactions"):
+            try:
+                pi_rows = conn.execute(
+                    """
+                    SELECT person_name, COUNT(*) as cnt
+                    FROM person_interactions
+                    WHERE date(created_at) BETWEEN ? AND ?
+                    GROUP BY person_name ORDER BY cnt DESC LIMIT ?
+                    """,
+                    (date_from.isoformat(), date_to.isoformat(), _TOP_N),
+                ).fetchall()
+                for r in pi_rows:
+                    people[r["person_name"]] = r["cnt"]
+            except Exception:
+                pass
+        # Also try known_people if still empty
+        if not people and _table_exists(conn, "known_people"):
+            try:
+                kp_rows = conn.execute(
+                    "SELECT name, mention_count FROM known_people "
+                    "WHERE mention_count > 0 ORDER BY mention_count DESC LIMIT ?",
+                    (_TOP_N,),
+                ).fetchall()
+                for r in kp_rows:
+                    people[r["name"]] = r["mention_count"]
+            except Exception:
+                pass
 
     finally:
         pass  # ПОЧЕМУ не close(): get_reflexio_db() возвращает shared connection
