@@ -36,27 +36,34 @@ def _tokens(text: str) -> list[str]:
 # WHY: TV/YouTube audio passes speaker verification because the phone mic
 # picks up speaker output. Content-based detection catches what acoustic
 # analysis can't — recognizable media phrases in the transcribed text.
-_MEDIA_TEXT_MARKERS = [
-    "субтитры",
-    "подпишитесь",
-    "подписывайтесь",
-    "ставьте лайк",
+# WHY stems not exact words: "подпишись", "подпишитесь", "подписывайтесь"
+# all share stem "подпиш". Stems catch all conjugations.
+_MEDIA_STEM_MARKERS = [
+    "субтитр",  # субтитры, субтитров
+    "подпиш",  # подпишись, подпишитесь, подписывайтесь
+    "ставьте лайк",  # ставьте лайк
+    "ставь лайк",  # ставь лайк
     "спасибо за просмотр",
     "dimatorzok",
-    "DimaTorzok",
-    "смотрите в следующей серии",
+    "смотрите в следующ",
     "не переключайтесь",
     "добро пожаловать на канал",
     "всем привет с вами",
     "ссылка в описании",
     "промокод",
+    "подписаться на канал",
+    "поддержите канал",
+    "напишите в комментар",
+    "спонсор видео",
+    "спонсор выпуск",
+    "колокольчик",  # нажмите на колокольчик
 ]
 
 
 def _is_media_content(text: str) -> bool:
-    """Detect TV/YouTube content by text markers."""
+    """Detect TV/YouTube content by stem markers."""
     lower = (text or "").lower()
-    return any(marker.lower() in lower for marker in _MEDIA_TEXT_MARKERS)
+    return any(marker in lower for marker in _MEDIA_STEM_MARKERS)
 
 
 def _signature(text: str) -> str:

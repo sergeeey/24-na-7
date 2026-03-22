@@ -1,4 +1,5 @@
 """Роутер для генерации дайджестов."""
+
 import json as _json
 from datetime import date, datetime, timedelta
 from fastapi import APIRouter, HTTPException, Query, Path as PathParam, Request, Response
@@ -19,7 +20,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 # ПОЧЕМУ UTC: VPS и Docker контейнер в UTC. Алматы = UTC+6.
 # 18:30 Алматы = 12:30 UTC. Все сравнения datetime.now() в UTC.
-_DIGEST_READY_HOUR = 12   # 12:00 UTC = 18:00 Алматы
+_DIGEST_READY_HOUR = 12  # 12:00 UTC = 18:00 Алматы
 _DIGEST_READY_MINUTE = 30  # 12:30 UTC = 18:30 Алматы
 
 
@@ -67,14 +68,20 @@ def _resolve_review_dates(
     """Возвращает список дат для review-окна."""
     if date_from or date_to:
         if not (date_from and date_to):
-            raise HTTPException(status_code=400, detail="date_from and date_to must be provided together")
+            raise HTTPException(
+                status_code=400, detail="date_from and date_to must be provided together"
+            )
         try:
             start = datetime.strptime(date_from, "%Y-%m-%d").date()
             end = datetime.strptime(date_to, "%Y-%m-%d").date()
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD") from exc
+            raise HTTPException(
+                status_code=400, detail="Invalid date format. Use YYYY-MM-DD"
+            ) from exc
         if end < start:
-            raise HTTPException(status_code=400, detail="date_to must be greater than or equal to date_from")
+            raise HTTPException(
+                status_code=400, detail="date_to must be greater than or equal to date_from"
+            )
     else:
         end = date.today()
         start = end - timedelta(days=max(days_back - 1, 0))
@@ -113,16 +120,28 @@ def _build_day_review(parsed_date: date, generator: DigestGenerator) -> dict:
         digest_data = generator.get_daily_digest_json(parsed_date)
 
     trusted_count = int(
-        db.fetchone("SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'trusted'", (day_key,))["c"]
+        db.fetchone(
+            "SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'trusted'",
+            (day_key,),
+        )["c"]
     )
     uncertain_count = int(
-        db.fetchone("SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'uncertain'", (day_key,))["c"]
+        db.fetchone(
+            "SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'uncertain'",
+            (day_key,),
+        )["c"]
     )
     garbage_count = int(
-        db.fetchone("SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'garbage'", (day_key,))["c"]
+        db.fetchone(
+            "SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'garbage'",
+            (day_key,),
+        )["c"]
     )
     quarantined_count = int(
-        db.fetchone("SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'quarantined'", (day_key,))["c"]
+        db.fetchone(
+            "SELECT COUNT(*) AS c FROM episodes WHERE day_key = ? AND quality_state = 'quarantined'",
+            (day_key,),
+        )["c"]
     )
     day_thread_count = int(
         db.fetchone("SELECT COUNT(*) AS c FROM day_threads WHERE day_key = ?", (day_key,))["c"]
@@ -266,7 +285,9 @@ async def get_digest_daily(
                 digest_json=_json.dumps(result, ensure_ascii=False),
                 status="ready",
                 previous_digest_id=(
-                    f"digest:{date}:{previous['generated_at']}" if previous and previous["generated_at"] else None
+                    f"digest:{date}:{previous['generated_at']}"
+                    if previous and previous["generated_at"]
+                    else None
                 ),
                 rebuild_reason="digest_daily_force" if force else "digest_daily_live",
                 rebuilt_at=datetime.now().isoformat(),
@@ -282,37 +303,46 @@ async def get_digest_daily(
 
 @router.get("/today")
 @limiter.limit("20/minute")
-async def get_digest_today(request: Request, response: Response, format: str = Query("markdown", pattern="^(markdown|json)$")):
+async def get_digest_today(
+    request: Request,
+    response: Response,
+    format: str = Query("markdown", pattern="^(markdown|json)$"),
+):
     """
     Получает дайджест за сегодня.
-    
+
     Args:
         format: Формат ответа (markdown или json)
-    
+
     **Пример запроса:**
     ```bash
     curl "http://localhost:8000/digest/today?format=json"
     ```
     """
+    # WHY: use cache first (pre-computed by APScheduler), fall back to live generation.
+    # /digest/today was generating on every request, causing 30s+ timeouts.
     try:
         target_date = date.today()
-        generator = DigestGenerator()
-        
-        # Генерируем дайджест
-        output_file = generator.generate(
-            target_date=target_date,
-            output_format=format,
-            include_metadata=True,
-        )
-        
+        day_key = target_date.isoformat()
+
+        # Try cache first
+        cached = _get_cached_digest(day_key)
+        if cached and cached.get("_status") != "generating":
+            if format == "json":
+                return cached
+            return Response(content=str(cached), media_type="text/markdown")
+
+        # Cache miss — generate (may be slow)
+        generator = DigestGenerator(settings.STORAGE_PATH / "reflexio.db")
+        digest_data = generator.get_daily_digest_json(target_date)
+
         if format == "json":
-            import json
-            content = json.loads(output_file.read_text(encoding="utf-8"))
-            return content
-        else:
-            content = output_file.read_text(encoding="utf-8")
-            return Response(content=content, media_type="text/markdown")
-            
+            return digest_data
+        return Response(
+            content=digest_data.get("summary_text", "Нет данных"),
+            media_type="text/markdown",
+        )
+
     except Exception as e:
         logger.error("digest_generation_failed", date="today", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to generate digest. Check server logs.")
@@ -378,11 +408,11 @@ async def get_digest(
 ):
     """
     Получает дайджест за указанную дату.
-    
+
     Args:
         target_date: Дата в формате YYYY-MM-DD
         format: Формат ответа (markdown или json)
-    
+
     **Пример запроса:**
     ```bash
     curl "http://localhost:8000/digest/2024-02-17?format=json"
@@ -391,24 +421,25 @@ async def get_digest(
     try:
         # Парсим дату
         parsed_date = datetime.strptime(target_date, "%Y-%m-%d").date()
-        
+
         generator = DigestGenerator()
-        
+
         # Генерируем дайджест
         output_file = generator.generate(
             target_date=parsed_date,
             output_format=format,
             include_metadata=True,
         )
-        
+
         if format == "json":
             import json
+
             content = json.loads(output_file.read_text(encoding="utf-8"))
             return content
         else:
             content = output_file.read_text(encoding="utf-8")
             return Response(content=content, media_type="text/markdown")
-            
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     except Exception as e:
@@ -437,6 +468,7 @@ async def get_digest_sources_endpoint(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     from src.storage.digest_lineage import get_digest_sources
+
     return get_digest_sources(target_date)
 
 
@@ -449,10 +481,10 @@ async def get_density_analysis(
 ):
     """
     Получает анализ информационной плотности за указанную дату.
-    
+
     Args:
         target_date: Дата в формате YYYY-MM-DD
-    
+
     **Пример запроса:**
     ```bash
     curl "http://localhost:8000/digest/2024-02-17/density"
@@ -461,16 +493,14 @@ async def get_density_analysis(
     try:
         # Парсим дату
         parsed_date = datetime.strptime(target_date, "%Y-%m-%d").date()
-        
+
         analyzer = InformationDensityAnalyzer()
         analysis = analyzer.analyze_day(parsed_date)
-        
+
         return analysis
-        
+
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
     except Exception as e:
         logger.error("density_analysis_failed", date=target_date, error=str(e))
         raise HTTPException(status_code=500, detail="Failed to analyze density. Check server logs.")
-
-

@@ -191,7 +191,7 @@ def _query_portrait(
         try:
             from src.balance.calculator import calculate_balance, calculate_comparative_drift
 
-            balance_result = calculate_balance(db, date_from.isoformat(), date_to.isoformat())
+            balance_result = calculate_balance(conn, date_from.isoformat(), date_to.isoformat())
             balance_trend = balance_result.to_mirror_trend()
 
             # WHY: comparative drift shows what's changing in user's life.
@@ -199,7 +199,7 @@ def _query_portrait(
             if days_back <= 7:
                 drift_baseline_from = (date_to - timedelta(days=29)).isoformat()
                 drift = calculate_comparative_drift(
-                    db,
+                    conn,
                     current_from=date_from.isoformat(),
                     current_to=date_to.isoformat(),
                     baseline_from=drift_baseline_from,

@@ -2,6 +2,7 @@
 Тесты для доведения покрытия api/main до 80%.
 Startup, 404, форматы ответов.
 """
+
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 
@@ -79,10 +80,14 @@ def test_digest_today_generation_exception():
     from fastapi.testclient import TestClient
     from src.api.main import app
 
-    with patch("src.api.routers.digest.DigestGenerator") as mock_cls:
-        mock_cls.return_value.generate.side_effect = RuntimeError("today failed")
+    # WHY: digest/today now tries cache first, then get_daily_digest_json.
+    with (
+        patch("src.api.routers.digest._get_cached_digest", return_value=None),
+        patch("src.api.routers.digest.DigestGenerator") as mock_cls,
+    ):
+        mock_cls.return_value.get_daily_digest_json.side_effect = RuntimeError("today failed")
         client = TestClient(app)
-        r = client.get("/digest/today?format=markdown")
+        r = client.get("/digest/today?format=json")
     assert r.status_code == 500
 
 
@@ -116,6 +121,8 @@ def test_audio_upload_save_exception():
     with patch("src.api.routers.ingest.get_safe_checker", return_value=None):
         with patch.object(settings, "UPLOADS_PATH", fake_path):
             client = TestClient(app)
-            r = client.post("/ingest/audio", files={"file": ("x.wav", valid_wav_header, "audio/wav")})
+            r = client.post(
+                "/ingest/audio", files={"file": ("x.wav", valid_wav_header, "audio/wav")}
+            )
     assert r.status_code == 500
     assert "Failed to process audio" in r.json().get("detail", "")
