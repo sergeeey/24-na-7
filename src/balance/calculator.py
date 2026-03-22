@@ -116,3 +116,84 @@ def calculate_balance(db: ReflexioDB, date_from: str, date_to: str) -> BalanceRe
         total_mentions=total,
         covered_domains=len(domains),
     )
+
+
+@dataclass
+class DriftSignal:
+    domain: str
+    current_presence: float
+    previous_presence: float
+    delta: float  # positive = grew, negative = shrank
+    direction: str  # "up" | "down" | "stable" | "new" | "gone"
+
+
+@dataclass
+class ComparativeDrift:
+    current_window: str  # e.g. "7d"
+    baseline_window: str  # e.g. "30d"
+    signals: list[DriftSignal]
+    current_balance: float
+    baseline_balance: float
+    balance_delta: float
+
+
+def calculate_comparative_drift(
+    db: ReflexioDB,
+    current_from: str,
+    current_to: str,
+    baseline_from: str,
+    baseline_to: str,
+    current_label: str = "7d",
+    baseline_label: str = "30d",
+    threshold: float = 0.15,
+) -> ComparativeDrift:
+    """Compare two time windows to detect domain drift.
+
+    WHY: drift shows what's changing in user's life — which domains grew,
+    shrank, appeared, or disappeared. This is the core Mirror insight.
+    """
+    current = calculate_balance(db, current_from, current_to)
+    baseline = calculate_balance(db, baseline_from, baseline_to)
+
+    current_map = {d.domain: d.presence_score for d in current.domains}
+    baseline_map = {d.domain: d.presence_score for d in baseline.domains}
+    all_domains = set(current_map) | set(baseline_map)
+
+    signals = []
+    for domain in sorted(all_domains):
+        cur = current_map.get(domain, 0.0)
+        prev = baseline_map.get(domain, 0.0)
+        delta = round(cur - prev, 3)
+
+        if prev == 0.0 and cur > 0.0:
+            direction = "new"
+        elif cur == 0.0 and prev > 0.0:
+            direction = "gone"
+        elif abs(delta) < threshold:
+            direction = "stable"
+        elif delta > 0:
+            direction = "up"
+        else:
+            direction = "down"
+
+        signals.append(
+            DriftSignal(
+                domain=domain,
+                current_presence=cur,
+                previous_presence=prev,
+                delta=delta,
+                direction=direction,
+            )
+        )
+
+    # Sort: biggest changes first
+    signals.sort(key=lambda s: abs(s.delta), reverse=True)
+
+    return ComparativeDrift(
+        current_window=current_label,
+        baseline_window=baseline_label,
+        signals=signals,
+        current_balance=current.balance_score,
+        baseline_balance=baseline.balance_score,
+        balance_delta=round(current.balance_score - baseline.balance_score, 3),
+    )

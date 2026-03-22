@@ -136,6 +136,7 @@ def _table_exists(conn, table_name: str) -> bool:
 def _query_portrait(
     date_from: date,
     date_to: date,
+    days_back: int = 7,
 ) -> dict[str, Any]:
     """Выполняет все SQL-запросы и возвращает сырые агрегаты.
 
@@ -149,6 +150,7 @@ def _query_portrait(
     sentiment_count = 0
     episodes_count = 0
     balance_trend: list[dict[str, Any]] = []
+    drift_signals: list[dict[str, Any]] = []
     open_commitments = 0
 
     # ПОЧЕМУ get_reflexio_db(): на проде БД может быть sqlcipher-зашифрована,
@@ -187,10 +189,35 @@ def _query_portrait(
 
         # WHY: shared calculator ensures mirror and /balance/wheel agree.
         try:
-            from src.balance.calculator import calculate_balance
+            from src.balance.calculator import calculate_balance, calculate_comparative_drift
 
             balance_result = calculate_balance(db, date_from.isoformat(), date_to.isoformat())
             balance_trend = balance_result.to_mirror_trend()
+
+            # WHY: comparative drift shows what's changing in user's life.
+            # Compare current window vs 30-day baseline.
+            if days_back <= 7:
+                drift_baseline_from = (date_to - timedelta(days=29)).isoformat()
+                drift = calculate_comparative_drift(
+                    db,
+                    current_from=date_from.isoformat(),
+                    current_to=date_to.isoformat(),
+                    baseline_from=drift_baseline_from,
+                    baseline_to=date_to.isoformat(),
+                    current_label=f"{days_back}d",
+                    baseline_label="30d",
+                )
+                drift_signals = [
+                    {
+                        "domain": s.domain,
+                        "direction": s.direction,
+                        "delta": s.delta,
+                        "current": s.current_presence,
+                        "baseline": s.previous_presence,
+                    }
+                    for s in drift.signals
+                    if s.direction != "stable"
+                ]
         except Exception as e:
             logger.warning("mirror.balance_calc_failed", error=str(e))
 
@@ -289,6 +316,7 @@ def _query_portrait(
         "avg_sentiment": avg_sentiment,
         "episodes_count": episodes_count,
         "balance_trend": balance_trend,
+        "drift_signals": drift_signals,
         "open_commitments": open_commitments,
         "ownership_breakdown": ownership_breakdown,
         "data_quality": {
@@ -328,7 +356,7 @@ async def get_portrait(
         date_to=date_to.isoformat(),
     )
 
-    agg = _query_portrait(date_from, date_to)
+    agg = _query_portrait(date_from, date_to, days_back=days_back)
     episodes_count: int = agg["episodes_count"]
 
     top_emotions = [{"emotion": e, "count": c} for e, c in agg["emotions"].most_common(_TOP_N)]
@@ -357,7 +385,7 @@ async def get_portrait(
             "open_commitments": agg["open_commitments"],
         },
         # Section 4: What's changing (placeholder — needs historical comparison)
-        "drift": {},
+        "drift": {"signals": agg.get("drift_signals", [])} if agg.get("drift_signals") else {},
         # Section 5: Why the system thinks so
         "evidence": {
             "ownership_breakdown": agg.get("ownership_breakdown", {}),

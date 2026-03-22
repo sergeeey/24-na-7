@@ -1,5 +1,6 @@
 """Balance wheel API."""
-from datetime import date, datetime
+
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -91,11 +92,70 @@ async def wheel(
     db_path = settings.STORAGE_PATH / "reflexio.db"
     result = get_balance_wheel(db_path, f, t)
     evidence_count = len(result.get("domains", []))
-    return add_meta(result, confidence=0.75 if evidence_count > 0 else 0.0, evidence_count=evidence_count, tool="balance_wheel")
+    return add_meta(
+        result,
+        confidence=0.75 if evidence_count > 0 else 0.0,
+        evidence_count=evidence_count,
+        tool="balance_wheel",
+    )
 
 
 @router.get("/insights")
 @limiter.limit("30/minute")
-async def balance_insights(request: Request, response: Response, day: str = Query(..., description="YYYY-MM-DD")):
+async def balance_insights(
+    request: Request, response: Response, day: str = Query(..., description="YYYY-MM-DD")
+):
     db_path = settings.STORAGE_PATH / "reflexio.db"
     return {"day": day, "insights": get_day_insights(db_path, day)}
+
+
+@router.get("/drift")
+@limiter.limit("30/minute")
+async def balance_drift(
+    request: Request,
+    response: Response,
+    window: int = Query(7, ge=1, le=30, description="Current window in days"),
+    baseline: int = Query(30, ge=7, le=90, description="Baseline window in days"),
+):
+    """Compare domain distribution between two time windows.
+
+    Shows what domains grew, shrank, appeared, or disappeared.
+    """
+    from src.balance.calculator import calculate_comparative_drift
+    from src.storage.db import get_reflexio_db
+
+    today = date.today()
+    current_from = (today - timedelta(days=window - 1)).isoformat()
+    baseline_from = (today - timedelta(days=baseline - 1)).isoformat()
+
+    db = get_reflexio_db(settings.STORAGE_PATH / "reflexio.db")
+    drift = calculate_comparative_drift(
+        db,
+        current_from=current_from,
+        current_to=today.isoformat(),
+        baseline_from=baseline_from,
+        baseline_to=today.isoformat(),
+        current_label=f"{window}d",
+        baseline_label=f"{baseline}d",
+    )
+
+    return add_meta(
+        {
+            "current_window": drift.current_window,
+            "baseline_window": drift.baseline_window,
+            "balance_delta": drift.balance_delta,
+            "signals": [
+                {
+                    "domain": s.domain,
+                    "direction": s.direction,
+                    "delta": s.delta,
+                    "current": s.current_presence,
+                    "baseline": s.previous_presence,
+                }
+                for s in drift.signals
+            ],
+        },
+        confidence=0.7 if drift.signals else 0.0,
+        evidence_count=len(drift.signals),
+        tool="balance_drift",
+    )
